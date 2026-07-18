@@ -52,16 +52,19 @@
 
 > **Story Behind the Menus:** This platform was built by various free AI models, with direct review by a developer who is not deeply familiar with coding. Each menu was created to solve the developer's personal workflow problems.
 
-Media Vault is a self-hosted media server for browsing, streaming, downloading, and managing personal media libraries. The platform provides the following menus accessible from mobile devices:
+Media Vault is a self-hosted media server born from the need to access media files without opening the laptop every time. Originally designed for personal use, it evolved into a comprehensive platform with integrated tools.
 
-- **Media Vault**: Overkill implementation featuring HLS adaptive streaming, waveform visualization, multi-track audio extraction, and precision synchronization — eliminates the need to open the laptop just to view video, audio, and image files. Browse and stream media in high quality with smooth playback and instant search.
-- **Music Player**: Dedicated audio player with dual modes (cover mode or video mode with separately synchronized components), high-precision timing to prevent interruption/mismatch. Built-in metadata editor, cover art fetching (MusicBrainz), and lyrics search (LRCLIB) with synced LRC support.
-- **Monitoring**: Monitor laptop from phone, control fan speed via nbfc and clock via ryzenadj (Linux only, AMD-focused, under development). View real-time stats and manage system resources remotely.
-- **Downloader**: Download directly to laptop storage via Telegram bot that auto-downloads links with configurable parameters — no need to download on phone then transfer to laptop with larger storage.
-- **ADB Transfer**: Transfer files between phone and laptop without file manager or terminal commands (under development) — simpler than slow, interrupt-prone file managers or memorizing terminal commands.
-- **Scrcpy Monitor**: View phone screen remotely (under development) — simple remote screen viewing.
-- **Send Queue**: Queue monitoring for WA/Telegram; dedicated WA status queue sends full-size uncompressed videos to maintain active WhatsApp feed (optional feature).
-- **Git Integration**: Use Git/GitHub without opening terminal — web-based Git operations.
+**Origin of Each Menu:**
+- **Media Vault**: Created to avoid opening the laptop just to browse video, audio, and image files — access them directly from phone anywhere
+- **Music Player**: Born from frustration with music players that drift out of sync; features dual modes (cover/video) with high-precision synchronization
+- **Monitoring**: To control laptop from phone — fan speed via nbfc and clock via ryzenadj (still Linux-only, AMD-focused, under development)
+- **Downloader**: Eliminates the hassle of downloading on phone then transferring to laptop with larger storage; Telegram bot auto-downloads links
+- **ADB Transfer**: Makes file transfer easier without slow file managers or memorizing terminal commands (under development)
+- **Scrcpy Monitor**: Simple remote phone screen viewing (under development)
+- **Send Queue**: Dedicated WA status queue keeps WhatsApp feed active with full-size uncompressed videos (optional)
+- **Git Integration**: Web-based Git operations without opening terminal
+
+**Technology Stack:** Node.js, Express, SQLite, React, FFmpeg, HLS streaming, waveform visualization.
 
 ---
 
@@ -69,7 +72,7 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 
 | Menu | Status | Description | Technology Used |
 |------|--------|-------------|---------------|
-| Media Vault | Optional | Browse and stream media offline video/audio/image files — overkill implementation with HLS adaptive streaming, waveform visualization, multi-track audio extraction, and precision synchronization | hls.js, FFmpeg, better-sqlite3 FTS |
+| Media Vault | Optional | Overkill implementation featuring adaptive HLS streaming, configurable transcoding profiles, waveform visualization, multi-track audio extraction, and millisecond-precise synchronization — browse and stream offline video/audio/image files seamlessly. Developed as the core feature with extensive optimization investment. | hls.js, FFmpeg, better-sqlite3 FTS, recharts, framer-motion |
 | Library Management | Optional | Auto-scan, full-text search, thumbnail generation | better-sqlite3 WAL, incremental scanning |
 | Playlists | Optional | XSPF import, full CRUD, drag-reorder | XSPF parser, folder-based playlists |
 | Metadata Editing | Optional | Read/write audio tags, cover art, lyrics | FFprobe, MusicBrainz, LRCLIB |
@@ -77,11 +80,9 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 | Downloader | Optional | YouTube, TikTok, Instagram, Twitter/X, torrent | yt-dlp, gallery-dl, aria2c, Telegram bot |
 | ADB Transfer | Optional | Push/pull files Android <-> laptop | ADB, concurrent workers |
 | Scrcpy Monitor | Optional | Remote phone screen viewing | node-pty, WebRTC |
-| Music Player | Optional | Overkill audio player with dual modes: cover mode and video mode with independently synchronized audio/video components, high-precision timing; includes metadata editor, MusicBrainz covers, LRCLIB lyrics | waveform, synced LRC, hls.js, precision sync engine |
+| Music Player | Optional | Overkill audio player developed with heavy focus on perfection: dual modes (cover mode or video mode with independently synchronized components), high-precision timing, metadata editor, MusicBrainz covers, LRCLIB lyrics with synced LRC support — prevents drift/interruptions that plagued other players. Heavy investment in sync engine development. | waveform, synced LRC, hls.js, precision sync engine |
 | Send Queue | Optional | Queue monitoring for WA/Telegram; dedicated WA status queue sends full-size uncompressed videos to maintain active WhatsApp feed | Tick-based precision, SSE, WA/Telegram APIs |
 | Git Integration | Optional | Web-based Git operations | Simple Git wrapper |
-
-> **Note:** Send Queue WA status feature sends full-size uncompressed videos to keep your WhatsApp feed always active.
 
 > **Note:** All menus are still actively worked on and under development. New menus may be added in the future.
 
