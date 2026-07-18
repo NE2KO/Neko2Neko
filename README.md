@@ -54,14 +54,14 @@
 
 Media Vault is a self-hosted media server for browsing, streaming, downloading, and managing personal media libraries. The platform provides the following menus accessible from mobile devices:
 
-- **Media Vault**: Browse and stream video, audio, and image files from phone without opening laptop
-- **Monitoring**: Monitor laptop from phone, control fan speed via nbfc and clock via ryzenadj (Linux only, AMD-focused, under development)
-- **Downloader**: Download directly to laptop storage via Telegram bot that auto-downloads links with configurable parameters
-- **ADB Transfer**: Transfer files between phone and laptop without file manager or terminal commands (under development)
-- **Scrcpy Monitor**: View phone screen remotely (under development)
-- **Music Player**: Two playback modes (cover mode or video mode with separate audio/video components, high-precision sync)
-- **Send Queue**: Monitor sent/failed/cancelled items to WA/Telegram with tick-based precision queue (WA status dedicated — full-size video status without compression, keeps WhatsApp feed active, optional feature)
-- **Git Integration**: Use Git/GitHub without opening terminal
+- **Media Vault**: Overkill implementation featuring HLS adaptive streaming, waveform visualization, multi-track audio extraction, and precision synchronization — eliminates the need to open the laptop just to view video, audio, and image files. Browse and stream media in high quality with smooth playback and instant search.
+- **Music Player**: Dedicated audio player with dual modes (cover mode or video mode with separately synchronized components), high-precision timing to prevent interruption/mismatch. Built-in metadata editor, cover art fetching (MusicBrainz), and lyrics search (LRCLIB) with synced LRC support.
+- **Monitoring**: Monitor laptop from phone, control fan speed via nbfc and clock via ryzenadj (Linux only, AMD-focused, under development). View real-time stats and manage system resources remotely.
+- **Downloader**: Download directly to laptop storage via Telegram bot that auto-downloads links with configurable parameters — no need to download on phone then transfer to laptop with larger storage.
+- **ADB Transfer**: Transfer files between phone and laptop without file manager or terminal commands (under development) — simpler than slow, interrupt-prone file managers or memorizing terminal commands.
+- **Scrcpy Monitor**: View phone screen remotely (under development) — simple remote screen viewing.
+- **Send Queue**: Queue monitoring for WA/Telegram; dedicated WA status queue sends full-size uncompressed videos to maintain active WhatsApp feed (optional feature).
+- **Git Integration**: Use Git/GitHub without opening terminal — web-based Git operations.
 
 ---
 
@@ -69,7 +69,7 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 
 | Menu | Status | Description | Technology Used |
 |------|--------|-------------|---------------|
-| Media Vault | Optional | Browse and stream media files from phone — overkill implementation with HLS adaptive streaming, waveform visualization, synced lyrics (LRC), multi-track audio extraction, and precision synchronization | hls.js, FFmpeg, better-sqlite3 FTS, waveform, LRCLIB synced LRC |
+| Media Vault | Optional | Browse and stream media offline video/audio/image files — overkill implementation with HLS adaptive streaming, waveform visualization, multi-track audio extraction, and precision synchronization | hls.js, FFmpeg, better-sqlite3 FTS |
 | Library Management | Optional | Auto-scan, full-text search, thumbnail generation | better-sqlite3 WAL, incremental scanning |
 | Playlists | Optional | XSPF import, full CRUD, drag-reorder | XSPF parser, folder-based playlists |
 | Metadata Editing | Optional | Read/write audio tags, cover art, lyrics | FFprobe, MusicBrainz, LRCLIB |
@@ -77,7 +77,7 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 | Downloader | Optional | YouTube, TikTok, Instagram, Twitter/X, torrent | yt-dlp, gallery-dl, aria2c, Telegram bot |
 | ADB Transfer | Optional | Push/pull files Android <-> laptop | ADB, concurrent workers |
 | Scrcpy Monitor | Optional | Remote phone screen viewing | node-pty, WebRTC |
-| Music Player | Optional | Overkill audio player with dual modes: cover mode and video mode with independently synchronized audio/video components, high-precision timing | waveform, synced LRC, hls.js, precision sync engine |
+| Music Player | Optional | Overkill audio player with dual modes: cover mode and video mode with independently synchronized audio/video components, high-precision timing; includes metadata editor, MusicBrainz covers, LRCLIB lyrics | waveform, synced LRC, hls.js, precision sync engine |
 | Send Queue | Optional | Queue monitoring for WA/Telegram; dedicated WA status queue sends full-size uncompressed videos to maintain active WhatsApp feed | Tick-based precision, SSE, WA/Telegram APIs |
 | Git Integration | Optional | Web-based Git operations | Simple Git wrapper |
 
