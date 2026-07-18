@@ -201,7 +201,7 @@ homelab-media-server/
 │   │   ├── db.js               Schema, prepared statements, FTS, settings
 │   │   ├── config/
 │   │   │   └── paths.js        Path resolution, SETTINGS constants
-│   │   ├── routes/             (19 modules — see §7)
+│   │   ├── routes/             (18 modules — see §7)
 │   │   │   ├── adb.js          ADB device list, transfer jobs
 │   │   │   ├── downloader.js   Download task management (yt-dlp etc.)
 │   │   │   ├── file.js         Raw file serve (cache headers, range)

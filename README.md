@@ -127,26 +127,66 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 
 ## 5. Project Structure
 
-| Directory | Description |
-|-----------|-------------|
-| `backend/` | Express API, SQLite, media processing |
-| `backend/src/` | Server entry point, database, routes |
-| `backend/src/routes/` | 19 route modules (files, stream, download, etc.) |
-| `backend/src/monitor/` | System monitoring (CPU, RAM, GPU, disk, network) |
-| `backend/src/utils/` | Helper utilities (watcher, downloader, upload) |
-| `frontend/` | React 18 SPA (Vite + TailwindCSS) |
-| `frontend/src/` | Components, store, hooks |
-| `whatsapp-bot/` | WhatsApp integration via whatsapp-web.js |
-| `data/` | `media.db`, download tasks, thumbnails |
-| `cache/` | HLS, remux, transcode cache |
-| `logs/` | Rotating logs |
-| `credentials/` | `.env`, auth files |
+```
+homelab-media-server/
+├── backend/
+│   ├── src/
+│   │   ├── server.js           Entry point, Express, lifecycle
+│   │   ├── db.js               SQLite database, FTS, settings
+│   │   ├── routes/             (18 modules)
+│   │   │   ├── adb.js          Android transfer
+│   │   │   ├── downloader.js   Download management
+│   │   │   ├── file.js         File serve (range, cache)
+│   │   │   ├── files.js        File listing, search
+│   │   │   ├── jobs.js         Background jobs
+│   │   │   ├── metadata.js     Audio tags, covers, lyrics
+│   │   │   ├── monitoring.js   Stats, history, alerts
+│   │   │   ├── playback.js     Cache, health, config
+│   │   │   ├── playlists.js    XSPF import, CRUD
+│   │   │   ├── scrcpy.js       Scrcpy control
+│   │   │   ├── send.js         Telegram send
+│   │   │   ├── services.js     Service registry
+│   │   │   ├── settings.js     Config CRUD
+│   │   │   ├── stream.js       Video/audio streaming
+│   │   │   ├── thumbnails.js   Thumbnail generation
+│   │   │   ├── upload.js       Multipart upload
+│   │   │   ├── videoCache.js   Video cache management
+│   │   │   └── whatsapp.js     WhatsApp bridge
+│   │   ├── monitor/            System metrics
+│   │   ├── utils/              Helpers (watcher, downloader)
+│   │   └── middleware/         Route guards
+│   └── package.json
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx             Main application
+│   │   ├── main.jsx            Vite entry
+│   │   ├── components/         (40+ components)
+│   │   ├── store/              Zustand stores (6 files)
+│   │   ├── hooks/              Custom hooks (5 files)
+│   │   └── utils/              Utility functions
+│   └── package.json
+├── whatsapp-bot/
+│   ├── src/
+│   │   ├── index.js            Entry point
+│   │   ├── connection.js       WhatsApp connection
+│   │   ├── listener.js         Message handler
+│   │   ├── sender.js           Outbound sender
+│   │   ├── db.js               SQLite wrapper
+│   │   └── utils.js            Utilities
+│   └── package.json
+├── data/                       Database, thumbnails, tasks
+├── cache/                      HLS, remux, transcode cache
+├── logs/                       Rotating logs
+├── credentials/                .env, auth files (gitignored)
+├── Docker/                     docker-compose.yml, configs
+└── .gitignore
+```
 
 ### Optional Components
 
 | Directory | Description |
 |-----------|-------------|
-| `Docker/` | `docker-compose.yml`, configs (optional deployment) |
+| `Docker/` | docker-compose.yml for WAHA, nginx proxies |
 
 ---
 
