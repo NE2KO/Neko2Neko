@@ -38,22 +38,26 @@
 
 ## 1. Ikhtisar Proyek
 
-**Media Vault** adalah server media yang dihosting sendiri (self-hosted) dengan kemampuan menyeluruh:
+> **Catatan:** Platform ini dikerjakan oleh berbagai model AI gratis, dengan review langsung oleh pengembang yang tidak terlalu paham dunia coding. Menu-menu yang ada mewakili keinginan pengembang untuk membuat web sesuai kebutuhan, dan masih dalam tahap pengembangan aktif.
 
-|  Kemampuan           |  Status                    |  Deskripsi                                                                                     |
-|--------------------|--------------------------|----------------------------------------------------------------------------------------------|
-|  Peramban media      |  Aktif                    |  Penjelajahan, streaming, unduhan berkas via antarmuka web                                     |
-|  Manajemen pustaka   |  Aktif                    |  Pemindaian otomatis, pencarian FTS inkremental, pembuatan thumbnail                           |
-|  Daftar putar        |  Aktif                    |  Impor XSPF, CRUD, susun ulang seret, antrean audio, berbasis folder                           |
-|  Penyuntingan metadata |  Aktif                 |  Baca/tulis tag audio, cover art MusicBrainz, lirik LRCLIB, LRC tersinkron                      |
-|  Pemutaran           |  Aktif                    |  Video HTML5 (range/HLS/transcode), audio HTML5 dengan waveform & lirik                        |
-|  Pemantauan          |  Aktif                    |  CPU/RAM/GPU/Disk/Jaringan real-time via WebSocket + fallback SSE                               |
-|  Pengunduh           |  Aktif                    |  yt-dlp/gallery-dl/aria2c — YouTube, TikTok, Instagram, Twitter, torrent                       |
-|  Transfer ADB        |  Aktif                    |  Dorong/tarik berkas ke Android via ADB dengan pekerja konkuren                                |
-|  Jembatan WhatsApp   |  **Terintegrasi / Aktif**  |  kode `whatsapp-bot/` dimuat oleh `server.js` via `initWhatsApp()` dan `routes/whatsapp.js`    |
-|  Kirim Telegram      |  Opsional                 |  Aktif hanya saat `TELEGRAM_BOT_TOKEN` dikonfigurasi                                          |
+**Media Vault** adalah server media yang dihosted sendiri (self-hosted) dengan kemampuan menyeluruh:
 
-> **Catatan:** Integrasi WhatsApp **disematkan (embedded)**, bukan proses terpisah yang berdiri sendiri. `server.js` memulainya 10 dtk setelah listen (hingga 5 percobaan ulang dengan backoff), dan `routes/whatsapp.js` (yang mengimpor dari `../../../whatsapp-bot/src/`) mengekspos endpoint REST `/api/whatsapp/*` plus aliran SSE log di `/api/whatsapp/logs/stream`. Paket `whatsapp-bot/` juga dapat berjalan mandiri (`npm start`), tetapi dalam penyebaran yang didokumentasikan ia dimuat oleh backend.
+| Kemampuan | Status | Deskripsi | Implementasi |
+|-----------|--------|-----------|--------------|
+| Peramban media | Opsional | Lihat file video, audio, image dari HP tanpa buka laptop | Sangat bagus - HLS streaming, thumbnail, search |
+| Manajemen pustaka | Opsional | Auto-scan, pencarian full-text, generasi thumbnail | Bagus - SQLite WAL, incremental scanning |
+| Daftar putar | Opsional | XSPF import, CRUD lengkap, drag-reorder | Bagus - queue audio, folder-based playlists |
+| Penyuntingan metadata | Opsional | Baca/tulis tag audio, cover MusicBrainz, lirik LRCLIB | Bagus - synced LRC, waveform |
+| Pemutaran | Opsional | Video HTML5 (direct/remux/transcode/HLS), audio dengan waveform & lirik | Bagus - sinkronisasi presisi tinggi |
+| Pemantauan | Opsional | Monitoring laptop dari HP, kontrol fan via nbfc, clock via ryzenadj | Bagus - statistik real-time, tapi masih hardware-lock |
+| Pengunduh | Opsional | Download otomatis via bot Telegram saat kirim link | Bagus - yt-dlp, gallery-dl, aria2c tersedia |
+| Transfer ADB | Opsional | Transfer file HP<->laptop tanpa file manager/terminal | Masih dikembangkan - worker concurrent tersedia |
+| Scrcpy Monitor | Opsional | Lihat layar HP dari jauh | Masih dikembangkan - basic view |
+| Jembatan WhatsApp | Opsional | Jadwalkan status + kirim ke channel WA | Bagus - tick presisi, keyword/hashtag |
+| Kirim Telegram | Opsional | Kirim media, bisa jadi downloader saat terima link | Bagus - opsi grup/channel |
+| Git Integration | Opsional | Gunakan Git/GitHub tanpa terminal | Bagus - tampilan web, operasi dasar lengkap |
+
+> **Catatan:** Semua menu masih aktif dikerjakan dan masih dikembangkan. Rencana akan ada menu baru.
 
 ---
 
