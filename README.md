@@ -50,7 +50,7 @@
 
 ## 1. Overview
 
-> **Story Behind the Menus:** This platform was built by various free AI models, with direct review by a developer who is not deeply familiar with coding. Each menu was created to solve the developer's personal workflow problems.
+> **Story Behind the Menus:** This platform was built by various free AI models, with direct review by someone who is just bored and not particularly skilled at coding. Each menu was created to solve personal workflow problems.
 
 Media Vault is a self-hosted media server born from the need to access media files without opening the laptop every time. Originally designed for personal use, it evolved into a comprehensive platform with integrated tools.
 
