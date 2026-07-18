@@ -21,20 +21,17 @@
 7. [Backend — API Endpoints](#7-backend--api-endpoints)
 8. [Backend — Subsystems](#8-backend--subsystems)
 9. [Frontend Architecture](#9-frontend-architecture)
-10. [Flow Diagrams](#10-flow-diagrams)
-11. [Configuration & Paths](#11-configuration--paths)
-12. [Environment Variables](#12-environment-variables)
-13. [Background Jobs / Scheduler](#13-background-jobs--scheduler)
-14. [Performance, Memory, Disk, Concurrency](#14-performance-memory-disk-concurrency)
-15. [Security & Production](#15-security--production)
-16. [Deployment](#16-deployment)
-17. [Error Handling & Failure Modes](#17-error-handling--failure-modes)
-18. [Monitoring Dashboard Detail](#18-monitoring-dashboard-detail)
-19. [Future Extensions / Roadmap](#19-future-extensions--roadmap)
-20. [Development Notes](#20-development-notes)
-21. [Debug / Operations Commands](#21-debug--operations-commands)
-22. [Codebase Metrics](#22-codebase-metrics)
-23. [Appendix: Version History](#23-appendix-version-history)
+10. [Configuration & Paths](#10-configuration--paths)
+11. [Environment Variables](#11-environment-variables)
+12. [Background Jobs / Scheduler](#12-background-jobs--scheduler)
+13. [Performance, Memory, Disk, Concurrency](#13-performance-memory-disk-concurrency)
+14. [Security & Production](#14-security--production)
+15. [Deployment](#15-deployment)
+16. [Error Handling & Failure Modes](#16-error-handling--failure-modes)
+17. [Monitoring Dashboard Detail](#17-monitoring-dashboard-detail)
+18. [Future Extensions / Roadmap](#18-future-extensions--roadmap)
+19. [Development Notes](#19-development-notes)
+20. [Appendix: Version History](#20-appendix-version-history)
 
 ---
 
@@ -179,353 +176,17 @@ The repository is **not** a monorepo: there are no workspaces and no root script
 
 ## 4. Project Structure / Directory Layout
 
-```
-homelab-media-server/
-├── backend/
-│   ├── src/
-│   │   ├── server.js           Entry point — Express, lifecycle, shutdown
-│   │   ├── db.js               Schema, prepared statements, FTS, settings
-│   │   ├── config/
-│   │   │   └── paths.js        Path resolution, SETTINGS constants
-│   │   ├── routes/             (19 modules — see §7)
-│   │   │   ├── adb.js          ADB device list, transfer jobs
-│   │   │   ├── downloader.js   Download task management (yt-dlp etc.)
-│   │   │   ├── file.js         Raw file serve (cache headers, range)
-│   │   │   ├── files.js        File listing, FTS search, cursor pagination
-│   │   │   ├── jobs.js         Background job status
-│   │   │   ├── metadata.js     Audio metadata, cover art, lyrics
-│   │   │   ├── monitoring.js   Stats, history, alerts, processes
-│   │   │   ├── mpd.js          MPD/Strawberry player control
-│   │   │   ├── playback.js     Playback cache, LRU, health, config
-│   │   │   ├── scrcpy.js       Scrcpy control endpoint
-│   │   │   ├── send.js         Mounted at /api/send (Telegram / broadcast)
-│   │   │   ├── services.js     Service health registry API
-│   │   │   ├── settings.js     Runtime config CRUD
-│   │   │   ├── stream.js       Video/audio streaming, HLS, transcode
-│   │   │   ├── thumbnails.js   Thumbnail generate-if-missing + serve
-│   │   │   ├── upload.js       Multipart upload (Busboy)
-│   │   │   ├── videoCache.js   Mounted at /api/video-cache
-│   │   │   └── whatsapp.js     WhatsApp bridge (embedded via initWhatsApp)
-│   │   ├── middleware/
-│   │   │   └── serviceGuard.js requireService() route protection
-│   │   ├── services/
-│   │   │   └── registry.js     Service health registry (NOT utils/registry.js)
-│   │   ├── downloader/
-│   │   │   └── manager.js      yt-dlp/gallery-dl/aria2c wrapper, task queue
-│   │   ├── monitor/
-│   │   │   ├── alerts.js           Threshold checking, dedupe 60s
-│   │   │   ├── docker.js           Docker container monitoring
-│   │   │   ├── collectors/
-│   │   │   │   ├── cpu.js          CPU usage, per-core, temp
-│   │   │   │   ├── disk.js         Disk usage, SMART (cached)
-│   │   │   │   ├── gpu.js          NVIDIA GPU (cached)
-│   │   │   │   ├── memory.js       RAM, swap
-│   │   │   │   ├── network.js      Interface throughput
-│   │   │   │   └── system.js       Uptime, platform, hostname
-│   │   │   ├── docker.js           Docker container monitoring
-│   │   │   ├── engine.js           Poll loop (3000ms), collect→aggregate→WS
-│   │   │   ├── historical.js       Time-series (historical_metrics), 30s snapshot, 7d retention
-│   │   │   ├── logs.js             journalctl reader
-│   │   │   ├── monitoringCache.js  Forked child for sensor reads
-│   │   │   ├── platdetect.js       Platform detection
-│   │   │   ├── processes.js        Process enumeration
-│   │   │   ├── services.js         Systemd service manager
-│   │   │   ├── webStats.js         Web/HTTP stats + log integration
-│   │   │   └── websocket.js        WS server (/ws/monitor), zombie cleanup (30s)
-│   │   ├── utils/                  (41 files — see note below)
-│   │   │   ├── adbManager.js        ADB device management
-│   │   │   ├── adbMetadata.js     Permission/timestamp sync
-│   │   │   ├── adbTransaction.js    ADB transfer engine
-│   │   │   ├── adbWorkerPool.js     Concurrent ADB workers
-│   │   │   ├── avSync.js            Audio/video sync utilities
-│   │   │   ├── coverSources.js      Cover art provider aggregation
-│   │   │   ├── fileResolver.js      Path resolution from DB
-│   │   │   ├── fileScanner.js       Recursive walk, incremental sync
-│   │   │   ├── genius.js            Genius lyrics source
-│   │   │   ├── hlsGenerator.js      FFmpeg HLS segments
-│   │   │   ├── jobQueue.js          Generic job queue (reserved/deprecated)
-│   │   │   ├── lyricsSources.js     Lyrics provider aggregation
-│   │   │   ├── logCapture.js        Log ring buffer + SSE
-│   │   │   ├── logger.js            Category-based file logger
-│   │   │   ├── lrclib.js            LRCLIB lyrics API
-│   │   │   ├── lrcParser.js         LRC format parser
-│   │   │   ├── lrcmux.js            LRC muxing
-│   │   │   ├── maintenance.js       Cleanup (orphan, WAL, HLS, ANALYZE)
-│   │   │   ├── metadataWriter.js    music-metadata read, ffmpeg embed
-│   │   │   ├── musicbrainz.js       Cover Art Archive API
-│   │   │   ├── netease.js           NetEase lyrics source
-│   │   │   ├── playbackEngine.js    Remux/transcode decisions, cache
-│   │   │   ├── playlistScanner.js   XSPF discovery from filesystem
-│   │   │   ├── pyjlyric.js          PyJLyric bridge
-│   │   │   ├── romaji.js            Romaji transliteration
-│   │   │   ├── runtimeSettings.js   In-memory settings cache, type casting
-│   │   │   ├── sendCounter.js       Send/queue counters
-│   │   │   ├── sendRateLimit.js     Rate limiting utilities
-│   │   │   ├── sessionTracker.js    WS/session tracking
-│   │   │   ├── telegramBot.js       Telegram client (optional)
-│   │   │   ├── thumbnailQueue.js    Async queue, concurrency control
-│   │   │   ├── thumbnailUtils.js    FFmpeg frame extract + scale resize (no sharp dep)
-│   │   │   ├── uploadManager.js     Busboy multipart, SHA256 verify
-│   │   │   ├── videoCache.js        Video cache bookkeeping
-│   │   │   ├── watcher.js           fs.watch debounce, SSE broadcast
-│   │   │   ├── xspfParser.js        XSPF playlist parser
-│   │   │   ├── youtube.js           YouTube helpers
-│   │   │   ├── ytdlp.js             yt-dlp wrapper
-│   │   │   ├── embed_cover.py       Python: cover embed fallback
-│   │   │   ├── romaji_convert.py    Python: romaji conversion
-│   │   │   └── pyjlyric_search.py   Python: PyJLyric search
-│   │   ├── fts-rebuild-worker.mjs   Forked worker — FTS5 rebuild
-│   │   └── sensors-worker.mjs       Forked worker — sensor reads
-│   └── (node_modules/, package.json)
-│
-├── backend/
-│   ├── certs/                    SSL certificates
-│   ├── scripts/
-│   │   └── ig_download.py        Instagram download helper
-│   ├── check_paths.cjs           Path validation script
-│   ├── cache/                    Cache directory
-│   ├── data/                     Persistent runtime data
-│   │   ├── media.db              SQLite (WAL mode)
-│   │   ├── download-tasks.json   Task persistence
-│   │   ├── download-counter.json Instagram SHA256 counters
-│   │   └── thumbnails/           Generated thumbnails
-│   ├── metadata_cache/           Metadata cache
-│   ├── package.json
-│
-├── frontend/
-│   ├── src/
-│   │   ├── App.jsx               Central orchestrator (hash routing, ErrorBoundary)
-│   │   ├── main.jsx              React entry (mounts <App/> in <DebugProvider>)
-│   │   ├── index.css             Tailwind imports + global styles
-│   │   ├── components/
-│   │   │   ├── AdbTransfer.jsx
-│   │   │   ├── AddMusicPanel.jsx
-│   │   │   ├── AudioPlayer.jsx.backup2
-│   │   │   ├── CachedVideoPlayer.jsx
-│   │   │   ├── CaptionEditorModal.jsx
-│   │   │   ├── Carousel.jsx
-│   │   │   ├── ConfirmModal.jsx
-│   │   │   ├── CoverArtSearch.jsx
-│   │   │   ├── CropTool.jsx
-│   │   │   ├── DuplicateConfirmModal.jsx
-│   │   │   ├── ErrorBoundary.jsx
-│   │   │   ├── FilterPanel.jsx
-│   │   │   ├── GaugeMeter.jsx
-│   │   │   ├── GroupDivider.jsx
-│   │   │   ├── HeaderComponents.jsx
-│   │   │   ├── ImageViewer.jsx
-│   │   │   ├── LyricsDisplay.jsx
-│   │   │   ├── LyricsEditor.jsx
-│   │   │   ├── LyricsScrollController.js
-│   │   │   ├── MediaControls.jsx
-│   │   │   ├── MediaControls.css
-│   │   │   ├── MediaGrid.jsx
-│   │   │   ├── MediaGrid.css
-│   │   │   ├── MediaLayout.jsx
-│   │   │   ├── MediaModal.jsx
-│   │   │   ├── MetadataEditor.jsx
-│   │   │   ├── MiniPlayer.jsx
-│   │   │   ├── MonitoringView.jsx
-│   │   │   ├── Music.jsx
-│   │   │   ├── NetworkImage.jsx
-│   │   │   ├── PlaylistGrid.jsx
-│   │   │   ├── PlaylistGridCard.jsx
-│   │   │   ├── PlaylistListItemRow.jsx
-│   │   │   ├── PlaylistListRow.jsx
-│   │   │   ├── PlaylistRow.jsx
-│   │   │   ├── PlaylistView.jsx
-│   │   │   ├── PlaylistView.css
-│   │   │   ├── QueueActionBar.jsx
-│   │   │   ├── QueuePanel.jsx
-│   │   │   ├── ScrcpyView.jsx
-│   │   │   ├── SendProgressPills.jsx
-│   │   │   ├── SendQueuePlayer.jsx
-│   │   │   ├── SendQueueView.jsx
-│   │   │   ├── SendQueueView.jsx.orig
-│   │   │   ├── ServiceStoppedBanner.jsx
-│   │   │   ├── SpeakerOutputButton.jsx
-│   │   │   ├── Toast.jsx
-│   │   │   ├── UploadsMonitor.jsx
-│   │   │   ├── VaultActionBar.jsx
-│   │   │   ├── VaultAudioPlayer.jsx
-│   │   │   ├── VaultBottomCluster.jsx
-│   │   │   ├── VideoPlayer.jsx
-│   │   │   ├── VideoPlayer.css
-│   │   │   ├── WhatsAppView.jsx
-│   │   │   └── icons/
-│   │   │       ├── AudioIcon.jsx
-│   │   │       ├── FolderIcon.jsx
-│   │   │       ├── ImageIcon.jsx
-│   │   │       ├── TelegramLogo.jsx
-│   │   │       ├── VideoIcon.jsx
-│   │   │       └── WaLogo.jsx
-│   │   ├── debug/
-│   │   │   ├── DebugBadge.jsx
-│   │   │   ├── DebugOverlay.jsx
-│   │   │   ├── DebugProvider.jsx
-│   │   │   ├── DebugTooltip.jsx
-│   │   │   ├── index.js
-│   │   │   ├── inspectors/
-│   │   │   │   ├── EventInspector.jsx
-│   │   │   │   ├── HierarchyInspector.jsx
-│   │   │   │   ├── LayoutInspector.jsx
-│   │   │   │   ├── MemoryInspector.jsx
-│   │   │   │   ├── PerformanceInspector.jsx
-│   │   │   │   ├── RealtimeInspector.jsx
-│   │   │   │   ├── StateInspector.jsx
-│   │   │   │   ├── WebSocketInspector.jsx
-│   │   │   │   └── ZIndexInspector.jsx
-│   │   │   ├── useDebugStore.js
-│   │   │   ├── useDebugTrack.js
-│   │   │   └── utils/
-│   │   │       ├── css.js
-│   │   │       ├── dom.js
-│   │   │       ├── memory.js
-│   │   │       ├── route.js
-│   │   │       ├── virtualization.js
-│   │   │       └── websocket.js
-│   │   ├── hooks/
-│   │   │   ├── useDocumentHidden.js
-│   │   │   ├── useSendProgress.js
-│   │   │   ├── useServiceControl.js
-│   │   │   ├── useUploadQueueLogic.jsx
-│   │   │   ├── useVaultMediaActions.js
-│   │   │   ├── useWaUnsupported.js
-│   │   │   └── useWebSocket.js
-│   │   ├── monitoring/
-│   │   │   ├── components/
-│   │   │   │   └── Charts/
-│   │   │   │       └── MetricChart.jsx
-│   │   │   │   └── LogTerminal.jsx
-│   │   │   ├── layout/
-│   │   │   │   ├── MonitoringLayout.jsx
-│   │   │   │   ├── Sidebar.jsx
-│   │   │   │   └── TopBar.jsx
-│   │   │   ├── pages/
-│   │   │   │   ├── AlertsPage.jsx
-│   │   │   │   ├── AudioPlayerPage.jsx
-│   │   │   │   ├── ChartsPage.jsx
-│   │   │   │   ├── DockerPage.jsx
-│   │   │   │   ├── DownloaderPage.jsx
-│   │   │   │   ├── JobsPage.jsx
-│   │   │   │   ├── LogsPage.jsx
-│   │   │   │   ├── MediaStatsPage.jsx
-│   │   │   │   ├── MetricsTable.jsx
-│   │   │   │   ├── NetworkPage.jsx
-│   │   │   │   ├── Overview.jsx
-│   │   │   │   ├── ProcessesPage.jsx
-│   │   │   │   ├── QueuePage.jsx
-│   │   │   │   ├── ServiceControlPage.jsx
-│   │   │   │   ├── ServicesPage.jsx
-│   │   │   │   ├── SessionsPage.jsx
-│   │   │   │   ├── SettingsPage.jsx
-│   │   │   │   ├── StatusPage.jsx
-│   │   │   │   ├── StoragePage.jsx
-│   │   │   │   ├── TasksPage.jsx
-│   │   │   │   └── WhatsAppPage.jsx
-│   │   │   ├── shared/
-│   │   │   │   ├── DiskIoGauge.jsx
-│   │   │   │   ├── GlassCard.jsx
-│   │   │   │   ├── GradientBar.jsx
-│   │   │   │   ├── Skeleton.jsx
-│   │   │   │   └── StatusBadge.jsx
-│   │   │   ├── stores/
-│   │   │   │   └── monitoringStore.js
-│   │   │   └── widgets/
-│   │   │       ├── CpuWidget.jsx
-│   │   │       ├── DiskWidget.jsx
-│   │   │       ├── GpuWidget.jsx
-│   │   │       ├── MemoryWidget.jsx
-│   │   │       ├── MiniGauge.jsx
-│   │   │       ├── NetworkWidget.jsx
-│   │       └── SystemWidget.jsx
-│   │   ├── store/
-│   │   │   ├── favoritesStore.js
-│   │   │   ├── folderMetaSortStore.js
-│   │   │   ├── folderSortStore.js
-│   │   │   ├── playbackStore.js
-│   │   │   └── playlistStore.js
-│   │   └── utils/
-│   │       ├── adbApi.js
-│   │       ├── api.js
-│   │       ├── audioOutput.js
-│   │       ├── codec.js
-│   │       ├── filenameSearch.js
-│   │       ├── format.js
-│   │       ├── grouping.js
-│   │       ├── lrcParser.js
-│   │       ├── playlistApi.js
-│   │       ├── playlistWindow.js
-│   │       └── thumbCache.js
-│   └── package.json
-│
-├── whatsapp-bot/
-│   ├── src/
-│   │   ├── connection.js         whatsapp-web.js client
-│   │   ├── db.js                 SQLite state
-│   │   ├── index.js              Entry
-│   │   ├── listener.js           Message handler
-│   │   ├── sender.js             Outbound sender
-│   │   └── utils.js              Logger / helpers
-│   └── package.json
-│
-├── data/                           Persistent runtime data
-│   ├── media.db                  SQLite (WAL mode)
-│   ├── download-tasks.json       Task persistence
-│   ├── download-counter.json     Instagram SHA256 counters
-│   └── thumbnails/               Generated thumbnails
-│
-├── cache/                          Ephemeral cache
-│   ├── downloader/               Workspace
-│   ├── hls/                      HLS segments
-│   ├── playback/
-│   │   ├── lru.json             LRU eviction state
-│   │   ├── remux/               Cached MKV remux
-│   │   └── transcode/           Cached H.264/AAC MP4
-│
-├── logs/                           Rotating logs
-│   ├── api/
-│   ├── downloader/
-│   ├── maintenance/
-│   ├── monitoring/
-│   ├── playback/
-│   ├── stream/
-│   ├── system/
-│   ├── upload/
-│   └── web/
-│
-├── Docker/
-│   ├── docker-compose.yml        WAHA + nginx-nvidia (optional sidecars)
-│   ├── nginx-nvidia/
-│   │   └── nginx.conf            Rate-limited proxy
-│   ├── waha-data/
-│   │   └── webjs/
-│   └── litellm-config.yaml       ORPHANED — not mounted, no litellm service
-│
-├── credentials/                    Sensitive files (gitignored)
-│   ├── .env                      Environment variables (secrets)
-│   ├── .wwebjs_auth/             WhatsApp authentication
-│   ├── cookies.txt               WhatsApp session cookies
-│   ├── docs-debug/               Debug documentation
-│   └── gtw.txt                   WhatsApp chat logs
-│
-├── certs/                          Certificate generation scripts
-│   └── README.md
-│
-├── scripts/
-│   └── README.md
-│
-├── docs/                           Documentation (gitignored)
-│   └── archive/
-│       └── ideas/
-│           └── IDEAS.md
-│
-├── .env.example                    Environment template
-├── package.json                    Root package.json (CommonJS, shared deps)
-└── package-lock.json
-```
+| Directory | Description |
+|-----------|-------------|
+| `backend/src/` | Express server, routes (19 modules), utils (41 files), monitor (17 files), downloader |
+| `frontend/src/` | React 18 SPA with components, hooks, monitoring dashboard, stores |
+| `whatsapp-bot/src/` | WhatsApp bridge (connection, listener, sender, db, utils) |
+| `data/` | Persistent data: `media.db` (SQLite), `thumbnails/`, `download-tasks.json` |
+| `cache/` | Ephemeral: `playback/remux/`, `playback/transcode/`, `hls/`, `downloader/`, `lru.json` |
+| `logs/` | Rotating logs by subsystem |
+| `Docker/` | `docker-compose.yml`, `nginx-nvidia/`, `waha-data/` |
 
-> **Utils note:** `backend/src/utils/` contains **41 files**: 38 `.js` modules + 3 spawned `.py` helpers (`embed_cover.py`, `romaji_convert.py`, `pyjlyric_search.py`). The `.py` files are spawned as child processes, not imported; `registry.js` lives in `backend/src/services/`. The two `*.mjs` files at `backend/src/` root (`fts-rebuild-worker.mjs`, `sensors-worker.mjs`) are forked child workers.
+> **Note:** `backend/src/utils/` contains 41 files: 38 `.js` modules + 3 spawned `.py` helpers (`embed_cover.py`, `romaji_convert.py`, `pyjlyric_search.py`).
 
 ---
 
@@ -578,54 +239,11 @@ Graceful shutdown on `SIGINT`/`SIGTERM`/`SIGQUIT` via `handleShutdown`:
 
 ### 5.4 Startup Lifecycle Diagram
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Application Boot                          │
-└─────────────────────┬───────────────────────────────────────┘
-                       ▼
-┌─────────────────────┴───────────────────────────────────────┐
-│  Phase 1: Validation & Express Setup (t=0ms)               │
-├─────────────────────────────────────────────────────────────┤
-│ validateStartup()                                           │
-│   ├── SQLite connectivity check (critical)                  │
-│   ├── Writable directory check (cacheRoot, logsRoot, ...)   │
-│   └── ffmpeg/ffprobe in PATH check (warning)               │
-└─────────────────────┬───────────────────────────────────────┘
-                       ▼
-┌─────────────────────┴───────────────────────────────────────┐
-│  Phase 2: Listening & Immediate Init (t=0ms)               │
-├─────────────────────────────────────────────────────────────┤
-│ createServer → listen(3001)                                 │
-│ registerAllServices()                                       │
-│ startWebSocketServer(server)  → WS on /ws/monitor          │
-│ startEngine(server)         → monitor engine (3000ms poll) │
-│ startWatcher()              → fs.watch (debounce)          │
-│ startMaintenanceScheduler()  → cleanup intervals            │
-└─────────────────────┬───────────────────────────────────────┘
-                       ▼
-┌─────────────────────┴───────────────────────────────────────┐
-│  Phase 3: Deferred Init (t=0.5s–2s)                        │
-├─────────────────────────────────────────────────────────────┤
-│ initHistoricalTable()      (0.5s)                           │
-│ deferredDbInit()           (1s)  seed 100+ settings, indexes│
-│ startMonitoringCache()     (1.5s) forked sensor reads       │
-│ setupFTS()                 (2s)  FTS5 rebuild worker        │
-└─────────────────────┬───────────────────────────────────────┘
-                       ▼
-┌─────────────────────┴───────────────────────────────────────┐
-│  Phase 4: Long-Running Tasks (t=5s, 10s, 20s)             │
-├─────────────────────────────────────────────────────────────┤
-│ scanPlaylists()      → discover .xspf files   (5s)          │
-│ initWhatsApp()       → WhatsApp bridge        (10s, retries)│
-│ runIncrementalScan() → walk MEDIA_ROOT if stale (20s)       │
-└──────────────────────────────────────────────────────────────┘
-```
-
 ---
 
-### 5.5 Startup & Lifecycle Code (summary)
+### 5.5 Startup & Lifecycle Summary
 
-> The full verbatim source was removed for readability. Key startup/lifecycle behavior (see `backend/src/server.js`):
+> Key startup/lifecycle behavior (see `backend/src/server.js`):
 
 - **Prerequisite validation** — checks SQLite connectivity, writable `cache/`/`logs/`/`thumbnails` dirs (critical → `exit(1)`), and `ffmpeg`/`ffprobe` on PATH (warning only).
 - **Middleware + routes** — mounts `cors`, `compression`, `express.json`, session tracking, and all `/api/*` routes behind per-service `requireService` guards (`mediaVault`, `downloader`, `adbTransfer`, `playlists`), then the static frontend and WhatsApp routes.
@@ -649,67 +267,13 @@ Graceful shutdown on `SIGINT`/`SIGTERM`/`SIGQUIT` via `handleShutdown`:
 
 ### 6.2 Core Tables
 
-`db.js:14-20`. The tuning is applied once, synchronously, at module load.
+SQLite database schema is defined in `backend/src/db.js`:
 
-> **What it does:** Applies the SQLite PRAGMA tuning once at module load: WAL (write-ahead log), `synchronous=NORMAL`, `temp_store=MEMORY`, `cache_size=-80000` (~80MB), `mmap_size=4GB`, `page_size=32768`.
+**`folders` table**: Hierarchical folder structure with `id`, `path`, `parent_id`, `depth`, `file_count`, `total_size`, `last_scanned`, `last_updated`.
 
-`db.js:23-55`. Folders are created first (parent/child via `parent_id`); files reference `dir_id` and carry the codec/stream-compatibility columns.
+**`files` table**: Media file metadata with `id` (MD5 hash), `dir_id`, `name`, `type`, `ext`, `size`, `mtime`, `duration`, `has_thumb`, `thumb_cache_path`, `access_count`, `codec_info`, `is_stream_compatible`, `youtube_id`, `video_offset`, and metadata fields (title, artist, album, genre, lyrics, etc.).
 
-> **What it does:** Creates the `folders` table (parent/child via `parent_id`, depth, counters) and the `files` table (media metadata + the `codec_info`, `is_stream_compatible`, `youtube_id`, `video_offset` columns) if they do not exist.
-
-#### `files` Table
-
-|  Column                       |  Type              |  Purpose                                            |
-|-----------------------------|------------------|---------------------------------------------------|
-|  id                           |  TEXT PRIMARY KEY  |  MD5 hash of file path                              |
-|  dir_id                       |  INTEGER           |  Foreign key to folders                             |
-|  name                         |  TEXT              |  Filename                                           |
-|  type                         |  TEXT              |  'video', 'audio', 'image'                          |
-|  ext                          |  TEXT              |  File extension                                     |
-|  size                         |  INTEGER           |  File size in bytes                                 |
-|  mtime                        |  INTEGER           |  Last modified timestamp                            |
-|  duration                     |  REAL              |  Media duration in seconds                          |
-|  has_thumb                    |  INTEGER           |  0/1/2 (no/yes/generating)                          |
-|  thumb_cache_path             |  TEXT              |  Path to thumbnail file                             |
-|  last_accessed                |  INTEGER           |  Last playback access                               |
-|  access_count                 |  INTEGER           |  Playback count                                     |
-|  last_verified                |  INTEGER           |  Last integrity check                               |
-|  created_at                   |  INTEGER           |  Entry creation timestamp                           |
-|  created_at_embedded          |  INTEGER           |  Embedded metadata timestamp                        |
-|  modified_at_fs               |  INTEGER           |  Filesystem mtime                                   |
-|  uploaded_at                  |  INTEGER           |  Upload timestamp                                   |
-|  metadata_source              |  TEXT              |  'embedded', 'scan', 'upload'                       |
-|  checksum                     |  TEXT              |  SHA256 hash for dedup                              |
-|  codec_info                   |  TEXT              |  JSON ffprobe output                                |
-|  is_stream_compatible         |  INTEGER           |  0/1 for playback decision                          |
-|  title, artist, album, genre  |  TEXT              |  Media metadata                                     |
-|  lyrics, lyrics_synced        |  TEXT              |  Lyrics content                                     |
-|  cover_source                 |  TEXT              |  Cover art source                                   |
-|  is_favorite                  |  INTEGER           |  0/1 favorite flag                                  |
-|  youtube_id                   |  TEXT              |  Associated YouTube ID (for YouTube-sourced media)  |
-|  video_offset                 |  REAL DEFAULT 0    |  Start offset (seconds) into source video           |
-
-#### `folders` Table
-
-|  Column                |  Type                 |  Purpose                  |
-|----------------------|---------------------|-------------------------|
-|  id                    |  INTEGER PRIMARY KEY  |  Auto-increment           |
-|  path                  |  TEXT UNIQUE          |  Full folder path         |
-|  parent_id             |  INTEGER              |  Parent folder reference  |
-|  depth                 |  INTEGER              |  Nesting level            |
-|  file_count            |  INTEGER              |  Direct file count        |
-|  total_size            |  INTEGER              |  Direct file size         |
-|  recursive_file_count  |  INTEGER              |  All descendant files     |
-|  recursive_total_size  |  INTEGER              |  All descendant size      |
-|  last_scanned          |  INTEGER              |  Last scan timestamp      |
-|  last_updated          |  INTEGER              |  Last modification        |
-
-#### `files_fts` Table
-
-Virtual FTS5 table for full-text search on file names:
-`files_fts USING fts5(name, content='files', tokenize='unicode61 remove_diacritics 1')` with triggers. Rebuilt via the forked `src/fts-rebuild-worker.mjs`.
-
-`db.js:60-146`. `setupFTS()` forks `fts-rebuild-worker.mjs` (120s timeout); on failure it falls back to `deltaSyncFTS()`, which recreates the virtual table + the three `AFTER INSERT/DELETE/UPDATE` triggers and reconciles missing/orphan rowids without wiping the index.
+**`files_fts` table**: Virtual FTS5 table for full-text search on file names with `unicode61 remove_diacritics` tokenizer. Rebuilt via the forked `src/fts-rebuild-worker.mjs`.
 
 ## 7. Backend — API Endpoints
 
@@ -1006,37 +570,23 @@ Reconstructed from the route handlers in `backend/src/routes/`. Every router is 
 
 `getPlaybackDecision()` probes the file (cached codec_info or live ffprobe), then walks a small decision tree: browser container + H.264/HEVC + no Opus -> `direct`; browser container + Opus -> `remux` (copy to MKV); otherwise -> `transcode` to H.264/AAC.
 
-> **What it does:** Picks the playback method (direct/remux/transcode) from the codec probe result, then computes the MD5 cache key `filePath:size:mtime`.
-> **Impact:** Browser-compatible files play directly with no processing; Opus-in-MP4 is remuxed quickly; everything else is transcoded — so startup is faster and CPU is saved.
-
 #### 8.1.2 HLS
 
 `spawnFfmpeg()` wraps `ffmpeg` in a promise; HLS generation uses `-f hls -hls_time 3` with segment filenames, and falls back to a `+faststart` remux when the moov atom is missing.
-
-> **What it does:** `spawnFfmpeg` wraps the ffmpeg call in a promise; the HLS args slice the video into 3-second `.ts` segments via `-f hls -hls_time 3`.
-> **Impact:** Enables segment-based adaptive streaming without transcoding (copy), keeping latency low.
 
 ### 8.2 File Scanner & Thumbnails
 
 #### 8.2.1 Scanner
 
-`computeContentHash()` samples the first and last 64 KB plus the file size to build a fast content fingerprint without reading the whole file.
-
-> **What it does:** Builds an MD5 hash from the size + first 64 KB + last 64 KB of the file as a fast content fingerprint.
-
-> **What it does:** Skips files whose size and mtime match the DB; only when `compareByHash` is enabled is the content hash checked.
+`computeContentHash()` samples the first and last 64 KB plus the file size to build a fast content fingerprint without reading the whole file. Skips files whose size and mtime match the DB; only when `compareByHash` is enabled is the content hash checked.
 
 #### 8.2.2 Watcher
 
 `startWatcher()` uses `fs.watch` (recursive) per media root and routes changes through `debouncedRescan()`, which waits 2 s after the last event (and skips a 30 s startup grace) before running `incrementalSync()` and broadcasting an SSE `folder_updated` event.
 
-> **What it does:** Watches directory changes via `fs.watch`, then waits 2 seconds before an incremental scan + SSE event broadcast to clients.
-
 #### 8.2.3 Thumbnails
 
 `extractFrameThumbnail()` seeks to 1 s and pulls one frame, scaled to width 200 via `scale=200:-1` using ffmpeg (no `sharp` dependency). `hasEmbeddedCover()`/`extractEmbeddedThumbnail()` detect and copy an embedded picture stream (`attached_pic`/mjpeg/png) instead of sampling a random frame.
-
-> **What it does:** Copies a single video frame that is an embedded cover art (`attached_pic`/mjpeg/png) out to an image file via `-c copy -frames:v 1`.
 
 ### 8.3 Downloader (`downloader/manager.js`)
 
@@ -1054,16 +604,9 @@ Instagram pipeline: 1 concurrent + 12s delay, SHA256 dedup, VP9/AV1 → H.264/AA
 
 **`SOURCE_ROUTES` + `QUALITY_MAP`**: Maps each source to its output directories and allowed quality list; output dirs are created at module load via `mkdirSync`.
 
-> **What it does:** Defines the mapping of each source (youtube, tiktok, twitter, instagram, torrent) to its video/audio/image output directories, plus the allowed quality list per source.
-> **Impact:** Guarantees downloads land in consistent, per-platform locations; the category/quality validation in `createTask` relies entirely on this map.
-
 **`spawnYtdlp`**: Builds the yt-dlp argument vector — `--concurrent-fragments 4`, format selectors per category (Instagram forces an H.264/AVC MP4 merge), audio extraction, and the output template.
 
-> **What it does:** Builds the `yt-dlp` argument vector based on task category — concurrent fragment count, format selection (Instagram forces an MP4 H.264/AVC merge), audio extraction, output template, and Twitter cookies.
-
 **Instagram VP9/AV1 → H.264/AAC transcode**: Re-encodes non-browser-compatible Instagram video at `crf 18` / `preset medium` so it plays directly in the browser.
-
-> **What it does:** Re-encodes incompatible Instagram videos (VP9/AV1) to H.264/AAC MP4 via `ffmpeg` with `crf 18`/`preset medium`.
 
 **Instagram 1-concurrent + 12 s rate limit**: The queue scheduler serializes Instagram tasks and inserts a 12 s gap between them to stay under Instagram's rate limits.
 
@@ -1075,184 +618,42 @@ ADB database tables (`adb_jobs`, `adb_transactions`). Transaction states: PENDIN
 
 **Transaction state machine**: Explicit `TX_STATUS` enum + a `VALID_TRANSITIONS` map enforce legal progress (`pending → checking → transferring → verifying → metadata → committed`). Illegal transitions are rejected by `updateStatus`.
 
-> **What it does:** Defines the ADB transaction status enum (PENDING, CONFLICT_CHECK, TRANSFERRING, VERIFYING, METADATA, COMMITTED, etc.) along with `VALID_TRANSITIONS`, which only permits legal transitions between statuses.
-> **Impact:** Prevents transaction-state corruption; `updateStatus` rejects illegal transitions so the transfer lifecycle stays consistent and recoverable after a crash.
-> **Similar alternatives:** A state-machine library (e.g. `xstate`) could be used; trade-off: an explicit map is lighter and easier to audit.
-> **If this were omitted:** Transactions could jump to invalid statuses (e.g. committed→transferring), making verification and recovery unreliable.
-
 **Concurrency-limited worker pool**: `AdbWorkerPool.processJob` spins up `min(maxWorkers, pending.length)` workers and a `_prepAhead` look-ahead that pre-stats remote dirs and resolves conflicts before transfer begins.
 
-> **What it does:** Runs transfers with a worker pool sized `min(maxWorkers, pending count)`; each worker processes one transaction while `_prepAhead` does remote stat and conflict resolution up front.
-
 **Checksum / size verification after push**: Each file is re-stated on-device and compared to the expected size (and, post-metadata, mtime). A size mismatch throws and the transaction is retried (up to `max_attempts`).
-
-> **What it does:** After a push, calls `verifyFile` on the device to compare the destination file's size (and mtime after metadata) with the expected size; on failure it throws a `SIZE_MISMATCH`/`FILE_MISSING` error.
-
-**`push()` job creation**: Builds the job record carrying `maxWorkers` and `conflictStrategy` (`skip` | `overwrite` | `ask`), persists it, and enqueues on the per-device queue.
-      eta: null,
-      error: null,
-      createdAt: Date.now(),
-      startedAt: null,
-      completedAt: null,
-      process: null,
-      sseClients: new Set(),
-      engine: 'transactional',
-      txOptions: options.txOptions || {},
-      maxWorkers: options.maxWorkers || 3,
-      conflictStrategy: options.conflictStrategy || 'ask', // 'skip' | 'overwrite' | 'ask'
-      conflict: null,
-      conflictLock: false,
-      currentFile: null,
-      activePushProcess: null,
-      jobState: {
-        applyAll: false,
-        decision: null,   // 'skip' | 'overwrite' | 'rename'
-        scope: 'none',    // 'none' | 'queue'
-      },
-    };
-
-    this.jobs.set(jobId, job);
-    transactionEngine.saveJob(job);
-    this._enqueue(deviceId, jobId);
-    return jobId;
-  }
-```
-
-> **What it does:** Creates a push job record holding device, sources, dest, `maxWorkers`, and `conflictStrategy` (`skip`|`overwrite`|`ask`), persists it to the DB via `transactionEngine`, then enqueues it per device.
-> **Impact:** Serves as the transfer entry point; the job is stored so it can be recovered after restart and runs sequentially per device.
-> **Similar alternatives:** Could spawn directly without job persistence; trade-off: a job + DB enables resume, pause, and SSE progress.
-> **If this were omitted:** There would be no job tracking, hence no progress, pause, or recovery after a crash.
 
 ### 8.5 Upload (`utils/uploadManager.js`, `routes/upload.js`)
 
 Busboy multipart upload. State: `MEDIA_ROOTS`, `activeUploads` Map, `uploadIdCounter`, `UPLOAD_TEMP`. Runtime settings: `upload.maxSizeGB` (100), `upload.concurrent` (4), `upload.duplicateStrategy` (rename), `upload.autoScan` (true), `upload.verifyIntegrity` (true), `upload.autoThumbnail` (true). `sanitizeFilename()` removes `..`, `/`, `\`, `\0`, max 255 chars.
-
-### 8.6 MPD / Strawberry (`routes/mpd.js`)
-
-Controls Strawberry MPD player via `mpd2` on `localhost:6600`. Player, playlist, and queue endpoints. Loop-mode mapping: `one` = repeat 1 + single 1; `all` = repeat 1 + single 0; `off` = repeat 0 + single 0.
-
-#### 8.6.1 MPD code (verbatim)
-
-Excerpts from `backend/src/routes/mpd.js`.
-
-**`mpdSend`**: lazy-connecting wrapper around `mpd2`'s `sendCommand`. The connection is cached and reset on `close`.
-
-> **What it does:** Sends an MPD command to the already-connected client via `getClient()` then `c.sendCommand(cmd)`.
-
-**Loop-mode mapping**: The one/all/off UI maps to MPD's `repeat` + `single` flags.
-
-> **What it does:** Maps the UI loop mode one/all/off to the MPD `repeat` and `single` flags (one = repeat 1 + single 1, all = repeat 1 + single 0, off = both 0).
 
 ### 8.7 Monitoring (`monitor/*`)
 
 Engine poll interval is **3000ms**; WebSocket broadcast throttle **3000ms**; historical snapshot every **30s**.
 
 **`collectAll()` poll loop**: All six collectors run concurrently with a 3 s per-collector `Promise.race` timeout; results are broadcast (throttled) and snapshotted every 30 s.
-  }
-}
-```
 
-> **What it does:** Runs all six collectors (cpu, ram, gpu, disk, network, system) sequentially with a 3-second per-collector timeout via `Promise.race`, then broadcasts stats (3s throttle) and stores a snapshot every 30s.
-> **Impact:** The dashboard gets fresh metrics every 3000ms poll without a slow collector blocking the loop (the `collecting` guard prevents overlap).
-> **Similar alternatives:** `Promise.all` without a timeout could be used, but the timeout protects against a hung collector.
-> **If this were omitted:** A stuck collector could halt metric updates across the whole system.
-<!-- annot:engine_collectall -->
-**Forked sensor reads — `monitoringCache.js` + `sensors-worker.mjs`** (`monitoringCache.js:69-77`, `165-184`). Hardware sensor reads (`/sys/class/hwmon`) are pushed into a **detached child process** so a kernel D-state hang on `hwmon` never blocks the main HTTP event loop. The parent reads the child's result JSON after a 1.5 s settle.
+**Forked sensor reads** — Hardware sensor reads (`/sys/class/hwmon`) are pushed into a **detached child process** (`sensors-worker.mjs`) so a kernel D-state hang never blocks the main HTTP event loop. The parent reads the child's result JSON after a 1.5 s settle.
 
+**GPU collector** uses `nvidia-smi` with `MONITOR_DISABLE_GPU` env var short-circuit for hosts without a GPU.
 
+**Disk collector** uses `statvfs` + `smartctl` with caching (SMART: 60s TTL, partition list: 30s).
 
+**Alerts** use `checkAlerts()` with 60s dedupe to prevent spamming.
 
-> **What it does:** Forks a separate Node process (`sensors-worker.mjs`) that reads sysfs hwmon, then after 1.5s reads its JSON result from a cache file; the child is `unref()`-ed so it does not hold the process alive.
-> **Impact:** Sensor reads that can hang in D-state (uninterruptible sleep) no longer block the main HTTP event loop, so the server stays responsive when hardware misbehaves.
-> **Similar alternatives:** Could read `/sys/class/hwmon` directly on the main thread (cheaper), but that risks a hang on flaky sensors — a separate process is a deliberate robustness/overkill trade-off.
-> **If this were omitted:** A sysfs D-state hang could freeze the entire media server so it cannot respond to requests.
-<!-- annot:cache_refreshsensors -->
-
-> **What it does:** Reads all `hwmon` entries from sysfs, converts raw values to °C (divide by 1000), grabs `high`/`crit`, then writes the result to `/tmp/homelab_sensors.json`.
-> **Impact:** Provides sensor data gathered outside the main process so the parent can read it safely.
-> **Similar alternatives:** Could return it via IPC, but writing a cache file is simpler and decoupled from the event loop.
-> **If this were omitted:** Sensor reading would have to happen on the main process, which is vulnerable to D-state hangs.
-<!-- annot:sensors_worker -->
-The background refresh loops (`monitoringCache.js:165-184`) re-run each reader on its own timer (sensors 30 s, cpu freq / fan / battery / media 15 s, uptime 10 s).
-
-**GPU collector — `nvidia-smi` + `MONITOR_DISABLE_GPU` short-circuit** (`gpu.js:149-153`, `72-95`).
-
-
-> **What it does:** `collect()` immediately returns `null` if `MONITOR_DISABLE_GPU` is set, otherwise calls `refreshGpu()` and returns `cachedGpu`.
-> **Impact:** Allows disabling the GPU collector without changing the engine — useful when no NVIDIA GPU is present.
-> **Similar alternatives:** The collector could be filtered in `engine.js`, but the env guard here is more localized.
-> **If this were omitted:** The engine would keep calling `nvidia-smi`, which would fail continuously on a host without a GPU.
-<!-- annot:gpu_collect -->
-
-> **What it does:** Runs `nvidia-smi --query-gpu=...` then parses its CSV into a metrics object (utilization, VRAM, temperature, clock, power, driver).
-> **Impact:** The GPU dashboard is populated from `nvidia-smi` output with a 5-second timeout; on failure it returns null and uses the cache.
-> **Similar alternatives:** NVML sysfs could be read directly, but the `nvidia-smi` CLI is sufficient and portable.
-> **If this were omitted:** No NVIDIA GPU metrics would be shown in monitoring.
-<!-- annot:gpu_refreshnvidia -->
-**Disk collector — `statvfs` + `smartctl` with cache** (`disk.js:49-102`, `132-159`).
-
-
-> **What it does:** Runs `smartctl -H` and `smartctl -A` in parallel per physical disk (`Promise.allSettled`), determines PASSED/FAILED status and temperature, then stores it in `smartCache` (60s TTL).
-> **Impact:** SMART disk health is available to the disk widget without calling `smartctl` on every poll.
-> **Similar alternatives:** `libatasmart`/direct ioctl could be used, but the `smartctl` CLI is already present and easy to time out.
-> **If this were omitted:** The disk widget would not show SMART status/temperature and per-poll updates would be slow.
-<!-- annot:disk_refreshsmart -->
-
-> **What it does:** Reads `/proc/mounts`, filters to fstype ext4/btrfs/xfs/zfs or the `/` mount, then uses `statfsSync` to compute total/used/free and the usage percentage.
-> **Impact:** Provides the partition list with disk usage shown on the dashboard.
-> **Similar alternatives:** The `df` CLI could be used, but synchronous `statfsSync` is simpler and avoids spawning.
-> **If this were omitted:** No filesystem usage data would be shown in disk monitoring.
-<!-- annot:disk_getfilesystems -->
-> SMART results are cached 60 s (`SMART_CACHE_TTL = 60_000`); partition list 30 s. `getDiskstats()` (from `/proc/diskstats`) computes per-device read/write byte deltas between polls for the I/O widget.
-
-**Alerts — `checkAlerts()` thresholds + 60 s dedupe** (`alerts.js:59-129`). CPU/RAM/disk/temp/gpuTemp each emit `warning`/`critical` events; identical type+severity is suppressed for 60 s.
-
-
-> **What it does:** Compares cpu/ram/disk/temperature/gpuTemp metrics against warning/critical thresholds, then filters duplicates by type+severity within the last 60 seconds.
-> **Impact:** Prevents the same alert from spamming; history is stored (max 200) and disk writes are debounced by 5 seconds.
-> **Similar alternatives:** An external alerting library could be used, but manual dedupe is sufficient and dependency-free.
-> **If this were omitted:** The same alert could flood every poll (3 seconds), overwhelming the log/history.
-<!-- annot:alerts_checkalerts -->
+See `monitor/engine.js` and individual collectors for implementation details.
 ### 8.8 WhatsApp / Send (`routes/whatsapp.js`, `routes/send.js`, `whatsapp-bot/`)
 
 WhatsApp bridge is loaded by `server.js` via `initWhatsApp()` (10s after listen, up to 5 retries backoff). `routes/whatsapp.js` imports from `../../../whatsapp-bot/src/` and exposes `/api/whatsapp/*` plus SSE `/api/whatsapp/logs/stream`. Telegram send (`routes/send.js`) is optional — active only if `TELEGRAM_BOT_TOKEN` is set.
 
-#### 8.8.1 WhatsApp / Send code (verbatim)
+#### 8.8.1 WhatsApp / Send code
 
 **`setupWhatsAppRoutes(app)`** (`routes/whatsapp.js:34`). The backend route module imports directly from `../../../whatsapp-bot/src/` and mounts the `/api/whatsapp/*` REST + SSE endpoints onto the Express `app`.
 
-
-> **What it does:** Registers the REST+SSE endpoints `/api/whatsapp/*` on the Express `app`, importing directly from `../../../whatsapp-bot/src/` and merging the connection status with the Telegram/WhatsApp counters.
-> **Impact:** The backend can control and monitor the WhatsApp bridge from a single route without a separate process.
-> **Similar alternatives:** The whatsapp-bot could run as a standalone service, but direct import unifies its lifecycle with the server.
-> **If this were omitted:** The WhatsApp endpoints would not be mounted, so the bridge feature could not be reached via the API.
-<!-- annot:wa_setuproutes -->
 **Telegram guard — `TELEGRAM_BOT_TOKEN`** (`utils/telegramBot.js:11-16`). The bot is only constructed when the token env var is set; otherwise `getBot()` returns `null` and every send throws `"TELEGRAM_BOT_TOKEN not configured"`.
-
-
-> **What it does:** Initializes `TelegramBotApi` only when `TELEGRAM_BOT_TOKEN` is present; otherwise `getBot()` returns `null` and every send throws a configuration error.
-> **Impact:** The Telegram feature auto-disables when the token is unset, without breaking server startup.
-> **Similar alternatives:** The token could be read from a file/secret manager, but an env var is standard.
-> **If this were omitted:** The server would crash when trying to send Telegram messages without a token.
-<!-- annot:tg_getbot -->
-`routes/send.js` exposes `/api/send/telegram` and `/api/send/all`; the `/telegram/status` endpoint reports `configured: !!process.env.TELEGRAM_BOT_TOKEN`, so the UI can hide the action when unconfigured.
 
 **WhatsApp connection** (`whatsapp-bot/src/connection.js:42-60`). Uses `whatsapp-web.js` (LocalAuth + headless puppeteer), registers the `qr`/`ready`/`disconnected`/`auth_failure`/`message` handlers, and auto-reconnects with exponential backoff capped at 5 min.
 
-
-> **What it does:** Initializes the `whatsapp-web.js` client with `LocalAuth` + headless puppeteer, then registers the `qr`/`ready`/`disconnected`/`auth_failure`/etc. handlers and auto-reconnect.
-> **Impact:** A persistent WhatsApp connection with a saved session and a QR for pairing; on disconnect it auto-reconnects.
-> **Similar alternatives:** Baileys could be used, but the repo already uses whatsapp-web.js.
-> **If this were omitted:** There would be no WhatsApp connection/QR, so the bridge would not function.
-<!-- annot:wa_connection -->
 **Keyword / hashtag trigger** (`whatsapp-bot/src/listener.js:123-131`). The listener fires only when a video is quoted (or sent) together with a configured keyword (e.g. `save`) or hashtag (e.g. `#upload`).
-
-
-> **What it does:** Checks whether a message contains a keyword or hashtag trigger, and only fires when a video is quoted/sent together with that trigger.
-> **Impact:** Filters messages so only specific media + commands are processed (e.g. save a video), preventing arbitrary actions.
-> **Similar alternatives:** A global regex command could be used, but per-message keyword/hashtag checks are more targeted.
-> **If this were omitted:** All video messages would be processed without filtering, triggering unwanted uploads.
-<!-- annot:wa_listener -->
 ### 8.9 Video Cache (`routes/videoCache.js`)
 
 Mounted at `/api/video-cache`. Provides video cache bookkeeping (the `videoCache.js` util tracks cached video segments/derivatives). Consult the live endpoints for the exact surface.
@@ -1261,30 +662,11 @@ Mounted at `/api/video-cache`. Provides video cache bookkeeping (the `videoCache
 
 ### 8.10 Metadata (`utils/metadataWriter.js`, `musicbrainz.js`, `lrclib.js`)
 
-**Cover-art embedding** (`metadataWriter.js:74-111`). Per-format `ffmpeg`/`python3` command strings. FLAC uses the spawned `embed_cover.py`; MP3/OGG/Opus/M4A/WebM use `ffmpeg` with appropriate disposition/container flags, writing to a `.tmp` then atomic-rename.
+**Cover-art embedding** — Per-format `ffmpeg`/`python3` command strings. FLAC uses spawned `embed_cover.py`; MP3/OGG/Opus/M4A/WebM use `ffmpeg` with appropriate disposition/container flags, writing to a `.tmp` then atomic-rename.
 
+**MusicBrainz / Cover Art Archive** — `getCoverArt` hits the Cover Art Archive for a release MBID; `searchCoverArt` tries a recording search first, then falls back to artist+album, then artist-only.
 
-> **What it does:** Writes the image buffer to a temp file then embeds the cover via `embed_cover.py` (FLAC) or `ffmpeg` per-format (mp3/ogg/opus/m4a/webm) into a `.tmp` file, then atomic-rename.
-> **Impact:** Cover art is stored inside the audio/video file without corrupting the original (atomic rename), supporting many formats.
-> **Similar alternatives:** `music-metadata` could be used to write tags, but ffmpeg/python handle image covers across formats.
-> **If this were omitted:** Cover changes would not be saved to the file, so cover metadata would be lost on re-read.
-<!-- annot:meta_embedcover -->
-**MusicBrainz / Cover Art Archive** (`musicbrainz.js:43-56`, `72-93`). `getCoverArt` hits the Cover Art Archive for a release MBID; `searchCoverArt` tries a recording search first, then falls back to artist+album, then artist-only.
-
-
-> **What it does:** Builds the Cover Art Archive URL from the release MBID then fetches the front image via `mbFetch`.
-> **Impact:** Provides an official MusicBrainz cover art source for metadata search.
-> **Similar alternatives:** Other cover providers (e.g. iTunes) could be used, but CAA is tied to an already-verified MBID.
-> **If this were omitted:** Cover art search would have no official source based on the MusicBrainz MBID.
-<!-- annot:mb_getcoverart -->
-**LRCLIB lyrics** (`lrclib.js:22-44`). `getLyrics` does an exact track/artist/duration lookup (5 s `AbortController` timeout); `searchLyricsByMetadata` falls back to a free-text search.
-
-
-> **What it does:** Builds an LRCLIB query from track/artist/album/duration then fetches plain and synced lyrics via `lrclibFetch`.
-> **Impact:** Retrieves lyrics (plain/synced) to display in the audio player.
-> **Similar alternatives:** Genius/NetEase could be used, but LRCLIB focuses on free, structured LRC.
-> **If this were omitted:** The lyrics feature would not be populated from the LRCLIB source.
-<!-- annot:lrclib_getlyrics -->
+**LRCLIB lyrics** — `getLyrics` does an exact track/artist/duration lookup (5 s `AbortController` timeout); `searchLyricsByMetadata` falls back to a free-text search.
 ---
 
 ## 9. Frontend Architecture
@@ -1340,7 +722,6 @@ The frontend is a React 18 SPA built with Vite 5, Tailwind 3.4, Zustand 5.0, hls
 - HLS adaptive video via hls.js; virtualized media grid via react-window.
 - Android scrcpy mirror + ADB transfer UIs.
 - Full monitoring dashboard (CPU/GPU/RAM/disk/network/system gauges + charts via recharts, processes, services, docker, sessions, jobs, queues, alerts, logs terminal).
-- Built-in debug/inspection toolkit (`src/debug/`).
 
 ### 9.6 Vite Dev Proxy
 
@@ -1356,166 +737,7 @@ The frontend is a React 18 SPA built with Vite 5, Tailwind 3.4, Zustand 5.0, hls
 - **Playback** — HTML5 video with range/HLS (`hls.js`) and HTML5 audio with waveform + synced LRC lyrics.
 - **Dev proxy** — `vite.config.js` proxies `/api`, `/stream`, `/file`, `/thumbnails`, `/ws` to `https://127.0.0.1:3001`.
 
-## 10. Flow Diagrams
-
-### 10.1 Request Flow
-
-```
-HTTP Request
-     ↓
-Express Router (server.js)
-     ↓
-Route Handler (routes/*.js)
-     ↓
-Utility Module (utils/*.js)
-     ↓
-Database (db.js → better-sqlite3)
-     ↓
-Filesystem Cache (cache/, data/)
-     ↓
-Response → Client
-```
-
-### 10.2 File Scan Flow
-
-```
-fs.watch event OR manual trigger
-     ↓
-incrementalSync() - fileScanner.js
-     ↓
-stat() → compare mtime vs DB
-     ↓
-NEW/CHANGED: upsert into files + folders
-     ↓
-Queue thumbnail generation
-     ↓
-SSE broadcast: scan_progress
-```
-
-### 10.3 Playback Flow
-
-```
-User clicks video file
-     ↓
-stream.js GET /stream/video/:id
-     ↓
-getPlaybackDecision() - playbackEngine.js
-     ↓
-ffprobe → codec_info (cached in DB)
-     ↓
-Decision Tree:
-     ├── H.264/AVC + MP4/MOV/M4V → direct HTTP range
-     ├── H.264/HEVC + Opus audio → remux to MKV
-     └── Incompatible → transcode to H.264/AAC
-     ↓
-Cache check → generate if missing → serve
-```
-
-### 10.4 Download Flow
-
-```
-POST /api/download/start {url, category}
-     ↓
-createTask() - downloader/manager.js
-     ↓
-Category route lookup → /home/CATIAA/Videos/YouTube (video)
-     ↓
-yt-dlp / gallery-dl / aria2c spawn → download
-     ↓
-Post-process:
-     ├── Audio → /home/CATIAA/Music/YouTube
-     ├── Image → /home/CATIAA/Pictures/TikTok
-     └── Video → /home/CATIAA/Videos/YouTube
-     ↓
-SHA256 dedup check against download-counter.json
-     ↓
-Codec check → transcode if needed
-     ↓
-Atomic move to final directory
-```
-
-### 10.5 Monitoring Flow
-
-```
-startEngine() → setInterval(collectAll, 3000)   // pollIntervalMs = 3000
-     ↓
-collectAll() → CPU, Memory, GPU, Disk, Network, System collectors
-     ↓
-Aggregate into stats object
-     ↓
-Broadcast via WebSocket (throttled 3000ms, BROADCAST_THROTTLE_MS)
-     ↓
-recordSnapshot() every 30s (HISTORY_INTERVAL) → historical_metrics table
-     ↓
-checkAlerts() on every tick
-```
-
-### 10.6 Monitoring Subsystem Call Graph
-
-```
-monitor/engine.js
-├── monitor/collectors/cpu.js      → /proc/stat, /sys/devices/system/cpu/*
-├── monitor/collectors/memory.js   → /proc/meminfo
-├── monitor/collectors/gpu.js      → nvidia-smi (cached 3s)
-├── monitor/collectors/disk.js     → statvfs, smartctl (cached 60s SMART)
-├── monitor/collectors/network.js  → /sys/class/net/*, /proc/net/fib_trie
-├── monitor/collectors/system.js   → /proc/uptime, uname
-├── monitor/websocket.js           → broadcast()
-├── monitor/historical.js          → recordSnapshot() every 30s
-├── monitor/alerts.js              → checkAlerts()
-├── monitor/webStats.js            → HTTP/web stats
-└── monitor/monitoringCache.js     → forked child (src/sensors-worker.mjs)
-```
-
-### 10.7 Playback Subsystem Call Graph
-
-```
-routes/stream.js
-├── utils/playbackEngine.js
-│   ├── probeVideoFile()           → ffprobe
-│   ├── remuxToMkv()              → ffmpeg -c copy -f matroska
-│   ├── transcodeToH264Mp4()      → ffmpeg libx264/aac
-│   ├── getPlaybackDecision()       → codec decision tree
-│   └── cleanupCache()              → LRU eviction
-├── utils/hlsGenerator.js
-│   ├── spawnFfmpeg()              → ffmpeg -f hls
-│   └── remuxFaststart()           → moov atom fix
-└── utils/fileResolver.js          → path resolution
-```
-
-### 10.8 Scan Subsystem Call Graph
-
-```
-utils/watcher.js
-├── utils/fileScanner.js
-│   ├── incrementalSync()          → main scan loop
-│   ├── getFileId()                → MD5 hash
-│   ├── computeContentHash()       → partial file hash
-│   ├── getDuration()              → ffprobe
-│   ├── probeVideoMetadata()       → ffprobe format info
-│   └── updateCodecInfo()          → DB codec_info
-├── utils/thumbnailQueue.js
-│   ├── addFile()                  → queue thumbnail
-│   └── drainQueue()               → process with concurrency
-└── db.js (stmts)
-    ├── upsertFile/upsertFolder    → DB write
-    └── syncFTSIndex()             → FTS maintenance (fork worker)
-```
-
-### 10.9 Download Subsystem Call Graph
-
-```
-routes/downloader.js
-└── downloader/manager.js
-    ├── createTask()               → task creation
-    ├── processTask()              → yt-dlp/gallery-dl/aria2c spawn
-    ├── postProcessFile()          → move/embed
-    └── SOURCE_ROUTES map          → YouTube/TikTok/Instagram/Twitter/Torrent paths
-```
-
----
-
-## 11. Configuration & Paths
+## 10. Configuration & Paths
 
 **File:** `backend/src/config/paths.js`
 
@@ -1550,7 +772,7 @@ routes/downloader.js
 
 ---
 
-## 12. Environment Variables
+## 11. Environment Variables
 
 |  Variable                    |  Default                     |  Used By                                                 |  Notes                                            |
 |----------------------------|----------------------------|--------------------------------------------------------|-------------------------------------------------|
@@ -1568,7 +790,7 @@ routes/downloader.js
 
 ---
 
-## 13. Background Jobs / Scheduler
+## 12. Background Jobs / Scheduler
 
 |  Job                  |  Interval                |  Function                             |
 |---------------------|------------------------|-------------------------------------|
@@ -1582,7 +804,7 @@ routes/downloader.js
 
 ---
 
-## 14. Performance, Memory, Disk, Concurrency
+## 13. Performance, Memory, Disk, Concurrency
 
 ### 14.1 Key Optimizations (Implemented)
 
@@ -1643,7 +865,7 @@ routes/downloader.js
 
 ---
 
-## 15. Security & Production
+## 14. Security & Production
 
 ### 15.1 Authentication
 
@@ -1678,7 +900,7 @@ Docker is **not** used to containerize the backend. It only hosts two optional s
 
 ---
 
-## 16. Deployment
+## 15. Deployment
 
 ### 16.1 Backend (Native Node Process)
 
@@ -1732,7 +954,7 @@ Ignored: `.aider*`, `*.log`, `whatsapp-bot/.sessions`, `whatsapp-bot/media/raw/*
 
 ---
 
-## 17. Error Handling & Failure Modes
+## 16. Error Handling & Failure Modes
 
 ### 17.1 Playback
 
@@ -1773,7 +995,7 @@ Ignored: `.aider*`, `*.log`, `whatsapp-bot/.sessions`, `whatsapp-bot/media/raw/*
 
 ---
 
-## 18. Monitoring Dashboard Detail
+## 17. Monitoring Dashboard Detail
 
 ### 18.1 Collector Architecture
 
@@ -1823,7 +1045,7 @@ Ignored: `.aider*`, `*.log`, `whatsapp-bot/.sessions`, `whatsapp-bot/media/raw/*
 
 ---
 
-## 19. Future Extensions / Roadmap
+## 18. Future Extensions / Roadmap
 
 ### 19.1 Architecture Scaling Options
 
@@ -1849,7 +1071,7 @@ Ignored: `.aider*`, `*.log`, `whatsapp-bot/.sessions`, `whatsapp-bot/media/raw/*
 
 ---
 
-## 20. Development Notes
+## 19. Development Notes
 
 ### 20.1 Adding New API Endpoint
 
@@ -1884,88 +1106,7 @@ Ignored: `.aider*`, `*.log`, `whatsapp-bot/.sessions`, `whatsapp-bot/media/raw/*
 
 ---
 
-## 21. Debug / Operations Commands
-
-### 21.1 Debugging Playback
-
-```bash
-# Check cache
-ls -la cache/playback/remux/
-ls -la cache/playback/transcode/
-
-# View stats
-curl http://localhost:3001/api/playback/stats
-
-# Check codec
-ffprobe -v quiet -show_streams -show_format /path/to/file
-```
-
-### 21.2 Debugging Scanner
-
-```bash
-# Run incremental scan
-curl -X POST http://localhost:3001/api/refresh
-
-# Check FTS
-sqlite3 data/media.db "SELECT * FROM files_fts LIMIT 10;"
-
-# Check orphans
-curl http://localhost:3001/api/files/stats
-```
-
-### 21.3 Monitoring
-
-```bash
-# Check WebSocket connection
-wscat -c ws://localhost:3001/ws/monitor
-
-# Verify collector data
-curl http://localhost:3001/api/monitoring/stats
-
-# Test alert thresholds
-curl -X POST http://localhost:3001/api/monitoring/alerts/check
-```
-
-### 21.4 Backend Logs
-
-```bash
-# Live log stream (SSE)
-curl -N http://localhost:3001/api/logs/stream
-
-# WhatsApp bridge logs (SSE)
-curl -N http://localhost:3001/api/whatsapp/logs/stream
-```
-
----
-
-## 22. Appendix: Codebase Metrics
-
-Counts measured from source on **2026-07-14** (recursive, `node_modules` excluded). Replaces the earlier estimated figures.
-
-|  Module                      |  Files  |         LOC  |
-|----------------------------|-------|------------|
-|  `backend/src/server.js`     |      1  |         488  |
-|  `backend/src/db.js`         |      1  |       1,091  |
-|  `backend/src/routes/`       |     19  |       6,051  |
-|  `backend/src/utils/`        |     41  |       9,440  |
-|  `backend/src/monitor/`      |     17  |       2,403  |
-|  `backend/src/downloader/`   |      1  |       1,936  |
-|  `frontend/src/App.jsx`      |      1  |       2,385  |
-|  `frontend/src/components/`  |      —  |      13,852  |
-|  `frontend/src/monitoring/`  |     39  |       8,544  |
-|  `frontend/src/store/`       |      4  |         268  |
-|  `frontend/src/hooks/`       |      —  |         718  |
-|  `frontend/src/utils/`       |     10  |       1,146  |
-|  `frontend/src/debug/`       |      —  |       1,180  |
-|  `whatsapp-bot/src/`         |      6  |         794  |
-|  **Backend total**           |         |  **21,409**  |
-|  **Frontend total**          |         |  **28,093**  |
-|  **WhatsApp bot**            |         |     **794**  |
-|  **Grand total**             |         |  **50,296**  |
-
----
-
-## 23. Appendix: Version History
+## 20. Appendix: Version History
 
 |  Version   |  Date        |  Changes                                                                                                                                                                                                                                                                                                                                                                                                             |
 |----------|------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
