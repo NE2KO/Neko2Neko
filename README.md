@@ -1,7 +1,5 @@
 # Media Vault
 
-> **Note:** This platform is built by various free AI models, reviewed directly by a developer who is not deeply familiar with coding. Each menu represents the developer's desire to create a web application that suits their personal needs. All menus are still under active development and may have new features added.
-
 ## Tech Stack Overview
 
 | Layer | Technology | Version | Description |
@@ -51,6 +49,8 @@
 ---
 
 ## 1. Overview
+
+> **Story Behind the Menus:** This platform was built by various free AI models, with direct review by a developer who is not deeply familiar with coding. Each menu was created to solve the developer's personal workflow problems.
 
 Media Vault is a self-hosted media server for browsing, streaming, downloading, and managing personal media libraries. The platform provides the following menus accessible from mobile devices:
 
