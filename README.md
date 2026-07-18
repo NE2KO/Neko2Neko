@@ -58,7 +58,7 @@ Media Vault is a self-hosted media server born from the need to access media fil
 - **Media Vault**: Created to avoid opening the laptop just to browse video, audio, and image files — access them directly from phone anywhere
 - **Music Player**: Born from frustration with existing music players where previous navigation doesn't work properly (Strawberry player issue: when playing 1→5 then going back goes 5→1, but opening random track makes previous act as history, not list position — regardless of shuffle state)
 - **Monitoring**: To control laptop from phone — fan speed via nbfc and clock via ryzenadj (still Linux-only, AMD-focused, under development)
-- **Downloader**: Shortens download workflow by sending links to Telegram bot that downloads directly to laptop storage instead of downloading on phone then transferring
+- **Downloader**: Downloads from YouTube, TikTok, Instagram, Twitter/X, torrent, gallery-dl; send link to Telegram bot for auto-download to laptop with default settings (1080p, h264)
 - **ADB Transfer**: Makes file transfer easier without slow file managers or memorizing terminal commands (under development)
 - **Scrcpy Monitor**: Simple remote phone screen viewing (under development)
 - **Send Queue**: Monitors sent/failed/cancelled files to Telegram and WA; tick-based queue system is dedicated for WA status
@@ -77,7 +77,7 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | Playlists | Optional | XSPF import, full CRUD, drag-reorder | XSPF parser, folder-based playlists |
 | Metadata Editing | Optional | Read/write audio tags, cover art, lyrics | FFprobe, MusicBrainz, LRCLIB |
 | Monitoring | Optional | System stats, fan/clock control (Linux only, AMD-focused, under development) | dockerode, nbfc, ryzenadj |
-| Downloader | Optional | Shortens download workflow — send links to Telegram bot instead of downloading on phone then transferring to laptop | yt-dlp, gallery-dl, aria2c, Telegram bot |
+| Downloader | Optional | Download from YouTube, TikTok, Instagram, Twitter/X, torrent, gallery-dl; send link to Telegram bot for auto-download with default settings (1080p, h264) or custom parameters | yt-dlp, gallery-dl, aria2c, Telegram bot |
 | ADB Transfer | Optional | Push/pull files Android <-> laptop | ADB, concurrent workers |
 | Scrcpy Monitor | Optional | Remote phone screen viewing | node-pty, WebRTC |
 | Music Player | Optional | Dual modes with proper previous/next navigation (fixes Strawberry player issue where previous acts as history, not list position); includes waveform visualization, synced LRC lyrics | waveform, synced LRC, hls.js, precision sync engine |
