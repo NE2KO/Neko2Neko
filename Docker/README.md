@@ -22,7 +22,10 @@ This folder contains Docker configuration files for setting up the media server 
    LITELLM_MASTER_KEY=your_master_key_here
    ```
 
-3. Start services:
+3. Customize nginx (optional):
+   Edit `nginx-nvidia/nginx.conf` to change the target API URL or other settings.
+
+4. Start services:
    ```bash
    docker-compose up -d
    ```
@@ -36,19 +39,29 @@ This folder contains Docker configuration files for setting up the media server 
 
 ### nginx-nvidia (Reverse Proxy)
 - Port: 4000
-- Proxies to: NVIDIA API
+- Proxies to: Target API (default: NVIDIA)
 - Rate limited: 39 requests/minute per IP
 
-## Configuration
+## Customization
 
-All configurations use environment variables with fallback defaults.
+### Nginx Configuration
 
-### Environment Variables
+Edit `nginx-nvidia/nginx.conf` to customize:
+- `proxy_pass` - Target API URL
+- `proxy_set_header Host` - Target host
+- `limit_req_zone` - Rate limiting settings
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `NVIDIA_API_BASE` | NVIDIA API URL | `https://integrate.api.nvidia.com` |
-| `NVIDIA_API_KEY` | NVIDIA API Key | (required) |
-| `LITELLM_MASTER_KEY` | LiteLLM master key | `sk-litellm` |
-| `API_BASE_URL` | Proxy target URL | (from config) |
-| `API_HOST` | Proxy target host | (from config) |
+### LiteLLM Configuration
+
+Edit `litellm-config.yaml` to customize:
+- `master_key` - LiteLLM master key (use env var: `LITELLM_MASTER_KEY`)
+- `api_base` - Target API URL (use env var: `NVIDIA_API_BASE`)
+- `api_key` - API key (use env var: `NVIDIA_API_KEY`)
+
+## Environment Variables
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `NVIDIA_API_KEY` | API key for NVIDIA/LLM services | Yes |
+| `LITELLM_MASTER_KEY` | Master key for LiteLLM router | No (default: sk-litellm) |
+| `NVIDIA_API_BASE` | Base URL for API | No (default: https://integrate.api.nvidia.com) |
