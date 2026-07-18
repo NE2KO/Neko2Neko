@@ -198,7 +198,7 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 | `cache/` | HLS, remux, transcode cache |
 | `logs/` | Rotating logs |
 | `credentials/` | `.env`, auth files (gitignored) |
-| `Docker/` | docker-compose.yml, configs (optional) |
+| `Docker/` | docker-compose.yml for monitoring (optional) |
 
 ---
 
