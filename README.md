@@ -1,5 +1,7 @@
 # Media Vault
 
+> **Catatan:** Platform ini dikerjakan oleh berbagai model AI gratis, dengan review langsung oleh pengembang yang tidak terlalu paham dunia coding. Menu-menu yang ada mewakili keinginan pengembang untuk membuat web sesuai kebutuhan, dan masih dalam tahap pengembangan aktif.
+
 ## Tech Stack Overview
 
 | Layer | Technology | Version | Description |
@@ -41,10 +43,7 @@
 | Main Features | [2](#2-main-features) |
 | Tech Stack | [3](#3-tech-stack) |
 | External Tools | [4](#4-external-tools) |
-| Backend Structure | [5.1](#51-backend) |
-| Frontend Structure | [5.2](#52-frontend) |
-| WhatsApp Bot Structure | [5.3](#53-whatsapp-bot) |
-| Data Directories | [5.4](#54-data-directories) |
+| Project Structure | [5](#5-project-structure) |
 | API Endpoints | [6](#6-api-endpoints) |
 | Installation | [7](#7-installation) |
 | Development | [8](#8-development) |
@@ -59,18 +58,21 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 
 ## 2. Main Features
 
-| Feature | Description |
-|---------|-------------|
-| Media Browser | Browse, stream, and download media via web interface |
-| Library Management | Auto-scan, incremental full-text search, thumbnail generation |
-| Playlists | XSPF import, full CRUD, drag-reorder, audio queue, folder-based |
-| Metadata Editing | Audio tag read/write, MusicBrainz covers, LRCLIB lyrics, synced LRC |
-| Playback | HTML5 video (direct/remux/transcode/HLS), HTML5 audio with waveform & lyrics |
-| Monitoring | Real-time CPU/RAM/GPU/Disk/Network via WebSocket + SSE |
-| Downloader | YouTube, TikTok, Instagram, Twitter/X, torrent |
-| ADB Transfer | Push/pull files to Android with concurrent workers |
-| WhatsApp Bridge | Schedule status + send to channel with keyword/hashtag |
-| Telegram Send | Optional — send media, can act as downloader when receiving links |
+| Menu | Status | Deskripsi | Implementasi |
+|------|--------|-----------|--------------|
+| Media Vault | Opsional | Lihat file video, audio, image dari HP tanpa buka laptop | Sangat bagus - HLS streaming, thumbnail, search |
+| Library Management | Opsional | Auto-scan, pencarian full-text, generasi thumbnail | Bagus - SQLite WAL, incremental scanning |
+| Playlists | Opsional | XSPF import, CRUD lengkap, drag-reorder | Bagus - queue audio, folder-based playlists |
+| Metadata Editing | Opsional | Baca/tulis tag audio, cover MusicBrainz, lirik LRCLIB | Bagus - synced LRC, waveform |
+| Monitoring | Opsional | Monitoring laptop dari HP, kontrol fan via nbfc, clock via ryzenadj | Bagus - statistik real-time, tapi masih hardware-lock |
+| Downloader | Opsional | Download otomatis via bot Telegram saat kirim link | Bagus - yt-dlp, gallery-dl, aria2c tersedia |
+| ADB Transfer | Opsional | Transfer file HP<->laptop tanpa file manager/terminal | Masih dikembangkan - worker concurrent tersedia |
+| Scrcpy Monitor | Opsional | Lihat layar HP dari jauh | Masih dikembangkan - basic view |
+| Music Player | Opsional | Play musik dengan mode cover/video, sinkronisasi presisi tinggi | Bagus - waveform, lyrics, sinkronisasi tinggi |
+| Send Queue | Opsional | Monitor status terkirim/gagal/batal ke WA/Telegram, antrian presisi | Bagus - tick presisi, opsi grup/channel |
+| Git Integration | Opsional | Gunakan Git/GitHub tanpa terminal | Bagus - tampilan web, operasi dasar lengkap |
+
+> **Catatan:** Semua menu masih aktif dikerjakan dan masih dikembangkan. Rencana akan ada menu baru.
 
 ---
 
