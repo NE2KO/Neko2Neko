@@ -41,7 +41,10 @@
 | Main Features | [2](#2-main-features) |
 | Tech Stack | [3](#3-tech-stack) |
 | External Tools | [4](#4-external-tools) |
-| Project Structure | [5](#5-project-structure) |
+| Backend Structure | [5.1](#51-backend) |
+| Frontend Structure | [5.2](#52-frontend) |
+| WhatsApp Bot Structure | [5.3](#53-whatsapp-bot) |
+| Data Directories | [5.4](#54-data-directories) |
 | API Endpoints | [6](#6-api-endpoints) |
 | Installation | [7](#7-installation) |
 | Development | [8](#8-development) |
@@ -127,33 +130,46 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 
 ## 5. Project Structure
 
+### 5.1 Backend
+
 | Path | Description |
 |------|-------------|
 | `backend/` | Express API, SQLite, media processing |
 | `backend/src/server.js` | Entry point, Express, lifecycle |
 | `backend/src/db.js` | SQLite database, FTS, settings |
 | `backend/src/routes/` | (18 route modules) |
-| `├── adb.js` | Android transfer |
-| `├── downloader.js` | Download management (yt-dlp, gallery-dl, aria2c) |
-| `├── file.js` | Raw file serve (range, cache headers) |
-| `├── files.js` | File listing, FTS search, pagination |
-| `├── jobs.js` | Background job status |
-| `├── metadata.js` | Audio tags, covers, lyrics |
-| `├── monitoring.js` | Stats, history, alerts |
-| `├── playback.js` | Cache, health, config |
-| `├── playlists.js` | XSPF import, CRUD |
-| `├── scrcpy.js` | Scrcpy control |
-| `├── send.js` | Telegram send |
-| `├── services.js` | Service registry |
-| `├── settings.js` | Config CRUD |
-| `├── stream.js` | Video/audio streaming |
-| `├── thumbnails.js` | Thumbnail generation |
-| `├── upload.js` | Multipart upload |
-| `├── videoCache.js` | Video cache management |
-| `└── whatsapp.js` | WhatsApp bridge |
+
+| Route Module | Description |
+|--------------|-------------|
+| `adb.js` | Android transfer |
+| `downloader.js` | Download management (yt-dlp, gallery-dl, aria2c) |
+| `file.js` | Raw file serve (range, cache headers) |
+| `files.js` | File listing, FTS search, pagination |
+| `jobs.js` | Background job status |
+| `metadata.js` | Audio tags, covers, lyrics |
+| `monitoring.js` | Stats, history, alerts |
+| `playback.js` | Cache, health, config |
+| `playlists.js` | XSPF import, CRUD |
+| `scrcpy.js` | Scrcpy control |
+| `send.js` | Telegram send |
+| `services.js` | Service registry |
+| `settings.js` | Config CRUD |
+| `stream.js` | Video/audio streaming |
+| `thumbnails.js` | Thumbnail generation |
+| `upload.js` | Multipart upload |
+| `videoCache.js` | Video cache management |
+| `whatsapp.js` | WhatsApp bridge |
+
+| Path | Description |
+|------|-------------|
 | `backend/src/monitor/` | System metrics |
 | `backend/src/utils/` | Helpers (watcher, downloader, upload) |
 | `backend/src/middleware/` | Route guards |
+
+### 5.2 Frontend
+
+| Path | Description |
+|------|-------------|
 | `frontend/` | React 18 SPA (Vite + TailwindCSS) |
 | `frontend/src/App.jsx` | Main application |
 | `frontend/src/main.jsx` | Vite entry |
@@ -161,6 +177,11 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 | `frontend/src/store/` | Zustand stores (6 files) |
 | `frontend/src/hooks/` | Custom hooks (5 files) |
 | `frontend/src/utils/` | Utility functions |
+
+### 5.3 WhatsApp Bot
+
+| Path | Description |
+|------|-------------|
 | `whatsapp-bot/` | WhatsApp integration |
 | `whatsapp-bot/src/index.js` | Entry point |
 | `whatsapp-bot/src/connection.js` | WhatsApp connection |
@@ -168,6 +189,11 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 | `whatsapp-bot/src/sender.js` | Outbound sender |
 | `whatsapp-bot/src/db.js` | SQLite wrapper |
 | `whatsapp-bot/src/utils.js` | Utilities |
+
+### 5.4 Data Directories
+
+| Path | Description |
+|------|-------------|
 | `data/` | `media.db`, download tasks, thumbnails |
 | `cache/` | HLS, remux, transcode cache |
 | `logs/` | Rotating logs |
@@ -290,7 +316,7 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 
 | Directory | Files | Lines of Code |
 |-----------|-------|---------------|
-| `backend/src/` | 83 | ~3,300 |
+| `backend/src/` | 82 | ~3,300 |
 | `frontend/src/` | 141 | ~18,000 |
 | `whatsapp-bot/src/` | 6 | ~900 |
 | **Total** | **228** | **~22,000** |

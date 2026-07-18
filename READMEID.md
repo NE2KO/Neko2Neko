@@ -1025,7 +1025,7 @@ Direkonstruksi dari penangan rute di `backend/src/routes/`. Setiap router dipasa
 |  GET     |  `/api/playback/health`   |  `router.get('/health')`     |  Probe ffmpeg/ffprobe/sqlite/disk + status          |
 |  POST    |  `/api/playback/cleanup`  |  `router.post('/cleanup')`   |  Usir entri cache lama/kebesaran                    |
 
-### 7.14 WhatsApp (`/api/whatsapp`)
+### 7.13 WhatsApp (`/api/whatsapp`)
 
 |  Metode  |  Jalur                           |  Penangan                                     |  Tujuan                           |
 |--------|-------------------------------|--------------------------------------------|----------------------------------|
@@ -1043,7 +1043,7 @@ Direkonstruksi dari penangan rute di `backend/src/routes/`. Setiap router dipasa
 |  GET     |  `/api/whatsapp/config`         |  `app.get('/api/whatsapp/config')`           |  target/kata kunci/hastag        |
 |  PUT     |  `/api/whatsapp/config`         |  `app.put('/api/whatsapp/config')`           |  Perbarui config (restart utk terapkan) |
 
-### 7.15 Kirim / Cache Video
+### 7.14 Kirim / Cache Video
 
 |  Metode  |  Jalur                                    |  Penangan                                 |  Tujuan                                |
 |--------|----------------------------------------|----------------------------------------|---------------------------------------|
@@ -1059,7 +1059,7 @@ Direkonstruksi dari penangan rute di `backend/src/routes/`. Setiap router dipasa
 |  GET     |  `/api/video-cache/status`               |  `router.get('/status')`                 |  Info cache                            |
 |  POST    |  `/api/video-cache/clear`                |  `router.post('/clear')`                 |  Bersihkan cache                       |
 
-### 7.16 Debug / Lain-lain
+### 7.15 Debug / Lain-lain
 
 |  Metode  |  Jalur                          |  Penangan                           |  Tujuan                                       |
 |--------|------------------------------|----------------------------------|----------------------------------------------|
@@ -2056,7 +2056,7 @@ export function checkAlerts(currentStats) {
 > **Alternatif serupa:** Pustaka alerting eksternal dapat digunakan, tetapi dedupe manual cukup dan tanpa dependensi.
 > **Kalau tidak pakai ini:** Alert yang sama dapat membanjiri setiap poll (3 detik), membebani log/riwayat.
 <!-- annot:alerts_checkalerts -->
-### 8.8 WhatsApp / Kirim (`routes/whatsapp.js`, `routes/send.js`, `whatsapp-bot/`)
+### 8.7 WhatsApp / Kirim (`routes/whatsapp.js`, `routes/send.js`, `whatsapp-bot/`)
 
 Jembatan WhatsApp dimuat oleh `server.js` via `initWhatsApp()` (10 dtk setelah listen, hingga 5 retry backoff). `routes/whatsapp.js` mengimpor dari `../../../whatsapp-bot/src/` dan mengekspos `/api/whatsapp/*` plus SSE `/api/whatsapp/logs/stream`. Kirim Telegram (`routes/send.js`) bersifat opsional — aktif hanya bila `TELEGRAM_BOT_TOKEN` disetel.
 
@@ -2165,13 +2165,13 @@ function createClient() {
 > **Alternatif serupa:** Perintah regex global dapat digunakan, tetapi pemeriksaan kata kunci/hastag per-pesan lebih terarah.
 > **Kalau tidak pakai ini:** Semua pesan video akan diproses tanpa filter, memicu unggahan yang tidak diinginkan.
 <!-- annot:wa_listener -->
-### 8.9 Cache Video (`routes/videoCache.js`)
+### 8.8 Cache Video (`routes/videoCache.js`)
 
 Dipasang di `/api/video-cache`. Menyediakan pembukuan cache video (util `videoCache.js` melacak segmen/derivat video cache). Konsultasikan endpoint langsung untuk surface yang tepat.
 
 ---
 
-### 8.10 Metadata (`utils/metadataWriter.js`, `musicbrainz.js`, `lrclib.js`)
+### 8.9 Metadata (`utils/metadataWriter.js`, `musicbrainz.js`, `lrclib.js`)
 
 **Penanaman cover art** (`metadataWriter.js:74-111`). String perintah `ffmpeg`/`python3` per-format. FLAC menggunakan `embed_cover.py` yang di-spawn; MP3/OGG/Opus/M4A/WebM menggunakan `ffmpeg` dengan flag disposition/container yang sesuai, menulis ke `.tmp` lalu rename atomik.
 
@@ -2962,7 +2962,7 @@ Jumlah dihitung dari sumber pada **2026-07-14** (rekursif, `node_modules` dikecu
 |----------------------------|-------|------------|
 |  `backend/src/server.js`     |      1  |         488  |
 |  `backend/src/db.js`         |      1  |       1,091  |
-|  `backend/src/routes/`       |     19  |       6,051  |
+|  `backend/src/routes/`       |     18  |       6,051  |
 |  `backend/src/utils/`        |     41  |       9,440  |
 |  `backend/src/monitor/`      |     17  |       2,403  |
 |  `backend/src/downloader/`   |      1  |       1,936  |

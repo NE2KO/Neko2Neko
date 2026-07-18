@@ -81,7 +81,7 @@ The repository is **not** a monorepo: there are no workspaces and no root script
 |  express                |  ^4.21.0  |  HTTP framework                    |
 |  fast-xml-parser        |  ^5.8.0   |  XSPF playlist parsing             |
 |  mime-types             |  ^2.1.35  |  Content-type resolution           |
-|  mpd2                   |  ^1.0.7   |  MPD/Strawberry player control     |
+
 |  node-pty               |  ^1.1.0   |  Pseudo-terminal for scrcpy/shell  |
 |  node-telegram-bot-api  |  ^1.1.0   |  Telegram bot client               |
 |  qrcode                 |  ^1.5.4   |  QR generation (pairing / share)   |
@@ -191,7 +191,7 @@ The repository is **not** a monorepo: there are no workspaces and no root script
 | `src/server.js` | Entry point — Express, lifecycle, shutdown |
 | `src/db.js` | Schema, prepared statements, FTS, settings |
 | `src/config/paths.js` | Path resolution, SETTINGS constants |
-| `src/routes/` | **19 route modules** — see §7 |
+| `src/routes/` | **18 route modules** — see §7 |
 | `src/middleware/` | `serviceGuard.js` — requireService() guards |
 | `src/services/` | `registry.js` — service health registry |
 | `src/downloader/` | `manager.js` — yt-dlp/gallery-dl/aria2c wrapper |
@@ -199,7 +199,7 @@ The repository is **not** a monorepo: there are no workspaces and no root script
 | `src/utils/` | **41 files** (38 .js + 3 .py) — see note below |
 | `package.json` | Backend package |
 
-**backend/src/routes/** (19 modules): `adb.js`, `downloader.js`, `file.js`, `files.js`, `jobs.js`, `metadata.js`, `monitoring.js`, `mpd.js`, `playback.js`, `scrcpy.js`, `send.js`, `services.js`, `settings.js`, `stream.js`, `thumbnails.js`, `upload.js`, `videoCache.js`, `whatsapp.js`
+**backend/src/routes/** (18 modules): `adb.js`, `downloader.js`, `file.js`, `files.js`, `jobs.js`, `metadata.js`, `monitoring.js`, `playback.js`, `scrcpy.js`, `send.js`, `services.js`, `settings.js`, `stream.js`, `thumbnails.js`, `upload.js`, `videoCache.js`, `whatsapp.js`
 
 **backend/src/monitor/collectors/**: `cpu.js`, `memory.js`, `gpu.js`, `disk.js`, `network.js`, `system.js`
 
@@ -584,48 +584,8 @@ Reconstructed from the route handlers in `backend/src/routes/`. Every router is 
 |  GET     |  `/api/playback/health`   |  `router.get('/health')`    |  Probe ffmpeg/ffprobe/sqlite/disk + status            |
 |  POST    |  `/api/playback/cleanup`  |  `router.post('/cleanup')`  |  Evict old/oversized cache entries                    |
 
-### 7.13 MPD / Strawberry (`/api/strawberry`)
 
-|  Method  |  Path                                      |  Handler                                   |  Purpose                    |
-|--------|------------------------------------------|------------------------------------------|---------------------------|
-|  GET     |  `/api/strawberry/player/status`           |  `router.get('/player/status')`            |  MPD status + current song  |
-|  POST    |  `/api/strawberry/player/play`             |  `router.post('/player/play')`             |  Play                       |
-|  POST    |  `/api/strawberry/player/pause`            |  `router.post('/player/pause')`            |  Pause                      |
-|  POST    |  `/api/strawberry/player/playPause`        |  `router.post('/player/playPause')`        |  Toggle play/pause          |
-|  POST    |  `/api/strawberry/player/stop`             |  `router.post('/player/stop')`             |  Stop                       |
-|  POST    |  `/api/strawberry/player/next`             |  `router.post('/player/next')`             |  Next track                 |
-|  POST    |  `/api/strawberry/player/previous`         |  `router.post('/player/previous')`         |  Previous track             |
-|  POST    |  `/api/strawberry/player/seek`             |  `router.post('/player/seek')`             |  Seek relative              |
-|  POST    |  `/api/strawberry/player/position`         |  `router.post('/player/position')`         |  Seek absolute              |
-|  POST    |  `/api/strawberry/player/volume`           |  `router.post('/player/volume')`           |  Set volume 0-100           |
-|  POST    |  `/api/strawberry/player/shuffle`          |  `router.post('/player/shuffle')`          |  Toggle random              |
-|  POST    |  `/api/strawberry/player/loop`             |  `router.post('/player/loop')`             |  Set loop off/one/all       |
-|  GET     |  `/api/strawberry/playlists`               |  `router.get('/playlists')`                |  List MPD playlists         |
-|  POST    |  `/api/strawberry/playlists/activate`      |  `router.post('/playlists/activate')`      |  Load + play a playlist     |
-|  POST    |  `/api/strawberry/playlists/create`        |  `router.post('/playlists/create')`        |  Save current queue         |
-|  POST    |  `/api/strawberry/playlists/rename`        |  `router.post('/playlists/rename')`        |  Rename playlist            |
-|  POST    |  `/api/strawberry/playlists/delete`        |  `router.post('/playlists/delete')`        |  Delete playlist            |
-|  GET     |  `/api/strawberry/playlists/:name/tracks`  |  `router.get('/playlists/:name/tracks')`   |  Tracks in a playlist       |
-|  POST    |  `/api/strawberry/playlists/:name/add`     |  `router.post('/playlists/:name/add')`     |  Add URI to playlist        |
-|  POST    |  `/api/strawberry/playlists/:name/remove`  |  `router.post('/playlists/:name/remove')`  |  Remove pos from playlist   |
-|  GET     |  `/api/strawberry/queue`                   |  `router.get('/queue')`                    |  Current queue              |
-|  POST    |  `/api/strawberry/queue/add`               |  `router.post('/queue/add')`               |  Add URI to queue           |
-|  POST    |  `/api/strawberry/queue/remove`            |  `router.post('/queue/remove')`            |  Remove pos                 |
-|  POST    |  `/api/strawberry/queue/move`              |  `router.post('/queue/move')`              |  Move pos                   |
-|  POST    |  `/api/strawberry/queue/clear`             |  `router.post('/queue/clear')`             |  Clear queue                |
-|  POST    |  `/api/strawberry/queue/shuffle`           |  `router.post('/queue/shuffle')`           |  Shuffle queue              |
-|  GET     |  `/api/strawberry/library/browse`          |  `router.get('/library/browse')`           |  Browse MPD library path    |
-|  GET     |  `/api/strawberry/library/search`          |  `router.get('/library/search')`           |  Search library             |
-|  GET     |  `/api/strawberry/library/songs`           |  `router.get('/library/songs')`            |  Filtered song list         |
-|  GET     |  `/api/strawberry/library/all`             |  `router.get('/library/all')`              |  All songs                  |
-|  POST    |  `/api/strawberry/library/update`          |  `router.post('/library/update')`          |  Rescan MPD library         |
-|  GET     |  `/api/strawberry/library/artists`         |  `router.get('/library/artists')`          |  Artist list                |
-|  GET     |  `/api/strawberry/library/albums`          |  `router.get('/library/albums')`           |  Album list                 |
-|  GET     |  `/api/strawberry/library/genres`          |  `router.get('/library/genres')`           |  Genre list                 |
-|  GET     |  `/api/strawberry/library/years`           |  `router.get('/library/years')`            |  Year list                  |
-|  GET     |  `/api/strawberry/cover`                   |  `router.get('/cover')`                    |  Embedded cover art bytes   |
-
-### 7.14 WhatsApp (`/api/whatsapp`)
+### 7.13 WhatsApp (`/api/whatsapp`)
 
 |  Method  |  Path                           |  Handler                                    |  Purpose                           |
 |--------|-------------------------------|-------------------------------------------|----------------------------------|
@@ -643,7 +603,7 @@ Reconstructed from the route handlers in `backend/src/routes/`. Every router is 
 |  GET     |  `/api/whatsapp/config`         |  `app.get('/api/whatsapp/config')`          |  target/keywords/hashtags          |
 |  PUT     |  `/api/whatsapp/config`         |  `app.put('/api/whatsapp/config')`          |  Update config (restart to apply)  |
 
-### 7.15 Send / Video-cache
+### 7.14 Send / Video-cache
 
 |  Method  |  Path                                    |  Handler                                |  Purpose                                |
 |--------|----------------------------------------|---------------------------------------|---------------------------------------|
@@ -729,17 +689,13 @@ ADB database tables (`adb_jobs`, `adb_transactions`). Transaction states: PENDIN
 
 Busboy multipart upload. State: `MEDIA_ROOTS`, `activeUploads` Map, `uploadIdCounter`, `UPLOAD_TEMP`. Runtime settings: `upload.maxSizeGB` (100), `upload.concurrent` (4), `upload.duplicateStrategy` (rename), `upload.autoScan` (true), `upload.verifyIntegrity` (true), `upload.autoThumbnail` (true). `sanitizeFilename()` removes `..`, `/`, `\`, `\0`, max 255 chars.
 
-### 8.5 MPD / Strawberry (`routes/mpd.js`)
-
-Controls Strawberry MPD player via `mpd2` on `localhost:6600`. Player, playlist, and queue endpoints. Loop-mode mapping: `one` = repeat 1 + single 1; `all` = repeat 1 + single 0; `off` = repeat 0 + single 0.
-
-### 8.6 Monitoring (`monitor/*`)
+### 8.5 Monitoring (`monitor/*`)
 
 Engine poll interval is **3000ms** (`pollIntervalMs = 3000` in `engine.js`); WebSocket broadcast throttle **3000ms** (`BROADCAST_THROTTLE_MS`); historical snapshot every **30s**. The dashboard *setting* `monitor.refreshInterval` defaults to **1000ms** and is the **frontend polling fallback** interval — it does **not** change the backend engine poll. Backend uses a forked `monitor/monitoringCache.js` → `src/sensors-worker.mjs` for sensor reads; GPU collection is skippable via `MONITOR_DISABLE_GPU`.
 
 **Alerts — `checkAlerts()` thresholds + 60 s dedupe**: CPU/RAM/disk/temp/gpuTemp each emit `warning`/`critical` events; identical type+severity is suppressed for 60 s.
 
-### 8.7 WhatsApp / Send (`routes/whatsapp.js`, `routes/send.js`, `whatsapp-bot/`)
+### 8.6 WhatsApp / Send (`routes/whatsapp.js`, `routes/send.js`, `whatsapp-bot/`)
 
 WhatsApp bridge is loaded by `server.js` via `initWhatsApp()` (10s after listen, up to 5 retries backoff). `routes/whatsapp.js` imports from `../../../whatsapp-bot/src/` and exposes `/api/whatsapp/*` plus SSE `/api/whatsapp/logs/stream`. Telegram send (`routes/send.js`) is optional — active only if `TELEGRAM_BOT_TOKEN` is set.
 
@@ -749,11 +705,11 @@ WhatsApp bridge is loaded by `server.js` via `initWhatsApp()` (10s after listen,
 
 **Keyword / hashtag trigger**: The listener fires only when a video is quoted (or sent) together with a configured keyword (e.g. `save`) or hashtag (e.g. `#upload`).
 
-### 8.8 Video Cache (`routes/videoCache.js`)
+### 8.7 Video Cache (`routes/videoCache.js`)
 
 Mounted at `/api/video-cache`. Provides video cache bookkeeping (the `videoCache.js` util tracks cached video segments/derivatives). Consult the live endpoints for the exact surface.
 
-### 8.9 Metadata (`utils/metadataWriter.js`, `musicbrainz.js`, `lrclib.js`)
+### 8.8 Metadata (`utils/metadataWriter.js`, `musicbrainz.js`, `lrclib.js`)
 
 **Cover-art embedding**: Per-format `ffmpeg`/`python3` command strings. FLAC uses the spawned `embed_cover.py`; MP3/OGG/Opus/M4A/WebM use `ffmpeg` with appropriate disposition/container flags, writing to a `.tmp` then atomic-rename.
 
@@ -1249,50 +1205,7 @@ export class AdbWorkerPool {
 
 Busboy multipart upload. State: `MEDIA_ROOTS`, `activeUploads` Map, `uploadIdCounter`, `UPLOAD_TEMP`. Runtime settings: `upload.maxSizeGB` (100), `upload.concurrent` (4), `upload.duplicateStrategy` (rename), `upload.autoScan` (true), `upload.verifyIntegrity` (true), `upload.autoThumbnail` (true). `sanitizeFilename()` removes `..`, `/`, `\`, `\0`, max 255 chars.
 
-### 8.6 MPD / Strawberry (`routes/mpd.js`)
 
-Controls Strawberry MPD player via `mpd2` on `localhost:6600`. Player, playlist, and queue endpoints. Loop-mode mapping: `one` = repeat 1 + single 1; `all` = repeat 1 + single 0; `off` = repeat 0 + single 0.
-
-#### 8.6.1 MPD code (verbatim)
-
-Excerpts from `backend/src/routes/mpd.js`.
-
-**`mpdSend`** (`mpd.js:20-23`) — lazy-connecting wrapper around `mpd2`'s `sendCommand`. The connection is cached and reset on `close`.
-
-```javascript
-// backend/src/routes/mpd.js:20
-async function mpdSend(cmd) {
-  const c = await getClient();
-  return c.sendCommand(cmd);
-}
-```
-
-> **Apa kerjanya:** Mengirim perintah MPD ke client yang sudah terhubung lewat `getClient()` lalu `c.sendCommand(cmd)`.
-> **Dampak:** Seluruh endpoint player/playlist/queue memanggil `mpdSend` sehingga kontrol Strawberry terpusat pada satu wrapper.
-> **Alternatif serupa:** Bisa langsung memanggil `client.sendCommand` di tiap handler, tapi wrapper ini menambahkan lazy-connect dan reset on close.
-> **Kalau tidak pakai ini:** Tiap handler perlu menangani koneksi sendiri sehingga rawan duplikasi dan putus koneksi tidak tertangani.
-<!-- annot:mpd_send -->
-**Loop-mode mapping** (`mpd.js:250-258`). The one/all/off UI maps to MPD's `repeat` + `single` flags.
-
-```javascript
-// backend/src/routes/mpd.js:250
-router.post('/player/loop', async (req, res) => {
-  try {
-    const mode = String(req.body?.mode || 'off').toLowerCase();
-    if (mode === 'one') { await mpdSend('repeat 1'); await mpdSend('single 1'); }
-    else if (mode === 'all') { await mpdSend('repeat 1'); await mpdSend('single 0'); }
-    else { await mpdSend('repeat 0'); await mpdSend('single 0'); }
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-```
-
-> **Apa kerjanya:** Memetakan mode UI one/all/off ke flag MPD `repeat` dan `single` (satu = repeat 1 + single 1, all = repeat 1 + single 0, off = keduanya 0).
-> **Dampak:** Frontend cukup mengirim `mode` tunggal dan backend menerjemahkannya ke dua perintah MPD.
-> **Alternatif serupa:** Bisa pakai satu perintah `repeat` saja, tapi MPD membedakan repeat vs single untuk mode one.
-> **Kalau tidak pakai ini:** Mode loop satu lagu tidak bisa diwujudkan karena MPD memisahkan flag repeat dan single.
-<!-- annot:mpd_loop -->
-> The status→loopMode decode lives in `GET /player/status` (`mpd.js:148-150`): `repeat && single → 'one'`, `repeat → 'all'`, else `'off'`.
 
 ### 8.7 Monitoring (`monitor/*`)
 
