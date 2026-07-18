@@ -39,14 +39,14 @@
 
 | Section | Link |
 |---------|------|
-| Overview | [§1](#1-overview) |
-| Main Features | [§2](#2-main-features) |
-| Tech Stack | [§3](#3-tech-stack) |
-| External Tools | [§4](#4-external-tools) |
-| Project Structure | [§5](#5-project-structure) |
-| API Endpoints | [§6](#6-api-endpoints) |
-| Installation | [§7](#7-installation) |
-| Development | [§8](#8-development) |
+| Overview | [1](#1-overview) |
+| Main Features | [2](#2-main-features) |
+| Tech Stack | [3](#3-tech-stack) |
+| External Tools | [4](#4-external-tools) |
+| Project Structure | [5](#5-project-structure) |
+| API Endpoints | [6](#6-api-endpoints) |
+| Installation | [7](#7-installation) |
+| Development | [8](#8-development) |
 
 ---
 
@@ -58,18 +58,18 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 
 ## 2. Main Features
 
-| Feature | Status | Description |
-|---------|--------|-------------|
-| Media Browser | Active | Browse, stream, and download media via web interface |
-| Library Management | Active | Auto-scan, incremental full-text search, thumbnail generation |
-| Playlists | Active | XSPF import, full CRUD, drag-reorder, audio queue, folder-based |
-| Metadata Editing | Active | Audio tag read/write, MusicBrainz covers, LRCLIB lyrics, synced LRC |
-| Playback | Active | HTML5 video (direct/remux/transcode/HLS), HTML5 audio with waveform & lyrics |
-| Monitoring | Active | Real-time CPU/RAM/GPU/Disk/Network via WebSocket + SSE |
-| Downloader | Active | YouTube, TikTok, Instagram, Twitter/X, torrent |
-| ADB Transfer | Active | Push/pull files to Android with concurrent workers |
-| WhatsApp Bridge | Active | Integrated bot with keyword/hashtag triggers |
-| Telegram Send | Optional | Active when `TELEGRAM_BOT_TOKEN` is configured |
+| Feature | Description |
+|---------|-------------|
+| Media Browser | Browse, stream, and download media via web interface |
+| Library Management | Auto-scan, incremental full-text search, thumbnail generation |
+| Playlists | XSPF import, full CRUD, drag-reorder, audio queue, folder-based |
+| Metadata Editing | Audio tag read/write, MusicBrainz covers, LRCLIB lyrics, synced LRC |
+| Playback | HTML5 video (direct/remux/transcode/HLS), HTML5 audio with waveform & lyrics |
+| Monitoring | Real-time CPU/RAM/GPU/Disk/Network via WebSocket + SSE |
+| Downloader | YouTube, TikTok, Instagram, Twitter/X, torrent |
+| ADB Transfer | Push/pull files to Android with concurrent workers |
+| WhatsApp Bridge | Integrated bot with keyword/hashtag triggers |
+| Telegram Send | Optional — active when `TELEGRAM_BOT_TOKEN` is configured |
 
 ---
 
@@ -139,23 +139,101 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 | `cache/` | HLS, remux, transcode cache |
 | `logs/` | Rotating logs |
 | `credentials/` | `.env`, auth files (gitignored) |
-| `Docker/` | `docker-compose.yml`, configs |
+
+### Optional Components
+
+| Directory | Description |
+|-----------|-------------|
+| `Docker/` | `docker-compose.yml`, configs (optional deployment) |
 
 ---
 
 ## 6. API Endpoints
 
-| Category | Endpoint | Method | Purpose |
-|----------|----------|--------|---------|
-| Files | `/api/files` | GET | Browse folder |
-| Files | `/api/files/refresh` | POST | Rescan |
-| Search | `/api/search` | GET | Full-text search |
-| Streaming | `/stream/video/:id` | GET | Video stream |
-| Streaming | `/stream/audio/:id` | GET | Audio stream |
-| Monitoring | `/api/monitoring/stats` | GET | System stats |
-| Monitoring | `/api/monitoring/overview` | GET | Combined overview |
-| Downloader | `/api/download/start` | POST | Start download |
-| WhatsApp | `/api/whatsapp/status` | GET | Connection status |
+### Files & Search (`/api/files`, `/api/search`)
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/files` | Browse a folder with cursor pagination |
+| GET | `/api/files/shuffle` | Return all playable files in random order |
+| POST | `/api/files/refresh` | Run incremental scan + orphan cleanup |
+| POST | `/api/files/cleanup` | Remove orphan DB entries |
+| GET | `/api/files/stats` | Quick file-type counts |
+| GET | `/api/files/folders/:id` | Resolve folder id to path metadata |
+| GET | `/api/files/:id/previews` | Up to 4 preview file IDs for a folder |
+| GET | `/api/search` | FTS file search + folder search |
+| GET | `/api/search/suggest` | Autocomplete name suggestions |
+
+### Streaming & Playback (`/stream`)
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/stream/video/:id/playback-info` | Playback decision + mobile flags |
+| GET | `/stream/video/:id` | Stream video (direct/remux/transcode) |
+| GET | `/stream/video/:id/hls/playlist.m3u8` | HLS playlist |
+| GET | `/stream/video/:id/hls/segment-:n.ts` | HLS segment |
+| GET | `/stream/video/:id/faststart` | Re-mux with +faststart |
+| GET | `/stream/audio/:id` | Audio stream with ranges |
+
+### Monitoring (`/api/monitoring`)
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/monitoring/stats` | Current system stats |
+| GET | `/api/monitoring/overview` | Combined overview |
+| GET | `/api/monitoring/history` | Historical metrics |
+| GET | `/api/monitoring/disk-io/*` | Disk I/O stats |
+| POST | `/api/monitoring/docker/*` | Container control |
+| POST | `/api/monitoring/system/power` | Host power control |
+
+### Downloader (`/api/download`)
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/download/stream` | SSE task stream |
+| POST | `/api/download/start` | Create download task |
+| POST | `/api/download/bulk` | Create multiple tasks |
+| GET | `/api/download/list` | All tasks |
+| POST | `/api/download/:id/cancel` | Cancel task |
+| POST | `/api/download/:id/retry` | Retry failed task |
+
+### Playlists (`/api/playlists`)
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/playlists` | All discovered playlists |
+| GET | `/api/playlists/:id` | Playlist details |
+| POST | `/api/playlists/create/manual` | Create from file IDs |
+| POST | `/api/playlists/create/folder` | Create from folder |
+| PUT | `/api/playlists/:id/tracks` | Add tracks |
+| DELETE | `/api/playlists/:id/tracks/:trackId` | Remove track |
+
+### Metadata (`/api/metadata`)
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/metadata/:id` | Read metadata |
+| PUT | `/api/metadata/:id` | Update tags |
+| PUT | `/api/metadata/:id/cover/upload` | Embed cover art |
+| GET | `/api/metadata/:id/lyrics` | Get lyrics |
+
+### Services (`/api/services`)
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/services` | All service statuses |
+| POST | `/api/services/:name/start` | Start service |
+| POST | `/api/services/:name/stop` | Stop service |
+
+### ADB Transfer (`/api/adb`)
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/adb/devices` | Connected devices |
+| POST | `/api/adb/push` | Push files (workers) |
+| POST | `/api/adb/pull` | Pull files from device |
+| GET | `/api/adb/jobs` | Transfer jobs |
+| GET | `/api/adb/jobs/:id/progress` | SSE progress |
 
 ---
 
@@ -177,6 +255,19 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 | `npm run dev` (frontend) | Vite dev server |
 | `npm run debug` (backend) | Debug mode |
 | `npm run build` (frontend) | Production build |
+
+---
+
+## Codebase Metrics
+
+| Directory | Files | Lines of Code |
+|-----------|-------|---------------|
+| `backend/src/` | 83 | ~3,300 |
+| `frontend/src/` | 141 | ~18,000 |
+| `whatsapp-bot/src/` | 6 | ~900 |
+| **Total** | **228** | **~22,000** |
+
+> Note: Lines of code approximate. Does not include `node_modules` or gitignored directories (`cache/`, `logs/`, `data/`).
 
 ---
 
