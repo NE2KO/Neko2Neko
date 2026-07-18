@@ -80,7 +80,7 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | Downloader | Optional | Shortens download workflow — send links to Telegram bot instead of downloading on phone then transferring to laptop | yt-dlp, gallery-dl, aria2c, Telegram bot |
 | ADB Transfer | Optional | Push/pull files Android <-> laptop | ADB, concurrent workers |
 | Scrcpy Monitor | Optional | Remote phone screen viewing | node-pty, WebRTC |
-| Music Player | Optional | Dual modes with proper previous/next navigation (fixes Strawberry player issue where previous acts as history, not list position); includes metadata editor, MusicBrainz covers, LRCLIB lyrics | waveform, synced LRC, hls.js, precision sync engine |
+| Music Player | Optional | Dual modes with proper previous/next navigation (fixes Strawberry player issue where previous acts as history, not list position); includes waveform visualization, synced LRC lyrics | waveform, synced LRC, hls.js, precision sync engine |
 | Send Queue | Optional | Monitors sent/failed/cancelled files to Telegram and WA; tick-based queue dedicated for WA status | Tick-based precision, SSE, WA/Telegram APIs |
 | Git Integration | Optional | Web-based Git operations | Simple Git wrapper |
 
