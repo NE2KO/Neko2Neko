@@ -20,8 +20,13 @@ cache/
 backend/.env
 backend/.env.*
 gtw.txt
-credentials/
-credentials/**
+credentials/.env
+credentials/cookies.txt
+credentials/cookies.txt.bak*
+credentials/gtw.txt
+credentials/.wwebjs_auth/
+credentials/.wwebjs_cache/
+credentials/docs-debug/
 
 # Node.js
 node_modules/
