@@ -1,4 +1,6 @@
-# Media Vault — Production Architecture Reference
+# Media Vault — Documentation & Architecture
+
+> 🇬🇧 **English** · 🇮🇩 [Bahasa Indonesia](READMEID.md)
 
 > **Document version:** Doc v3.0 — 2026-07-08
 > **Codebase package versions:** backend `homelab-media-server` **v1.0.0**, frontend `homelab-media-frontend` **v1.0.0**, whatsapp-bot **v1.0.0**
@@ -67,9 +69,9 @@ The repository is **not** a monorepo: there are no workspaces and no root script
 - No `engines` field is declared (no pinned Node version).
 - No `devDependencies`.
 - Scripts:
-  - `start`: `node --env-file-if-exists=.env src/server.js`
-  - `dev`: `node --env-file-if-exists=.env --expose-gc --watch src/server.js`
-  - `debug`: `node --env-file-if-exists=.env --inspect --expose-gc src/server.js`
+  - `start`: `node --env-file=../credentials/.env src/server.js`
+  - `dev`: `node --env-file=../credentials/.env --expose-gc --watch src/server.js`
+  - `debug`: `node --env-file=../credentials/.env --inspect --expose-gc src/server.js`
 
 |  Dependency             |  Version  |  Role                              |
 |-----------------------|---------|----------------------------------|
@@ -127,9 +129,10 @@ The repository is **not** a monorepo: there are no workspaces and no root script
 ### 2.4 WhatsApp bot — `whatsapp-bot/package.json`
 
 - name: `whatsapp-bot` · version: `1.0.0` · type: `module`
-- Scripts: `start`: `node src/index.js` · `dev`: `node --watch src/index.js`
+- Scripts: `start`: `node --env-file=../credentials/.env src/index.js` · `dev`: `node --env-file=../credentials/.env --watch src/index.js`
 - Dependencies: `whatsapp-web.js ^1.34.7`, `better-sqlite3 ^12.9.0`, `qrcode-terminal ^0.12.0`
 - Source layout (`whatsapp-bot/src/`): `index.js`, `connection.js`, `listener.js`, `sender.js`, `db.js`, `utils.js`. (Uses `whatsapp-web.js`, **not** baileys.)
+- Note: `connection.js` reads WhatsApp auth from `credentials/.wwebjs_auth/` via `WA_AUTH_DIR` env var or default path.
 
 ---
 
@@ -202,25 +205,24 @@ homelab-media-server/
 │   │   ├── config/
 │   │   │   └── paths.js        Path resolution, SETTINGS constants
 │   │   ├── routes/             (19 modules — see §7)
-│   │   │   ├── files.js        File listing, FTS search, cursor pagination
+│   │   │   ├── adb.js          ADB device list, transfer jobs
+│   │   │   ├── downloader.js   Download task management (yt-dlp etc.)
 │   │   │   ├── file.js         Raw file serve (cache headers, range)
+│   │   │   ├── files.js        File listing, FTS search, cursor pagination
+│   │   │   ├── jobs.js         Background job status
+│   │   │   ├── metadata.js     Audio metadata, cover art, lyrics
+│   │   │   ├── monitoring.js   Stats, history, alerts, processes
+│   │   │   ├── mpd.js          MPD/Strawberry player control
+│   │   │   ├── playback.js     Playback cache, LRU, health, config
+│   │   │   ├── scrcpy.js       Scrcpy control endpoint
+│   │   │   ├── send.js         Mounted at /api/send (Telegram / broadcast)
+│   │   │   ├── services.js     Service health registry API
+│   │   │   ├── settings.js     Runtime config CRUD
 │   │   │   ├── stream.js       Video/audio streaming, HLS, transcode
 │   │   │   ├── thumbnails.js   Thumbnail generate-if-missing + serve
-│   │   │   ├── playback.js     Playback cache, LRU, health, config
-│   │   │   ├── downloader.js   Download task management (yt-dlp etc.)
 │   │   │   ├── upload.js       Multipart upload (Busboy)
-│   │   │   ├── settings.js     Runtime config CRUD
-│   │   │   ├── monitoring.js   Stats, history, alerts, processes
-│   │   │   ├── jobs.js         Background job status
-│   │   │   ├── playlists.js    Playlist CRUD, XSPF import, folder scan
-│   │   │   ├── metadata.js     Audio metadata, cover art, lyrics
-│   │   │   ├── adb.js          ADB device list, transfer jobs
-│   │   │   ├── mpd.js          MPD/Strawberry player control
-│   │   │   ├── services.js     Service health registry API
-│   │   │   ├── scrcpy.js       Scrcpy control endpoint
-│   │   │   ├── whatsapp.js     WhatsApp bridge (embedded via initWhatsApp)
 │   │   │   ├── videoCache.js   Mounted at /api/video-cache
-│   │   │   └── send.js         Mounted at /api/send (Telegram / broadcast)
+│   │   │   └── whatsapp.js     WhatsApp bridge (embedded via initWhatsApp)
 │   │   ├── middleware/
 │   │   │   └── serviceGuard.js requireService() route protection
 │   │   ├── services/
@@ -228,60 +230,64 @@ homelab-media-server/
 │   │   ├── downloader/
 │   │   │   └── manager.js      yt-dlp/gallery-dl/aria2c wrapper, task queue
 │   │   ├── monitor/
-│   │   │   ├── engine.js           Poll loop (3000ms), collect→aggregate→WS
-│   │   │   ├── websocket.js        WS server (/ws/monitor), zombie cleanup (30s)
-│   │   │   ├── historical.js       Time-series (historical_metrics), 30s snapshot, 7d retention
 │   │   │   ├── alerts.js           Threshold checking, dedupe 60s
+│   │   │   ├── docker.js           Docker container monitoring
+│   │   │   ├── collectors/
+│   │   │   │   ├── cpu.js          CPU usage, per-core, temp
+│   │   │   │   ├── disk.js         Disk usage, SMART (cached)
+│   │   │   │   ├── gpu.js          NVIDIA GPU (cached)
+│   │   │   │   ├── memory.js       RAM, swap
+│   │   │   │   ├── network.js      Interface throughput
+│   │   │   │   └── system.js       Uptime, platform, hostname
+│   │   │   ├── docker.js           Docker container monitoring
+│   │   │   ├── engine.js           Poll loop (3000ms), collect→aggregate→WS
+│   │   │   ├── historical.js       Time-series (historical_metrics), 30s snapshot, 7d retention
+│   │   │   ├── logs.js             journalctl reader
 │   │   │   ├── monitoringCache.js  Forked child for sensor reads
-│   │   │   ├── webStats.js         Web/HTTP stats + log integration
 │   │   │   ├── platdetect.js       Platform detection
 │   │   │   ├── processes.js        Process enumeration
 │   │   │   ├── services.js         Systemd service manager
-│   │   │   ├── docker.js           Docker container monitoring
-│   │   │   ├── logs.js             journalctl reader
-│   │   │   └── collectors/
-│   │   │       ├── cpu.js          CPU usage, per-core, temp
-│   │   │       ├── memory.js       RAM, swap
-│   │   │       ├── gpu.js          NVIDIA GPU (cached)
-│   │   │       ├── disk.js         Disk usage, SMART (cached)
-│   │   │       ├── network.js      Interface throughput
-│   │   │       └── system.js       Uptime, platform, hostname
-│   │   ├── utils/                  (38 .js modules + 3 spawned .py helpers = 41 files; see note below)
-│   │   │   ├── fileScanner.js       Recursive walk, incremental sync
-│   │   │   ├── watcher.js           fs.watch debounce, SSE broadcast
-│   │   │   ├── playbackEngine.js    Remux/transcode decisions, cache
-│   │   │   ├── hlsGenerator.js      FFmpeg HLS segments
-│   │   │   ├── thumbnailUtils.js    FFmpeg frame extract + scale resize (no sharp dep)
-│   │   │   ├── thumbnailQueue.js    Async queue, concurrency control
-│   │   │   ├── uploadManager.js     Busboy multipart, SHA256 verify
-│   │   │   ├── metadataWriter.js    music-metadata read, ffmpeg embed
-│   │   │   ├── musicbrainz.js       Cover Art Archive API
-│   │   │   ├── lrclib.js            LRCLIB lyrics API
-│   │   │   ├── lrcParser.js         LRC format parser
-│   │   │   ├── xspfParser.js        XSPF playlist parser
-│   │   │   ├── playlistScanner.js   XSPF discovery from filesystem
-│   │   │   ├── maintenance.js       Cleanup (orphan, WAL, HLS, ANALYZE)
-│   │   │   ├── runtimeSettings.js   In-memory settings cache, type casting
-│   │   │   ├── logCapture.js        Log ring buffer + SSE
-│   │   │   ├── logger.js            Category-based file logger
-│   │   │   ├── jobQueue.js          Generic job queue (reserved/deprecated)
+│   │   │   ├── webStats.js         Web/HTTP stats + log integration
+│   │   │   └── websocket.js        WS server (/ws/monitor), zombie cleanup (30s)
+│   │   ├── utils/                  (41 files — see note below)
 │   │   │   ├── adbManager.js        ADB device management
+│   │   │   ├── adbMetadata.js     Permission/timestamp sync
 │   │   │   ├── adbTransaction.js    ADB transfer engine
 │   │   │   ├── adbWorkerPool.js     Concurrent ADB workers
-│   │   │   ├── adbMetadata.js       Permission/timestamp sync
-│   │   │   ├── fileResolver.js      Path resolution from DB
-│   │   │   ├── videoCache.js        Video cache bookkeeping
-│   │   │   ├── lyricsSources.js     Lyrics provider aggregation
+│   │   │   ├── avSync.js            Audio/video sync utilities
 │   │   │   ├── coverSources.js      Cover art provider aggregation
-│   │   │   ├── youtube.js           YouTube helpers
+│   │   │   ├── fileResolver.js      Path resolution from DB
+│   │   │   ├── fileScanner.js       Recursive walk, incremental sync
 │   │   │   ├── genius.js            Genius lyrics source
-│   │   │   ├── netease.js           NetEase lyrics source
-│   │   │   ├── pyjlyric.js          PyJLyric bridge
+│   │   │   ├── hlsGenerator.js      FFmpeg HLS segments
+│   │   │   ├── jobQueue.js          Generic job queue (reserved/deprecated)
+│   │   │   ├── lyricsSources.js     Lyrics provider aggregation
+│   │   │   ├── logCapture.js        Log ring buffer + SSE
+│   │   │   ├── logger.js            Category-based file logger
+│   │   │   ├── lrclib.js            LRCLIB lyrics API
+│   │   │   ├── lrcParser.js         LRC format parser
 │   │   │   ├── lrcmux.js            LRC muxing
+│   │   │   ├── maintenance.js       Cleanup (orphan, WAL, HLS, ANALYZE)
+│   │   │   ├── metadataWriter.js    music-metadata read, ffmpeg embed
+│   │   │   ├── musicbrainz.js       Cover Art Archive API
+│   │   │   ├── netease.js           NetEase lyrics source
+│   │   │   ├── playbackEngine.js    Remux/transcode decisions, cache
+│   │   │   ├── playlistScanner.js   XSPF discovery from filesystem
+│   │   │   ├── pyjlyric.js          PyJLyric bridge
 │   │   │   ├── romaji.js            Romaji transliteration
+│   │   │   ├── runtimeSettings.js   In-memory settings cache, type casting
 │   │   │   ├── sendCounter.js       Send/queue counters
-│   │   │   ├── telegramBot.js       Telegram client (optional)
+│   │   │   ├── sendRateLimit.js     Rate limiting utilities
 │   │   │   ├── sessionTracker.js    WS/session tracking
+│   │   │   ├── telegramBot.js       Telegram client (optional)
+│   │   │   ├── thumbnailQueue.js    Async queue, concurrency control
+│   │   │   ├── thumbnailUtils.js    FFmpeg frame extract + scale resize (no sharp dep)
+│   │   │   ├── uploadManager.js     Busboy multipart, SHA256 verify
+│   │   │   ├── videoCache.js        Video cache bookkeeping
+│   │   │   ├── watcher.js           fs.watch debounce, SSE broadcast
+│   │   │   ├── xspfParser.js        XSPF playlist parser
+│   │   │   ├── youtube.js           YouTube helpers
+│   │   │   ├── ytdlp.js             yt-dlp wrapper
 │   │   │   ├── embed_cover.py       Python: cover embed fallback
 │   │   │   ├── romaji_convert.py    Python: romaji conversion
 │   │   │   └── pyjlyric_search.py   Python: PyJLyric search
@@ -289,34 +295,196 @@ homelab-media-server/
 │   │   └── sensors-worker.mjs       Forked worker — sensor reads
 │   └── (node_modules/, package.json)
 │
+├── backend/
+│   ├── certs/                    SSL certificates
+│   ├── scripts/
+│   │   └── ig_download.py        Instagram download helper
+│   ├── check_paths.cjs           Path validation script
+│   ├── cache/                    Cache directory
+│   ├── data/                     Persistent runtime data
+│   │   ├── media.db              SQLite (WAL mode)
+│   │   ├── download-tasks.json   Task persistence
+│   │   ├── download-counter.json Instagram SHA256 counters
+│   │   └── thumbnails/           Generated thumbnails
+│   ├── metadata_cache/           Metadata cache
+│   ├── package.json
+│
 ├── frontend/
 │   ├── src/
-│   │   ├── main.jsx              React entry (mounts <App/> in <DebugProvider>)
 │   │   ├── App.jsx               Central orchestrator (hash routing, ErrorBoundary)
+│   │   ├── main.jsx              React entry (mounts <App/> in <DebugProvider>)
 │   │   ├── index.css             Tailwind imports + global styles
-│   │   ├── components/           Shared UI components
-│   │   ├── monitoring/           Isolated monitoring dashboard
-│   │   ├── debug/                Built-in debug/inspection toolkit
-│   │   ├── store/                Zustand stores
-│   │   │   ├── playbackStore.js
-│   │   │   ├── playlistStore.js
-│   │   │   ├── folderSortStore.js
-│   │   │   └── folderMetaSortStore.js
-│   │   ├── monitoring/stores/
-│   │   │   └── monitoringStore.js
+│   │   ├── components/
+│   │   │   ├── AdbTransfer.jsx
+│   │   │   ├── AddMusicPanel.jsx
+│   │   │   ├── AudioPlayer.jsx.backup2
+│   │   │   ├── CachedVideoPlayer.jsx
+│   │   │   ├── CaptionEditorModal.jsx
+│   │   │   ├── Carousel.jsx
+│   │   │   ├── ConfirmModal.jsx
+│   │   │   ├── CoverArtSearch.jsx
+│   │   │   ├── CropTool.jsx
+│   │   │   ├── DuplicateConfirmModal.jsx
+│   │   │   ├── ErrorBoundary.jsx
+│   │   │   ├── FilterPanel.jsx
+│   │   │   ├── GaugeMeter.jsx
+│   │   │   ├── GroupDivider.jsx
+│   │   │   ├── HeaderComponents.jsx
+│   │   │   ├── ImageViewer.jsx
+│   │   │   ├── LyricsDisplay.jsx
+│   │   │   ├── LyricsEditor.jsx
+│   │   │   ├── LyricsScrollController.js
+│   │   │   ├── MediaControls.jsx
+│   │   │   ├── MediaControls.css
+│   │   │   ├── MediaGrid.jsx
+│   │   │   ├── MediaGrid.css
+│   │   │   ├── MediaLayout.jsx
+│   │   │   ├── MediaModal.jsx
+│   │   │   ├── MetadataEditor.jsx
+│   │   │   ├── MiniPlayer.jsx
+│   │   │   ├── MonitoringView.jsx
+│   │   │   ├── Music.jsx
+│   │   │   ├── NetworkImage.jsx
+│   │   │   ├── PlaylistGrid.jsx
+│   │   │   ├── PlaylistGridCard.jsx
+│   │   │   ├── PlaylistListItemRow.jsx
+│   │   │   ├── PlaylistListRow.jsx
+│   │   │   ├── PlaylistRow.jsx
+│   │   │   ├── PlaylistView.jsx
+│   │   │   ├── PlaylistView.css
+│   │   │   ├── QueueActionBar.jsx
+│   │   │   ├── QueuePanel.jsx
+│   │   │   ├── ScrcpyView.jsx
+│   │   │   ├── SendProgressPills.jsx
+│   │   │   ├── SendQueuePlayer.jsx
+│   │   │   ├── SendQueueView.jsx
+│   │   │   ├── SendQueueView.jsx.orig
+│   │   │   ├── ServiceStoppedBanner.jsx
+│   │   │   ├── SpeakerOutputButton.jsx
+│   │   │   ├── Toast.jsx
+│   │   │   ├── UploadsMonitor.jsx
+│   │   │   ├── VaultActionBar.jsx
+│   │   │   ├── VaultAudioPlayer.jsx
+│   │   │   ├── VaultBottomCluster.jsx
+│   │   │   ├── VideoPlayer.jsx
+│   │   │   ├── VideoPlayer.css
+│   │   │   ├── WhatsAppView.jsx
+│   │   │   └── icons/
+│   │   │       ├── AudioIcon.jsx
+│   │   │       ├── FolderIcon.jsx
+│   │   │       ├── ImageIcon.jsx
+│   │   │       ├── TelegramLogo.jsx
+│   │   │       ├── VideoIcon.jsx
+│   │   │       └── WaLogo.jsx
 │   │   ├── debug/
-│   │   │   └── useDebugStore.js
-│   │   ├── hooks/                Custom hooks (incl. useWebSocket)
-│   │   └── utils/                Frontend utilities (incl. api.js client)
+│   │   │   ├── DebugBadge.jsx
+│   │   │   ├── DebugOverlay.jsx
+│   │   │   ├── DebugProvider.jsx
+│   │   │   ├── DebugTooltip.jsx
+│   │   │   ├── index.js
+│   │   │   ├── inspectors/
+│   │   │   │   ├── EventInspector.jsx
+│   │   │   │   ├── HierarchyInspector.jsx
+│   │   │   │   ├── LayoutInspector.jsx
+│   │   │   │   ├── MemoryInspector.jsx
+│   │   │   │   ├── PerformanceInspector.jsx
+│   │   │   │   ├── RealtimeInspector.jsx
+│   │   │   │   ├── StateInspector.jsx
+│   │   │   │   ├── WebSocketInspector.jsx
+│   │   │   │   └── ZIndexInspector.jsx
+│   │   │   ├── useDebugStore.js
+│   │   │   ├── useDebugTrack.js
+│   │   │   └── utils/
+│   │   │       ├── css.js
+│   │   │       ├── dom.js
+│   │   │       ├── memory.js
+│   │   │       ├── route.js
+│   │   │       ├── virtualization.js
+│   │   │       └── websocket.js
+│   │   ├── hooks/
+│   │   │   ├── useDocumentHidden.js
+│   │   │   ├── useSendProgress.js
+│   │   │   ├── useServiceControl.js
+│   │   │   ├── useUploadQueueLogic.jsx
+│   │   │   ├── useVaultMediaActions.js
+│   │   │   ├── useWaUnsupported.js
+│   │   │   └── useWebSocket.js
+│   │   ├── monitoring/
+│   │   │   ├── components/
+│   │   │   │   └── Charts/
+│   │   │   │       └── MetricChart.jsx
+│   │   │   │   └── LogTerminal.jsx
+│   │   │   ├── layout/
+│   │   │   │   ├── MonitoringLayout.jsx
+│   │   │   │   ├── Sidebar.jsx
+│   │   │   │   └── TopBar.jsx
+│   │   │   ├── pages/
+│   │   │   │   ├── AlertsPage.jsx
+│   │   │   │   ├── AudioPlayerPage.jsx
+│   │   │   │   ├── ChartsPage.jsx
+│   │   │   │   ├── DockerPage.jsx
+│   │   │   │   ├── DownloaderPage.jsx
+│   │   │   │   ├── JobsPage.jsx
+│   │   │   │   ├── LogsPage.jsx
+│   │   │   │   ├── MediaStatsPage.jsx
+│   │   │   │   ├── MetricsTable.jsx
+│   │   │   │   ├── NetworkPage.jsx
+│   │   │   │   ├── Overview.jsx
+│   │   │   │   ├── ProcessesPage.jsx
+│   │   │   │   ├── QueuePage.jsx
+│   │   │   │   ├── ServiceControlPage.jsx
+│   │   │   │   ├── ServicesPage.jsx
+│   │   │   │   ├── SessionsPage.jsx
+│   │   │   │   ├── SettingsPage.jsx
+│   │   │   │   ├── StatusPage.jsx
+│   │   │   │   ├── StoragePage.jsx
+│   │   │   │   ├── TasksPage.jsx
+│   │   │   │   └── WhatsAppPage.jsx
+│   │   │   ├── shared/
+│   │   │   │   ├── DiskIoGauge.jsx
+│   │   │   │   ├── GlassCard.jsx
+│   │   │   │   ├── GradientBar.jsx
+│   │   │   │   ├── Skeleton.jsx
+│   │   │   │   └── StatusBadge.jsx
+│   │   │   ├── stores/
+│   │   │   │   └── monitoringStore.js
+│   │   │   └── widgets/
+│   │   │       ├── CpuWidget.jsx
+│   │   │       ├── DiskWidget.jsx
+│   │   │       ├── GpuWidget.jsx
+│   │   │       ├── MemoryWidget.jsx
+│   │   │       ├── MiniGauge.jsx
+│   │   │       ├── NetworkWidget.jsx
+│   │       └── SystemWidget.jsx
+│   │   ├── store/
+│   │   │   ├── favoritesStore.js
+│   │   │   ├── folderMetaSortStore.js
+│   │   │   ├── folderSortStore.js
+│   │   │   ├── playbackStore.js
+│   │   │   └── playlistStore.js
+│   │   └── utils/
+│   │       ├── adbApi.js
+│   │       ├── api.js
+│   │       ├── audioOutput.js
+│   │       ├── codec.js
+│   │       ├── filenameSearch.js
+│   │       ├── format.js
+│   │       ├── grouping.js
+│   │       ├── lrcParser.js
+│   │       ├── playlistApi.js
+│   │       ├── playlistWindow.js
+│   │       └── thumbCache.js
+│   └── package.json
 │
-├── whatsapp-bot/                 WhatsApp bridge (loaded by backend; can run standalone)
-│   └── src/
-│       ├── index.js              Entry
-│       ├── connection.js         whatsapp-web.js client
-│       ├── listener.js           Message handler
-│       ├── sender.js             Outbound sender
-│       ├── db.js                 SQLite state
-│       └── utils.js              Logger / helpers
+├── whatsapp-bot/
+│   ├── src/
+│   │   ├── connection.js         whatsapp-web.js client
+│   │   ├── db.js                 SQLite state
+│   │   ├── index.js              Entry
+│   │   ├── listener.js           Message handler
+│   │   ├── sender.js             Outbound sender
+│   │   └── utils.js              Logger / helpers
+│   └── package.json
 │
 ├── data/                           Persistent runtime data
 │   ├── media.db                  SQLite (WAL mode)
@@ -325,23 +493,56 @@ homelab-media-server/
 │   └── thumbnails/               Generated thumbnails
 │
 ├── cache/                          Ephemeral cache
-│   ├── playback/remux/           Cached MKV remux
-│   ├── playback/transcode/       Cached H.264/AAC MP4
-│   ├── playback/lru.json         LRU eviction state
+│   ├── downloader/               Workspace
 │   ├── hls/                      HLS segments
-│   └── downloader/               Workspace
+│   ├── playback/
+│   │   ├── lru.json             LRU eviction state
+│   │   ├── remux/               Cached MKV remux
+│   │   └── transcode/           Cached H.264/AAC MP4
 │
 ├── logs/                           Rotating logs
-│   ├── playback/  backend/  downloader/  maintenance/
-│   ├── monitoring/ system/  api/  upload/  stream/  web/
+│   ├── api/
+│   ├── downloader/
+│   ├── maintenance/
+│   ├── monitoring/
+│   ├── playback/
+│   ├── stream/
+│   ├── system/
+│   ├── upload/
+│   └── web/
 │
-└── Docker/
-    ├── docker-compose.yml        WAHA + nginx-nvidia (optional sidecars)
-    ├── nginx-nvidia/nginx.conf   Rate-limited proxy
-    └── litellm-config.yaml       ORPHANED — not mounted, no litellm service
+├── Docker/
+│   ├── docker-compose.yml        WAHA + nginx-nvidia (optional sidecars)
+│   ├── nginx-nvidia/
+│   │   └── nginx.conf            Rate-limited proxy
+│   ├── waha-data/
+│   │   └── webjs/
+│   └── litellm-config.yaml       ORPHANED — not mounted, no litellm service
+│
+├── credentials/                    Sensitive files (gitignored)
+│   ├── .env                      Environment variables (secrets)
+│   ├── .wwebjs_auth/             WhatsApp authentication
+│   ├── cookies.txt               WhatsApp session cookies
+│   ├── docs-debug/               Debug documentation
+│   └── gtw.txt                   WhatsApp chat logs
+│
+├── certs/                          Certificate generation scripts
+│   └── README.md
+│
+├── scripts/
+│   └── README.md
+│
+├── docs/                           Documentation (gitignored)
+│   └── archive/
+│       └── ideas/
+│           └── IDEAS.md
+│
+├── .env.example                    Environment template
+├── package.json                    Root package.json (CommonJS, shared deps)
+└── package-lock.json
 ```
 
-> **Utils note:** `backend/src/utils/` contains **38 `.js` modules** plus **3 spawned `.py` helpers** (`embed_cover.py`, `romaji_convert.py`, `pyjlyric_search.py`) = **41 files total**. The `.py` files are spawned as child processes, not imported; `registry.js` lives in `backend/src/services/`, **not** `utils/`. The two `*.mjs` files at `backend/src/` root (`fts-rebuild-worker.mjs`, `sensors-worker.mjs`) are forked child workers.
+> **Utils note:** `backend/src/utils/` contains **41 files**: 38 `.js` modules + 3 spawned `.py` helpers (`embed_cover.py`, `romaji_convert.py`, `pyjlyric_search.py`). The `.py` files are spawned as child processes, not imported; `registry.js` lives in `backend/src/services/`. The two `*.mjs` files at `backend/src/` root (`fts-rebuild-worker.mjs`, `sensors-worker.mjs`) are forked child workers.
 
 ---
 
@@ -439,245 +640,14 @@ Graceful shutdown on `SIGINT`/`SIGTERM`/`SIGQUIT` via `handleShutdown`:
 
 ---
 
-### 5.5 Startup & Lifecycle Code (verbatim)
+### 5.5 Startup & Lifecycle Code (summary)
 
-The following excerpts are copied directly from `backend/src/server.js`.
+> The full verbatim source was removed for readability. Key startup/lifecycle behavior (see `backend/src/server.js`):
 
-#### 5.5.1 `validateStartup()` — critical vs warning checks
-
-`server.js (`validateStartup()`)`. SQLite connectivity and writable dirs are **critical** (abort with exit 1); `ffmpeg`/`ffprobe` absence is only a **warning**.
-
-```javascript
-// backend/src/server.js (`validateStartup()`)
-function validateStartup() {
-  const criticalFailures = [];
-  const warnings = [];
-
-  let sqliteOk = false;
-  try { db.prepare('SELECT 1').get(); sqliteOk = true; }
-  catch (e) { criticalFailures.push({ check: 'sqlite', error: e.message }); }
-
-  if (!sqliteOk) criticalFailures.push({ check: 'sqlite', error: 'database unreachable' });
-
-  for (const dir of [PATHS.cacheRoot, PATHS.logsRoot, PATHS.thumbnails]) {
-    try { accessSync(dir, constants.W_OK); } catch (e) {
-      criticalFailures.push({ check: 'directory_writable', path: dir, error: e.code });
-    }
-  }
-
-  try {
-    const r = spawnSync('which', ['ffmpeg'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 });
-    if (r.error || r.status !== 0) warnings.push('ffmpeg not found in PATH');
-  } catch { warnings.push('ffmpeg not found in PATH'); }
-
-  try {
-    const r = spawnSync('which', ['ffprobe'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 });
-    if (r.error || r.status !== 0) warnings.push('ffprobe not found in PATH');
-  } catch { warnings.push('ffprobe not found in PATH'); }
-
-  for (const w of warnings) log.warn({ msg: 'startup warning', warning: w });
-  for (const f of criticalFailures) log.error({ msg: 'startup critical failure', ...f });
-
-  if (criticalFailures.length > 0) {
-    log.error({ msg: 'Critical startup failures detected — aborting', count: criticalFailures.length });
-    process.exit(1);
-  }
-
-  log.info({ msg: 'Startup validation passed', warnings: warnings.length });
-}
-
-> **Apa kerjanya:** Memvalidasi prasyarat saat boot: cek konektivitas SQLite (kritis), cek direktori writable `cacheRoot`/`logsRoot`/`thumbnails` (kritis), dan cek keberadaan `ffmpeg`/`ffprobe` di PATH (hanya warning). Bila ada kegagalan kritis, proses di-`exit(1)`.
-> **Dampak:** Mencegah server menyala dengan DB rusak atau direktori tak bisa ditulis; `ffmpeg` yang hilang hanya di-warning sehingga server tetap jalan (thumbnail/transcode baru gagal saat dipakai).
-> **Alternatif serupa:** Bisa pakai pemeriksaan async (`fs.promises.access`) atau cek `better-sqlite3` `open()` di `try`; trade-off: sync lebih sederhana dan cukup karena hanya dijalankan sekali saat startup.
-> **Kalau tidak pakai ini:** Server bisa boot dalam keadaan rusak lalu memberi error sporadis di runtime yang sulit dilacak.
-
-#### 5.5.2 Middleware + route-mounting block with `requireService()` guards
-
-`server.js (middleware block)-103`. Note the alias mount of `/api/search` onto `filesRouter`, the `express.static` thumbnail dir, and the per-service guards (`mediaVault`, `downloader`, `adbTransfer`, `playlists`).
-
-```javascript
-// backend/src/server.js (middleware block)
-app.use(cors());
-app.use(compression({ threshold: 1024 }));
-app.use(express.json());
-app.use(sessionMiddleware);
-
-app.use((req, res, next) => {
-  trackRequest(req.method, req.path);
-  next();
-});
-
-// Connection: close removed — let HTTP/1.1 keep-alive work naturally.
-// Monitoring dashboard reuses single TCP connection instead of 1 new/sec.
-
-// API ROUTES
-app.use('/api/files', requireService('mediaVault'), filesRouter);
-app.use('/api/search', requireService('mediaVault'), filesRouter); // alias/search endpoint
-app.use('/file', requireService('mediaVault'), fileRouter);
-app.use('/thumbnails', express.static(THUMBNAIL_DIR));
-app.use('/thumbnails', requireService('mediaVault'), thumbnailRouter);
-app.use('/stream', requireService('mediaVault'), streamRouter);
-app.use('/api/monitoring', monitoringRouter);
-app.use('/api/monitoring/jobs', jobsRouter);
-app.use('/api/services', servicesRouter);
-app.use('/api/settings', settingsRouter);
-app.use('/api/playback', playbackRouter);
-app.get('/api/logs/stream', addLogClient);
-app.get('/api/logs', (req, res) => {
-  res.json({ logs: getLogs(parseInt(req.query.limit) || 100) });
-});
-app.use('/api/download', requireService('downloader'), downloaderRouter);
-app.use('/api/upload', uploadRouter);
-app.use('/api/adb', requireService('adbTransfer'), adbRouter);
-app.use('/api/strawberry', mpdRouter);
-app.use('/api/playlists', playlistsRouter);
-// Guard playlist scan/refresh when playlists service is stopped
-app.use('/api/playlists/scan', requireService('playlists'));
-app.use('/api/playlists/:id/refresh', requireService('playlists'));
-app.use('/api/metadata', requireService('mediaVault'), metadataRouter);
-app.use('/api/scrcpy', scrcpyRouter);
-app.use('/api/send', sendRouter);
-app.use('/api/video-cache', videoCacheRouter);
-setupWhatsAppRoutes(app);
-```
-
-> **Apa kerjanya:** Menempelkan middleware `cors`, `compression`, `express.json`, session tracking, lalu memasang semua route API (dengan guard `requireService` per layanan: `mediaVault`, `downloader`, `adbTransfer`, `playlists`) serta static frontend dan rute WhatsApp.
-> **Dampak:** Guard per-layanan membuat endpoint tidak aktif bila layanannya di-stop (mis. scan playlist dicegah saat `playlists` mati), meningkatkan keandalan dan kontrol.
-> **Alternatif serupa:** Bisa pakai plugin seperti `express-rate-limit` atau gate global berbasis path; trade-off: guard per-route lebih eksplisit tapi lebih verbose.
-> **Kalau tidak pakai ini:** Semua endpoint akan selalu aktif walau layanannya mati, berpotensi error atau race condition pada data parsial.
-
-#### 5.5.3 Staggered startup `setTimeout(...)` sequence
-
-`server.js (staggered startup)-389`. Each phase is deferred so `listen()` returns immediately and heavy work (DB seed, FTS rebuild, initial scan) never blocks the first response.
-
-```javascript
-// backend/src/server.js (staggered startup)
-      // Start monitoring cache — all hardware/sensor reads via background timers
-      setTimeout(() => startMonitoringCache(stmts, db), 1500);
-
-      // Init historical table — 0.5s
-      setTimeout(() => initHistoricalTable(), 500);
-
-      // Phase 2: Background init — staggered to avoid blocking
-      // DB deferred init (settings seed, migrations, indexes) — 1s after listen
-      setTimeout(() => {
-        console.log('[server] Running deferred DB init...');
-        deferredDbInit();
-      }, 1000);
-
-      // FTS index setup — 2s after listen (after DB init)
-      setTimeout(() => {
-        console.log('[server] Running FTS setup...');
-        setupFTS().catch(e => console.error('[server] FTS setup failed:', e.message));
-      }, 2000);
-
-      // Engine starts collecting immediately — uses async first collect so it doesn't block listen
-      startEngine(server);
-
-      // Watcher + maintenance — lightweight, can start immediately
-      startWatcher();
-      startMaintenanceScheduler();
-
-      // Playlist scan — 5s
-      setTimeout(async () => {
-        try {
-          const { scanPlaylists } = await import('./utils/playlistScanner.js');
-          await scanPlaylists();
-        } catch (err) {
-          console.error('[server] Playlist scan failed:', err.message);
-        }
-      }, 5000);
-
-      // Incremental scan — 20s (after FTS rebuild completes to avoid SQLite lock)
-      setTimeout(async () => {
-        const { existsSync, readFileSync } = await import('node:fs');
-        const { join } = await import('node:path');
-        const { getEngineStatus } = await import('./monitor/engine.js');
-        const SCAN_TS_FILE = join(process.cwd(), 'data', '.last-scan-time');
-        const MAX_STALE_MS = 24 * 60 * 60 * 1000; // skip scan if last scan < 24h ago AND engine has stats
-
-        const hasRecentScan = existsSync(SCAN_TS_FILE)
-          ? (() => {
-              try {
-                const ms = BigInt(readFileSync(SCAN_TS_FILE, 'utf8').trim());
-                return (Date.now() - Number(ms)) < MAX_STALE_MS;
-              } catch { return false; }
-            })()
-          : false;
-        const eng = getEngineStatus();
-        const hasStats = eng.lastStats !== null;
-
-        if (hasRecentScan && hasStats) {
-          console.log('[server] Skipping initial scan: DB is fresh (last scan < 24h, engine stats ready)');
-          console.log('[server] Watcher will pick up any changes; run full scan manually via API if needed');
-          return;
-        }
-
-        console.log('[server] Starting initial scan (cold or stale DB)...');
-        try {
-          const result = await runIncrementalScan();
-          if (result) console.log('[server] Initial sync:', result);
-        } catch (err) {
-          console.error('[server] Initial scan failed:', err);
-        }
-      }, 20000);
-```
-
-> **Apa kerjanya:** Menunda (staggered) semua inisialisasi berat lewat `setTimeout` setelah `listen()` — DB seed, FTS rebuild, historical table, monitoring cache, playlist scan, dan initial scan 20 s — agar respons pertama tidak terblokir.
-> **Dampak:** Waktu until-ready lebih cepat; initial scan dilewati bila DB masih segar (<24 jam dan engine punya stats) sehingga boot tidak melakukan walk yang mahal.
-> **Alternatif serupa:** Bisa pakai worker pool atau job queue terpisah; trade-off: `setTimeout` sederhana tanpa dependensi ekstra, cukup untuk urutan startup.
-> **Kalau tidak pakai ini:** Kerja berat (FTS rebuild, scan) memblokir event loop dan menunda respons HTTP pertama secara signifikan.
-
-#### 5.5.4 `handleShutdown` — graceful drain
-
-`server.js (`handleShutdown`)-296`. Stops watcher → maintenance → engine → WS, then rejects new playback jobs, drains active jobs (30s `SETTINGS.shutdownTimeoutMs`), persists the LRU cache, and force-exits after 15s.
-
-```javascript
-// backend/src/server.js (`handleShutdown`)
-async function handleShutdown(signal) {
-  log.info({ msg: `Received ${signal} — shutting down gracefully` });
-
-  log.info({ msg: 'Stopping watcher...' });
-  try { const { stopWatcher } = await import('./utils/watcher.js'); stopWatcher(); } catch (e) { log.warn({ msg: 'watcher stop failed', error: e.message }); }
-
-  log.info({ msg: 'Stopping maintenance...' });
-  try { const { stopMaintenanceScheduler } = await import('./utils/maintenance.js'); stopMaintenanceScheduler(); } catch (e) { log.warn({ msg: 'maintenance stop failed', error: e.message }); }
-
-  log.info({ msg: 'Stopping monitor engine...' });
-  try { const { stopEngine } = await import('./monitor/engine.js'); stopEngine(); } catch (e) { log.warn({ msg: 'engine stop failed', error: e.message }); }
-
-  log.info({ msg: 'Stopping WebSocket server...' });
-  try { const { stopWebSocketServer } = await import('./monitor/websocket.js'); stopWebSocketServer(); } catch (e) { log.warn({ msg: 'websocket stop failed', error: e.message }); }
-
-  log.info({ msg: 'Rejecting new playback jobs...' });
-  try { const { requestShutdown } = await import('./utils/playbackEngine.js'); requestShutdown(); } catch (e) { log.warn({ msg: 'playback shutdown request failed', error: e.message }); }
-
-  log.info({ msg: 'Waiting for active playback jobs to drain...' });
-  try {
-    const { waitForDrain } = await import('./utils/playbackEngine.js');
-    await waitForDrain(SETTINGS.shutdownTimeoutMs);
-  } catch (e) { log.warn({ msg: 'playback drain failed', error: e.message }); }
-
-  log.info({ msg: 'Persisting playback LRU cache...' });
-  try { const { shutdown } = await import('./utils/playbackEngine.js'); shutdown(); } catch (e) { log.warn({ msg: 'playback LRU persist failed', error: e.message }); }
-
-  server.close(() => {
-    log.info({ msg: 'HTTP server closed' });
-    process.exit(0);
-  });
-
-  setTimeout(() => {
-    log.error({ msg: 'Force exiting after shutdown timeout' });
-    process.exit(1);
-  }, 15000);
-}
-
-> **Apa kerjanya:** Shutdown teratur saat `SIGINT`/`SIGTERM`/`SIGQUIT`: stop watcher → maintenance → monitor engine → WebSocket, lalu tolak job playback baru, drain job aktif (`waitForDrain`), persist cache LRU, dan `server.close()` dengan force-exit setelah 15 s.
-> **Dampak:** Mencegah korupsi DB/cache dan kehilangan progress transcode/ADB saat proses dihentikan; drain memberi job aktif waktu selesai.
-> **Alternatif serupa:** Bisa pakai PM2/`systemd` `gracefulShutdown` atau library seperti `http-shutdown`; trade-off: implementasi manual transparan tapi perlu dipelihara.
-> **Kalau tidak pakai ini:** Kill mendadak bisa memotong transaksi DB di tengah jalan dan merusak cache playback/LRU.
-
----
+- **Prerequisite validation** — checks SQLite connectivity, writable `cache/`/`logs/`/`thumbnails` dirs (critical → `exit(1)`), and `ffmpeg`/`ffprobe` on PATH (warning only).
+- **Middleware + routes** — mounts `cors`, `compression`, `express.json`, session tracking, and all `/api/*` routes behind per-service `requireService` guards (`mediaVault`, `downloader`, `adbTransfer`, `playlists`), then the static frontend and WhatsApp routes.
+- **Deferred heavy init** — DB seed, FTS rebuild, historical table, monitoring cache, playlist scan, and the initial media scan (20 s after `listen()`) are staggered with `setTimeout` so the first HTTP response is not blocked. The initial scan is skipped when the DB is fresh (<24 h).
+- **Graceful shutdown** — on `SIGINT`/`SIGTERM`/`SIGQUIT`: stop watcher → maintenance → monitor → WebSocket, drain active playback jobs (`waitForDrain`), persist the LRU cache, then `server.close()` with a forced exit after 15 s.
 
 ## 6. Backend — Database
 
@@ -711,10 +681,10 @@ db.pragma('mmap_size = 4294967296'); // 4GB — prevents kernel over-mapping
 db.pragma('page_size = 32768'); // Larger page size for better sequential I/O
 ```
 
-> **Apa kerjanya:** Menerapkan tuning PRAGMA SQLite sekali saat load modul: WAL (write-ahead log), `synchronous=NORMAL`, `temp_store=MEMORY`, `cache_size=-80000` (~80MB), `mmap_size=4GB`, `page_size=32768`.
-> **Dampak:** WAL memungkinkan baca konkuren saat tulis; page 32KB + mmap besar mempercepat I/O sekuensial untuk ratusan ribu baris; `NORMAL` menyeimbangkan keamanan vs performa.
-> **Alternatif serupa:** `journal_mode=DELETE` (default) lebih aman tapi mengunci seluruh DB saat write; `synchronous=FULL` lebih aman tapi lebih lambat. Trade-off: WAL+NORMAL cepat dengan risiko kehilangan transaksi terakhir saat crash.
-> **Kalau tidak pakai ini:** Query scan 100K+ file akan lambat dan write akan memblokir pembacaan, menurunkan respons API.
+> **What it does:** Applies the SQLite PRAGMA tuning once at module load: WAL (write-ahead log), `synchronous=NORMAL`, `temp_store=MEMORY`, `cache_size=-80000` (~80MB), `mmap_size=4GB`, `page_size=32768`.
+> **Impact:** WAL allows concurrent reads during writes; 32KB pages + a large mmap speed up sequential I/O for hundreds of thousands of rows; `NORMAL` balances safety vs. performance.
+> **Similar alternatives:** `journal_mode=DELETE` (default) is safer but locks the entire DB during writes; `synchronous=FULL` is safer but slower. Trade-off: WAL+NORMAL is fast with the risk of losing the last transaction on crash.
+> **If this were omitted:** A scan query over 100K+ files would be slow and writes would block reads, degrading API responsiveness.
 
 #### `files` and `folders` CREATE statements (verbatim)
 
@@ -757,10 +727,10 @@ db.exec(`
 `);
 ```
 
-> **Apa kerjanya:** Membuat tabel `folders` (parent/child via `parent_id`, depth, counters) dan `files` (metadata media + kolom `codec_info`, `is_stream_compatible`, `youtube_id`, `video_offset`) bila belum ada.
-> **Dampak:** Skema deterministik ini menjadi dasar semua fitur katalog, search, dan keputusan streaming; kolom stream-compat menyimpan hasil probe ffprobe.
-> **Alternatif serupa:** Bisa pakai ORM (Prisma/Sequelize) atau migrasi terpisah; trade-off: `db.exec` raw sederhana dan transparan, tanpa tooling migrasi.
-> **Kalau tidak pakai ini:** Tanpa skema ini tidak ada penyimpanan persisten untuk library media, thumbnail, maupun progress playback.
+> **What it does:** Creates the `folders` table (parent/child via `parent_id`, depth, counters) and the `files` table (media metadata + the `codec_info`, `is_stream_compatible`, `youtube_id`, `video_offset` columns) if they do not exist.
+> **Impact:** This deterministic schema underpins all catalog, search, and streaming-decision features; the stream-compat column stores the ffprobe probe result.
+> **Similar alternatives:** Could use an ORM (Prisma/Sequelize) or separate migrations; trade-off: raw `db.exec` is simple and transparent, with no migration tooling.
+> **If this were omitted:** Without this schema there is no persistent storage for the media library, thumbnails, or playback progress.
 
 #### `files` Table
 
@@ -1185,10 +1155,10 @@ function computeCacheHash(filePath, size, mtime) {
 }
 ```
 
-> **Apa kerjanya:** Memilih cara pemutaran (direct/remux/transcode) dari hasil probe codec, lalu menghitung kunci cache MD5 `filePath:size:mtime`.
-> **Dampak:** Browser kompatibel langsung diputar tanpa proses; Opus di MP4 di-remux cepat; sisanya di-transcode, sehingga startup lebih cepat dan hemat CPU.
-> **Alternatif serupa:** Bisa pakai profil statis per-ekstensi, tapi probe dinamis menangani variasi codec di dunia nyata.
-> **Kalau tidak pakai ini:** Format tak didukung akan gagal diputar atau memaksa transcode tiap request (boros CPU/IO).
+> **What it does:** Picks the playback method (direct/remux/transcode) from the codec probe result, then computes the MD5 cache key `filePath:size:mtime`.
+> **Impact:** Browser-compatible files play directly with no processing; Opus-in-MP4 is remuxed quickly; everything else is transcoded — so startup is faster and CPU is saved.
+> **Similar alternatives:** Could use static per-extension profiles, but dynamic probing handles real-world codec variation.
+> **If this were omitted:** Unsupported formats would fail to play or force a transcode on every request (wasteful CPU/IO).
 
 ```javascript
 // backend/src/utils/playbackEngine.js
@@ -1217,10 +1187,10 @@ function transcodeToH264Mp4(inputPath, outputPath) {
 }
 ```
 
-> **Apa kerjanya:** `remuxToMkv` menyalin stream ke MKV tanpa re-encode; `transcodeToH264Mp4` mengonversi video ke H.264/yuv420p dan audio ke AAC dengan `+faststart`.
-> **Dampak:** Opus-in-MP4 jadi bisa diputar (remux) dan codec lain jadi H.264/AAC universal (transcode) dengan moov di depan untuk streaming.
-> **Alternatif serupa:** Pakai `ffmpeg` dengan `-c copy` ke MP4 untuk kasus tanpa Opus, tapi MKV lebih aman untuk remux generik.
-> **Kalau tidak pakai ini:** Video Opus/HEVC tak terpakai di browser dan transcode tak ada cadangan, sehingga gagal diputar.
+> **What it does:** `remuxToMkv` copies streams into MKV without re-encoding; `transcodeToH264Mp4` converts video to H.264/yuv420p and audio to AAC with `+faststart`.
+> **Impact:** Opus-in-MP4 becomes playable (remux) and other codecs become universal H.264/AAC (transcode) with the moov atom at the front for streaming.
+> **Similar alternatives:** Use `ffmpeg` with `-c copy` to MP4 for the no-Opus case, but MKV is safer for generic remux.
+> **If this were omitted:** Opus/HEVC videos would be unusable in the browser and, with no transcode fallback, would fail to play.
 
 ```javascript
 // backend/src/utils/playbackEngine.js — FFmpeg concurrency limiter (prevents OOM storms)
@@ -1249,10 +1219,10 @@ function releaseFfmpegSlot() {
 }
 ```
 
-> **Apa kerjanya:** Membatasi maksimal 2 proses ffmpeg berjalan bersamaan lewat slot; sisanya antri sampai ada yang selesai.
-> **Dampak:** Menghindari lonjakan transcode yang membanjiri RAM/CPU saat banyak request bersamaan.
-> **Alternatif serupa:** Bisa pakai worker pool (mis. `p-queue`), tapi variabel counter + antri cukup dan tanpa dependensi.
-> **Kalau tidak pakai ini:** Beban transcode berbarengan bisa memicu OOM kill pada server.
+> **What it does:** Limits ffmpeg to at most 2 concurrent processes via slots; the rest queue until one finishes.
+> **Impact:** Avoids transcoding spikes that flood RAM/CPU when many requests arrive at once.
+> **Similar alternatives:** Could use a worker pool (e.g. `p-queue`), but a counter variable plus a queue is sufficient and dependency-free.
+> **If this were omitted:** Concurrent transcode load could trigger an OOM kill on the server.
 
 #### 8.1.2 HLS (code)
 
@@ -1283,10 +1253,10 @@ const ffmpegArgs = [
 await spawnFfmpeg(ffmpegArgs);
 ```
 
-> **Apa kerjanya:** `spawnFfmpeg` membungkus pemanggilan ffmpeg dalam promise; argumen HLS memotong video jadi segmen `.ts` 3 detik via `-f hls -hls_time 3`.
-> **Dampak:** Memungkinkan streaming adaptif berbasis segmen tanpa transcode (copy) sehingga latensi rendah.
-> **Alternatif serupa:** Pakai DASH atau transcode per-segmen, tapi HLS copy sudah cukup untuk pemutaran progresif.
-> **Kalau tidak pakai ini:** Video besar harus di-download utuh dulu sebelum bisa diputar (tidak ada progressive streaming).
+> **What it does:** `spawnFfmpeg` wraps the ffmpeg call in a promise; the HLS args slice the video into 3-second `.ts` segments via `-f hls -hls_time 3`.
+> **Impact:** Enables segment-based adaptive streaming without transcoding (copy), keeping latency low.
+> **Similar alternatives:** DASH or per-segment transcoding could be used, but copy-based HLS is enough for progressive playback.
+> **If this were omitted:** Large videos would have to be fully downloaded before playing (no progressive streaming).
 
 ### 8.2 File Scanner & Thumbnails
 
@@ -1321,10 +1291,10 @@ async function computeContentHash(filePath, size) {
 }
 ```
 
-> **Apa kerjanya:** Membuat hash MD5 dari ukuran + 64 KB awal + 64 KB akhir file sebagai sidik jari konten cepat.
-> **Dampak:** Mendeteksi perubahan isi tanpa membaca file utuh, sehingga scan tetap cepat untuk file besar.
-> **Alternatif serupa:** Hash SHA-256 penuh lebih akurat tapi lambat; sampling sudah cukup untuk deteksi perubahan umum.
-> **Kalau tidak pakai ini:** File yang diubah tapi ukuran/waktu sama bisa luput dari pembaruan metadata.
+> **What it does:** Builds an MD5 hash from the size + first 64 KB + last 64 KB of the file as a fast content fingerprint.
+> **Impact:** Detects content changes without reading the whole file, keeping scans fast even for large files.
+> **Similar alternatives:** A full SHA-256 hash is more accurate but slower; sampling is sufficient for ordinary change detection.
+> **If this were omitted:** A file changed but with identical size/time could be missed by metadata updates.
 
 ```javascript
 // backend/src/utils/fileScanner.js — mtime/size/hash dedup loop (incrementalSync)
@@ -1345,10 +1315,10 @@ if (existing && existing.size === entry.size && existing.mtime === entry.mtime) 
 }
 ```
 
-> **Apa kerjanya:** Melewati file yang ukuran dan mtime-nya sama dengan DB; kalau `compareByHash` aktif, baru cek hash konten.
-> **Dampak:** Scan inkremental sangat cepat karena file tak berubah langsung dilewati (skip).
-> **Alternatif serupa:** Selalu hitung hash penuh, tapi itu memakan I/O untuk file yang jarang berubah.
-> **Kalau tidak pakai ini:** Tiap scan membandingkan ulang semua file sehingga lambat dan membebani disk.
+> **What it does:** Skips files whose size and mtime match the DB; only when `compareByHash` is enabled is the content hash checked.
+> **Impact:** Incremental scans are very fast because unchanged files are skipped immediately.
+> **Similar alternatives:** Always computing a full hash is possible, but it wastes I/O on files that rarely change.
+> **If this were omitted:** Every scan would re-compare all files, becoming slow and heavy on disk.
 
 #### 8.2.2 Watcher (code)
 
@@ -1405,10 +1375,10 @@ function startWatcher() {
 }
 ```
 
-> **Apa kerjanya:** Memantau perubahan direktori via `fs.watch` lalu menunda 2 detik sebelum scan inkremental + kirim event SSE ke klien.
-> **Dampak:** UI otomatis terrefresh saat file baru masuk, tanpa poll terus-menerus.
-> **Alternatif serupa:** `chokidar` lebih portabel lintas OS, tapi `fs.watch` rekursif sudah cukup di Linux.
-> **Kalau tidak pakai ini:** Pengguna harus refresh manual untuk melihat file baru.
+> **What it does:** Watches directory changes via `fs.watch`, then waits 2 seconds before an incremental scan + SSE event broadcast to clients.
+> **Impact:** The UI refreshes automatically when new files arrive, without constant polling.
+> **Similar alternatives:** `chokidar` is more portable across OSes, but recursive `fs.watch` is enough on Linux.
+> **If this were omitted:** The user would have to manually refresh to see new files.
 
 #### 8.2.3 Thumbnails (code)
 
@@ -1458,10 +1428,10 @@ export async function extractEmbeddedThumbnail(inputPath, outputPath) {
 }
 ```
 
-> **Apa kerjanya:** Menyalin satu frame video yang merupakan cover art tersemat (`attached_pic`/mjpeg/png) keluar sebagai file gambar via `-c copy -frames:v 1`.
-> **Dampak:** Musik/video dengan cover art internal langsung punya thumbnail tanpa ekstraksi frame acak; lebih relevan secara visual.
-> **Alternatif serupa:** Bisa pakai `music-metadata` untuk baca cover, tapi ffmpeg sudah menangani audio+video secara seragam; trade-off: ffmpeg cukup.
-> **Kalau tidak pakai ini:** File dengan cover art tersemat akan tetap diambil frame acaknya, kurang estetis.
+> **What it does:** Copies a single video frame that is an embedded cover art (`attached_pic`/mjpeg/png) out to an image file via `-c copy -frames:v 1`.
+> **Impact:** Music/video with internal cover art gets a thumbnail immediately without sampling a random frame — more visually relevant.
+> **Similar alternatives:** Could use `music-metadata` to read the cover, but ffmpeg already handles audio+video uniformly; trade-off: ffmpeg is sufficient.
+> **If this were omitted:** Files with embedded cover art would still get a random frame sampled, which is less aesthetically pleasing.
 
 ### 8.3 Downloader (`downloader/manager.js`)
 
@@ -1503,10 +1473,10 @@ const QUALITY_MAP = {
 };
 ```
 
-> **Apa kerjanya:** Mendefinisikan pemetaan tiap sumber (youtube, tiktok, twitter, instagram, torrent) ke direktori output video/audio/gambar, serta daftar kualitas yang diizinkan per sumber; direktori output dibuat saat modul dimuat lewat `mkdirSync`.
-> **Dampak:** Menjamin hasil unduhan tersimpan di lokasi konsisten dan terpisah per platform; validasi kategori/kualitas di `createTask` bergantung penuh pada map ini.
-> **Alternatif serupa:** Bisa membaca pemetaan dari env/JSON; trade-off: map hardcoded lebih sederhana dan cukup untuk sumber yang tetap.
-> **Kalau tidak pakai ini:** Path output tidak terdefinisi dan validasi kategori/kualitas gagal, sehingga task unduhan tidak bisa dibuat.
+> **What it does:** Defines the mapping of each source (youtube, tiktok, twitter, instagram, torrent) to its video/audio/image output directories, plus the allowed quality list per source; output dirs are created at module load via `mkdirSync`.
+> **Impact:** Guarantees downloads land in consistent, per-platform locations; the category/quality validation in `createTask` relies entirely on this map.
+> **Similar alternatives:** Could read the mapping from env/JSON; trade-off: a hardcoded map is simpler and sufficient for fixed sources.
+> **If this were omitted:** Output paths would be undefined and category/quality validation would fail, so download tasks could not be created.
 
 **`spawnYtdlp`** (`manager.js:1511-1549`). Builds the yt-dlp argument vector — `--concurrent-fragments 4`, format selectors per category (Instagram forces an H.264/AVC MP4 merge), audio extraction, and the output template.
 
@@ -1554,10 +1524,10 @@ function spawnYtdlp(task) {
   // ... -o outputTemplate, task.url, then spawn('yt-dlp', args, ...)
 ```
 
-> **Apa kerjanya:** Menyusun vektor argumen `yt-dlp` berdasarkan kategori task — jumlah fragment konkuren, pemilihan format (Instagram memaksa merge MP4 H.264/AVC), ekstraksi audio, template output, dan cookies Twitter.
-> **Dampak:** Menentukan kualitas, kompatibilitas browser, dan lokasi file akhir; Instagram selalu diarahkan ke format MP4 agar bisa diputar langsung di klien.
-> **Alternatif serupa:** Bisa pakai pembungkus seperti `ytdl-core`; trade-off: memanggil binary langsung lebih fleksibel dan mengikuti rilis `yt-dlp` terbaru.
-> **Kalau tidak pakai ini:** Unduhan tidak bisa dijalankan karena argumen tak terbentuk, atau menghasilkan format tidak kompatibel dengan player.
+> **What it does:** Builds the `yt-dlp` argument vector based on task category — concurrent fragment count, format selection (Instagram forces an MP4 H.264/AVC merge), audio extraction, output template, and Twitter cookies.
+> **Impact:** Determines quality, browser compatibility, and final file location; Instagram is always routed to MP4 so it plays directly in the client.
+> **Similar alternatives:** A wrapper like `ytdl-core` could be used; trade-off: calling the binary directly is more flexible and tracks the latest `yt-dlp` releases.
+> **If this were omitted:** Downloads could not run because the arguments would not be formed, or would produce a player-incompatible format.
 
 **Instagram VP9/AV1 → H.264/AAC transcode** (`manager.js:503-531`). Re-encodes non-browser-compatible Instagram video at `crf 18` / `preset medium` so it plays directly in the browser.
 
@@ -1594,10 +1564,10 @@ function transcodeInstagramVideoToH264(task, filePath) {
 }
 ```
 
-> **Apa kerjanya:** Mengonversi ulang video Instagram yang tidak kompatibel (VP9/AV1) ke H.264/AAC MP4 via `ffmpeg` dengan `crf 18`/`preset medium`, lalu memeriksa keberadaan file hasil sebelum mengembalikannya.
-> **Dampak:** Menjamin semua video Instagram bisa diputar langsung di browser tanpa kegagalan playback. Seperti dicatat pada catatan overkill, transcode ini berat/lambat, namun layak karena Instagram adalah jalur ingest utama dan menghindari playback error di klien.
-> **Alternatif serupa:** Bisa melewatkan transcode bila sumber sudah `avc1`/`h264` lewat `probeVideoFile` + `isInstagramVideoCodecCompatible`; trade-off: lebih cepat tapi risiko gagal di sebagian browser.
-> **Kalau tidak pakai ini:** Video VP9/AV1 tidak dapat diputar di banyak browser, menghasilkan playback error pada media Instagram.
+> **What it does:** Re-encodes incompatible Instagram videos (VP9/AV1) to H.264/AAC MP4 via `ffmpeg` with `crf 18`/`preset medium`, then checks the output file exists before returning it.
+> **Impact:** Guarantees every Instagram video plays directly in the browser without playback failure. As noted in the overkill note, this transcode is heavy/slow, but it is worthwhile because Instagram is the primary ingest path and it avoids client playback errors.
+> **Similar alternatives:** The transcode can be skipped when the source is already `avc1`/`h264` via `probeVideoFile` + `isInstagramVideoCodecCompatible`; trade-off: faster but risks failure in some browsers.
+> **If this were omitted:** VP9/AV1 videos cannot play in many browsers, causing playback errors on Instagram media.
 
 **Instagram 1-concurrent + 12 s rate limit** (`manager.js:16-18`, `manager.js:1160-1186`). The queue scheduler serializes Instagram tasks and inserts a 12 s gap between them to stay under Instagram's rate limits.
 
@@ -1626,10 +1596,10 @@ let lastInstagramTaskAt = 0;
     }
 ```
 
-> **Apa kerjanya:** Membatasi antrean Instagram ke 1 konkuren dan menyisipkan jeda minimal 12 detik antar task lewat `INSTAGRAM_CONCURRENT`/`INSTAGRAM_DELAY_MS` di `processQueue`.
-> **Dampak:** Menghindari rate-limit/pemblokiran dari Instagram dengan tidak memicu terlalu banyak unduhan bersamaan.
-> **Alternatif serupa:** Bisa pakai token bucket atau library rate-limiter; trade-off: counter + `setTimeout` sederhana tanpa dependensi sudah cukup.
-> **Kalau tidak pakai ini:** Instagram dapat membatasi atau memblokir akun karena terlalu banyak request bersamaan dalam waktu singkat.
+> **What it does:** Limits the Instagram queue to 1 concurrent task and inserts a minimum 12-second gap between tasks via `INSTAGRAM_CONCURRENT`/`INSTAGRAM_DELAY_MS` in `processQueue`.
+> **Impact:** Avoids rate-limiting/blocking from Instagram by not triggering too many simultaneous downloads.
+> **Similar alternatives:** A token bucket or a rate-limiter library could be used; trade-off: a simple counter + `setTimeout` is dependency-free and sufficient.
+> **If this were omitted:** Instagram could throttle or block the account due to too many simultaneous requests in a short time.
 
 ### 8.4 ADB Transfer (`utils/adbManager.js`, `adbTransaction.js`, `adbWorkerPool.js`, `routes/adb.js`)
 
@@ -1670,10 +1640,10 @@ const VALID_TRANSITIONS = {
 };
 ```
 
-> **Apa kerjanya:** Mendefinisikan enum status transaksi ADB (PENDING, CONFLICT_CHECK, TRANSFERRING, VERIFYING, METADATA, COMMITTED, dst) beserta `VALID_TRANSITIONS` yang hanya mengizinkan transisi legal antar-status.
-> **Dampak:** Mencegah korupsi state transaksi; `updateStatus` menolak transisi ilegal sehingga lifecycle transfer tetap konsisten dan bisa dipulihkan setelah crash.
-> **Alternatif serupa:** Bisa pakai library state-machine (mis. `xstate`); trade-off: map eksplisit lebih ringan dan mudah diaudit.
-> **Kalau tidak pakai ini:** Transaksi bisa melompat ke status tidak valid (mis. committed→transferring) sehingga verifikasi dan recovery tak dapat diandalkan.
+> **What it does:** Defines the ADB transaction status enum (PENDING, CONFLICT_CHECK, TRANSFERRING, VERIFYING, METADATA, COMMITTED, etc.) along with `VALID_TRANSITIONS`, which only permits legal transitions between statuses.
+> **Impact:** Prevents transaction-state corruption; `updateStatus` rejects illegal transitions so the transfer lifecycle stays consistent and recoverable after a crash.
+> **Similar alternatives:** A state-machine library (e.g. `xstate`) could be used; trade-off: an explicit map is lighter and easier to audit.
+> **If this were omitted:** Transactions could jump to invalid statuses (e.g. committed→transferring), making verification and recovery unreliable.
 
 **Concurrency-limited worker pool** (`adbWorkerPool.js:90-168`). `AdbWorkerPool.processJob` spins up `min(maxWorkers, pending.length)` workers and a `_prepAhead` look-ahead that pre-stats remote dirs and resolves conflicts before transfer begins.
 
@@ -1728,10 +1698,10 @@ export class AdbWorkerPool {
 }
 ```
 
-> **Apa kerjanya:** Menjalankan transfer dengan pool pekerja sejumlah `min(maxWorkers, jumlah pending)`; tiap pekerja memproses satu transaksi, sementara `_prepAhead` melakukan stat remote dan resolusi konflik di awal.
-> **Dampak:** Memungkinkan transfer paralel antar-file dengan batas konkuren aman; retry otomatis dan penanganan konflik terpusat di worker.
-> **Alternatif serupa:** Bisa pakai `p-queue` atau `worker_threads`; trade-off: implementasi promise-based sendiri cukup untuk orchestration ADB.
-> **Kalau tidak pakai ini:** Transfer berjalan serial atau tanpa batas konkuren, memperlambat job besar atau membanjiri perangkat target.
+> **What it does:** Runs transfers with a worker pool sized `min(maxWorkers, pending count)`; each worker processes one transaction while `_prepAhead` does remote stat and conflict resolution up front.
+> **Impact:** Enables safe-concurrency parallel transfers across files; auto-retry and conflict handling are centralized in the worker.
+> **Similar alternatives:** `p-queue` or `worker_threads` could be used; trade-off: a self-built promise-based implementation is enough for ADB orchestration.
+> **If this were omitted:** Transfers would run serially or with unbounded concurrency, slowing large jobs or flooding the target device.
 
 **Checksum / size verification after push** (`adbWorkerPool.js:418-426`). Each file is re-stated on-device and compared to the expected size (and, post-metadata, mtime). A size mismatch throws and the transaction is retried (up to `max_attempts`).
 
@@ -1747,10 +1717,10 @@ export class AdbWorkerPool {
     }
 ```
 
-> **Apa kerjanya:** Setelah push, memanggil `verifyFile` di perangkat untuk membandingkan ukuran (dan mtime setelah metadata) file tujuan dengan ukuran yang diharapkan; bila gagal, lempar error bertipe `SIZE_MISMATCH`/`FILE_MISSING`.
-> **Dampak:** Menjamin integritas file hasil transfer; kegagalan verifikasi memicu retry otomatis hingga `max_attempts` sebelum ditandai failed.
-> **Alternatif serupa:** Bisa membandingkan checksum SHA256 alih-alih ukuran; trade-off: ukuran lebih cepat, SHA256 lebih robust tapi butuh baca ulang.
-> **Kalau tidak pakai ini:** File rusak/terpotong bisa lolos sebagai sukses, merusak library di perangkat.
+> **What it does:** After a push, calls `verifyFile` on the device to compare the destination file's size (and mtime after metadata) with the expected size; on failure it throws a `SIZE_MISMATCH`/`FILE_MISSING` error.
+> **Impact:** Guarantees the integrity of transferred files; a verification failure triggers automatic retries up to `max_attempts` before being marked failed.
+> **Similar alternatives:** Could compare a SHA256 checksum instead of size; trade-off: size is faster, SHA256 is more robust but requires re-reading.
+> **If this were omitted:** Corrupted/truncated files could pass as success, corrupting the library on the device.
 
 **`push()` job creation** (`adbManager.js:461-503`). Builds the job record carrying `maxWorkers` and `conflictStrategy` (`skip` | `overwrite` | `ask`), persists it, and enqueues on the per-device queue.
 
@@ -1801,10 +1771,10 @@ export class AdbWorkerPool {
   }
 ```
 
-> **Apa kerjanya:** Membuat record job push berisi device, sources, dest, `maxWorkers`, dan `conflictStrategy` (`skip`|`overwrite`|`ask`), menyimpannya ke DB via `transactionEngine`, lalu memasukkannya ke antrean per-perangkat.
-> **Dampak:** Menjadi titik masuk transfer; job tersimpan sehingga bisa dipulihkan setelah restart dan dijalankan berurutan per device.
-> **Alternatif serupa:** Bisa langsung spawn tanpa job persistence; trade-off: job + DB memungkinkan resume, pause, dan progress SSE.
-> **Kalau tidak pakai ini:** Tidak ada pelacakan job, sehingga tak ada progress, pause, atau recovery setelah crash.
+> **What it does:** Creates a push job record holding device, sources, dest, `maxWorkers`, and `conflictStrategy` (`skip`|`overwrite`|`ask`), persists it to the DB via `transactionEngine`, then enqueues it per device.
+> **Impact:** Serves as the transfer entry point; the job is stored so it can be recovered after restart and runs sequentially per device.
+> **Similar alternatives:** Could spawn directly without job persistence; trade-off: a job + DB enables resume, pause, and SSE progress.
+> **If this were omitted:** There would be no job tracking, hence no progress, pause, or recovery after a crash.
 
 ### 8.5 Upload (`utils/uploadManager.js`, `routes/upload.js`)
 
@@ -1828,10 +1798,10 @@ async function mpdSend(cmd) {
 }
 ```
 
-> **Apa kerjanya:** Mengirim perintah MPD ke client yang sudah terhubung lewat `getClient()` lalu `c.sendCommand(cmd)`.
-> **Dampak:** Seluruh endpoint player/playlist/queue memanggil `mpdSend` sehingga kontrol Strawberry terpusat pada satu wrapper.
-> **Alternatif serupa:** Bisa langsung memanggil `client.sendCommand` di tiap handler, tapi wrapper ini menambahkan lazy-connect dan reset on close.
-> **Kalau tidak pakai ini:** Tiap handler perlu menangani koneksi sendiri sehingga rawan duplikasi dan putus koneksi tidak tertangani.
+> **What it does:** Sends an MPD command to the already-connected client via `getClient()` then `c.sendCommand(cmd)`.
+> **Impact:** All player/playlist/queue endpoints call `mpdSend`, so Strawberry control is centralized in one wrapper.
+> **Similar alternatives:** Could call `client.sendCommand` directly in each handler, but this wrapper adds lazy-connect and reset-on-close.
+> **If this were omitted:** Each handler would have to manage its own connection, which is prone to duplication and unhandled disconnects.
 <!-- annot:mpd_send -->
 **Loop-mode mapping** (`mpd.js:250-258`). The one/all/off UI maps to MPD's `repeat` + `single` flags.
 
@@ -1848,10 +1818,10 @@ router.post('/player/loop', async (req, res) => {
 });
 ```
 
-> **Apa kerjanya:** Memetakan mode UI one/all/off ke flag MPD `repeat` dan `single` (satu = repeat 1 + single 1, all = repeat 1 + single 0, off = keduanya 0).
-> **Dampak:** Frontend cukup mengirim `mode` tunggal dan backend menerjemahkannya ke dua perintah MPD.
-> **Alternatif serupa:** Bisa pakai satu perintah `repeat` saja, tapi MPD membedakan repeat vs single untuk mode one.
-> **Kalau tidak pakai ini:** Mode loop satu lagu tidak bisa diwujudkan karena MPD memisahkan flag repeat dan single.
+> **What it does:** Maps the UI loop mode one/all/off to the MPD `repeat` and `single` flags (one = repeat 1 + single 1, all = repeat 1 + single 0, off = both 0).
+> **Impact:** The frontend only needs to send a single `mode` and the backend translates it into the two MPD commands.
+> **Similar alternatives:** A single `repeat` command could be used, but MPD distinguishes repeat vs. single for the one mode.
+> **If this were omitted:** The single-track loop mode could not be expressed because MPD separates the repeat and single flags.
 <!-- annot:mpd_loop -->
 > The status→loopMode decode lives in `GET /player/status` (`mpd.js:148-150`): `repeat && single → 'one'`, `repeat → 'all'`, else `'off'`.
 
@@ -1919,10 +1889,10 @@ async function collectAll() {
 }
 ```
 
-> **Apa kerjanya:** Menjalankan keenam collector (cpu, ram, gpu, disk, network, system) berurutan dengan timeout 3 detik per collector via `Promise.race`, lalu menyiarkan stats (throttle 3s) dan menyimpan snapshot setiap 30s.
-> **Dampak:** Dashboard mendapat metrik terbaru tiap poll 3000ms tanpa satu collector lambat memblokir loop (`collecting` guard mencegah overlap).
-> **Alternatif serupa:** Bisa pakai `Promise.all` tanpa timeout, tapi timeout melindungi dari collector yang hang.
-> **Kalau tidak pakai ini:** Collector yang macet dapat menghentikan pembaruan metrik seluruh sistem.
+> **What it does:** Runs all six collectors (cpu, ram, gpu, disk, network, system) sequentially with a 3-second per-collector timeout via `Promise.race`, then broadcasts stats (3s throttle) and stores a snapshot every 30s.
+> **Impact:** The dashboard gets fresh metrics every 3000ms poll without a slow collector blocking the loop (the `collecting` guard prevents overlap).
+> **Similar alternatives:** `Promise.all` without a timeout could be used, but the timeout protects against a hung collector.
+> **If this were omitted:** A stuck collector could halt metric updates across the whole system.
 <!-- annot:engine_collectall -->
 **Forked sensor reads — `monitoringCache.js` + `sensors-worker.mjs`** (`monitoringCache.js:69-77`, `165-184`). Hardware sensor reads (`/sys/class/hwmon`) are pushed into a **detached child process** so a kernel D-state hang on `hwmon` never blocks the main HTTP event loop. The parent reads the child's result JSON after a 1.5 s settle.
 
@@ -1942,10 +1912,10 @@ function refreshSensors() {
 }
 ```
 
-> **Apa kerjanya:** Mem-fork proses Node terpisah (`sensors-worker.mjs`) yang membaca sysfs hwmon, lalu setelah 1,5 detik membaca hasil JSON-nya dari cache file; child di-`unref()` agar tak menahan proses.
-> **Dampak:** Baca sensor yang bisa menggantung di D-state (uninterruptible sleep) tidak memblokir event loop HTTP utama, sehingga server tetap responsif saat hardware bermasalah.
-> **Alternatif serupa:** Bisa membaca `/sys/class/hwmon` langsung di thread utama (lebih murah), tapi berisiko hang pada sensor flaky — proses terpisah adalah trade-off robustness/overkill yang disengaja.
-> **Kalau tidak pakai ini:** Hang D-state pada sysfs dapat membekukan seluruh media server hingga tak bisa merespons request.
+> **What it does:** Forks a separate Node process (`sensors-worker.mjs`) that reads sysfs hwmon, then after 1.5s reads its JSON result from a cache file; the child is `unref()`-ed so it does not hold the process alive.
+> **Impact:** Sensor reads that can hang in D-state (uninterruptible sleep) no longer block the main HTTP event loop, so the server stays responsive when hardware misbehaves.
+> **Similar alternatives:** Could read `/sys/class/hwmon` directly on the main thread (cheaper), but that risks a hang on flaky sensors — a separate process is a deliberate robustness/overkill trade-off.
+> **If this were omitted:** A sysfs D-state hang could freeze the entire media server so it cannot respond to requests.
 <!-- annot:cache_refreshsensors -->
 ```javascript
 // backend/src/sensors-worker.mjs:1
@@ -1991,10 +1961,10 @@ try {
 }
 ```
 
-> **Apa kerjanya:** Membaca semua `hwmon` dari sysfs, mengonversi nilai raw ke °C (dibagi 1000), mengambil `high`/`crit`, lalu menulis hasilnya ke `/tmp/homelab_sensors.json`.
-> **Dampak:** Menyediakan data sensor yang diambil di luar proses utama sehingga parent bisa membacanya dengan aman.
-> **Alternatif serupa:** Bisa mengembalikan lewat IPC, tapi menulis file cache lebih sederhana dan dipisahkan dari event loop.
-> **Kalau tidak pakai ini:** Pembacaan sensor harus dilakukan di proses utama yang rentan D-state hang.
+> **What it does:** Reads all `hwmon` entries from sysfs, converts raw values to °C (divide by 1000), grabs `high`/`crit`, then writes the result to `/tmp/homelab_sensors.json`.
+> **Impact:** Provides sensor data gathered outside the main process so the parent can read it safely.
+> **Similar alternatives:** Could return it via IPC, but writing a cache file is simpler and decoupled from the event loop.
+> **If this were omitted:** Sensor reading would have to happen on the main process, which is vulnerable to D-state hangs.
 <!-- annot:sensors_worker -->
 The background refresh loops (`monitoringCache.js:165-184`) re-run each reader on its own timer (sensors 30 s, cpu freq / fan / battery / media 15 s, uptime 10 s).
 
@@ -2009,10 +1979,10 @@ export function collect() {
 }
 ```
 
-> **Apa kerjanya:** `collect()` langsung mengembalikan `null` bila `MONITOR_DISABLE_GPU` diset, jika tidak memanggil `refreshGpu()` dan mengembalikan `cachedGpu`.
-> **Dampak:** Memungkinkan menonaktifkan kolektor GPU tanpa mengubah engine, berguna saat tak ada GPU NVIDIA.
-> **Alternatif serupa:** Bisa mem-filter collector di `engine.js`, tapi guard env di sini lebih terlokalisasi.
-> **Kalau tidak pakai ini:** Engine akan tetap memanggil `nvidia-smi` yang gagal terus-menerus pada host tanpa GPU.
+> **What it does:** `collect()` immediately returns `null` if `MONITOR_DISABLE_GPU` is set, otherwise calls `refreshGpu()` and returns `cachedGpu`.
+> **Impact:** Allows disabling the GPU collector without changing the engine — useful when no NVIDIA GPU is present.
+> **Similar alternatives:** The collector could be filtered in `engine.js`, but the env guard here is more localized.
+> **If this were omitted:** The engine would keep calling `nvidia-smi`, which would fail continuously on a host without a GPU.
 <!-- annot:gpu_collect -->
 ```javascript
 // backend/src/monitor/collectors/gpu.js:72
@@ -2042,10 +2012,10 @@ async function refreshNvidia() {
 }
 ```
 
-> **Apa kerjanya:** Menjalankan `nvidia-smi --query-gpu=...` lalu mem-parse CSV-nya menjadi objek metrik (utilisasi, VRAM, suhu, clock, daya, driver).
-> **Dampak:** Dashboard GPU terisi dari output `nvidia-smi` dengan timeout 5 detik; gagal -> kembalikan null dan pakai cache.
-> **Alternatif serupa:** Bisa baca sysfs NVML langsung, tapi CLI `nvidia-smi` sudah cukup dan portabel.
-> **Kalau tidak pakai ini:** Tidak ada metrik GPU NVIDIA yang ditampilkan di monitoring.
+> **What it does:** Runs `nvidia-smi --query-gpu=...` then parses its CSV into a metrics object (utilization, VRAM, temperature, clock, power, driver).
+> **Impact:** The GPU dashboard is populated from `nvidia-smi` output with a 5-second timeout; on failure it returns null and uses the cache.
+> **Similar alternatives:** NVML sysfs could be read directly, but the `nvidia-smi` CLI is sufficient and portable.
+> **If this were omitted:** No NVIDIA GPU metrics would be shown in monitoring.
 <!-- annot:gpu_refreshnvidia -->
 **Disk collector — `statvfs` + `smartctl` with cache** (`disk.js:49-102`, `132-159`).
 
@@ -2090,10 +2060,10 @@ async function refreshSmart(partitions) {
 }
 ```
 
-> **Apa kerjanya:** Menjalankan `smartctl -H` dan `smartctl -A` paralel per disk fisik (`Promise.allSettled`), menentukan status PASSED/FAILED dan suhu, lalu menyimpannya ke `smartCache` (TTL 60s).
-> **Dampak:** Kesehatan disk SMART tersedia untuk widget disk tanpa memanggil `smartctl` setiap poll.
-> **Alternatif serupa:** Bisa pakai `libatasmart`/ioctl langsung, tapi `smartctl` CLI sudah ada dan mudah di-timeout.
-> **Kalau tidak pakai ini:** Widget disk tak menampilkan status SMART/suhu dan pembaruan tiap poll akan lambat.
+> **What it does:** Runs `smartctl -H` and `smartctl -A` in parallel per physical disk (`Promise.allSettled`), determines PASSED/FAILED status and temperature, then stores it in `smartCache` (60s TTL).
+> **Impact:** SMART disk health is available to the disk widget without calling `smartctl` on every poll.
+> **Similar alternatives:** `libatasmart`/direct ioctl could be used, but the `smartctl` CLI is already present and easy to time out.
+> **If this were omitted:** The disk widget would not show SMART status/temperature and per-poll updates would be slow.
 <!-- annot:disk_refreshsmart -->
 ```javascript
 // backend/src/monitor/collectors/disk.js:132
@@ -2124,10 +2094,10 @@ function getFilesystems() {
 }
 ```
 
-> **Apa kerjanya:** Membaca `/proc/mounts`, menyaring fstype ext4/btrfs/xfs/zfs atau mount `/`, lalu pakai `statfsSync` untuk menghitung total/used/free dan persen pemakaian.
-> **Dampak:** Memberikan daftar partisi beserta pemakaian disk yang ditampilkan di dashboard.
-> **Alternatif serupa:** Bisa pakai `df` CLI, tapi `statfsSync` sinkron lebih mudah dan tanpa spawn.
-> **Kalau tidak pakai ini:** Tidak ada data pemakaian filesystem yang ditampilkan di monitoring disk.
+> **What it does:** Reads `/proc/mounts`, filters to fstype ext4/btrfs/xfs/zfs or the `/` mount, then uses `statfsSync` to compute total/used/free and the usage percentage.
+> **Impact:** Provides the partition list with disk usage shown on the dashboard.
+> **Similar alternatives:** The `df` CLI could be used, but synchronous `statfsSync` is simpler and avoids spawning.
+> **If this were omitted:** No filesystem usage data would be shown in disk monitoring.
 <!-- annot:disk_getfilesystems -->
 > SMART results are cached 60 s (`SMART_CACHE_TTL = 60_000`); partition list 30 s. `getDiskstats()` (from `/proc/diskstats`) computes per-device read/write byte deltas between polls for the I/O widget.
 
@@ -2173,10 +2143,10 @@ export function checkAlerts(currentStats) {
 }
 ```
 
-> **Apa kerjanya:** Membandingkan metrik cpu/ram/disk/suhu/gpuTemp dengan ambang warning/critical, lalu menyaring duplikat berdasarkan type+severity dalam 60 detik terakhir.
-> **Dampak:** Mencegah spam alert yang sama; riwayat disimpan (maks 200) dan di-debounce tulis ke disk 5 detik.
-> **Alternatif serupa:** Bisa pakai library alerting eksternal, tapi dedupe manual cukup dan tanpa dependensi.
-> **Kalau tidak pakai ini:** Alert yang sama bisa meluap setiap poll (3 detik) sehingga log/riwayat membanjiri.
+> **What it does:** Compares cpu/ram/disk/temperature/gpuTemp metrics against warning/critical thresholds, then filters duplicates by type+severity within the last 60 seconds.
+> **Impact:** Prevents the same alert from spamming; history is stored (max 200) and disk writes are debounced by 5 seconds.
+> **Similar alternatives:** An external alerting library could be used, but manual dedupe is sufficient and dependency-free.
+> **If this were omitted:** The same alert could flood every poll (3 seconds), overwhelming the log/history.
 <!-- annot:alerts_checkalerts -->
 ### 8.8 WhatsApp / Send (`routes/whatsapp.js`, `routes/send.js`, `whatsapp-bot/`)
 
@@ -2205,10 +2175,10 @@ export function setupWhatsAppRoutes(app) {
 }
 ```
 
-> **Apa kerjanya:** Mendaftarkan endpoint REST+SSE `/api/whatsapp/*` ke Express `app`, mengimpor langsung dari `../../../whatsapp-bot/src/` dan menggabungkan status koneksi dengan counter Telegram/WhatsApp.
-> **Dampak:** Backend bisa mengontrol dan memantau bridge WhatsApp dari satu rute tanpa proses terpisah.
-> **Alternatif serupa:** Bisa menjalankan whatsapp-bot sebagai service mandiri, tapi import langsung menyatukan lifecycle dengan server.
-> **Kalau tidak pakai ini:** Endpoint WhatsApp tak terpasang sehingga fitur bridge tak bisa diakses dari API.
+> **What it does:** Registers the REST+SSE endpoints `/api/whatsapp/*` on the Express `app`, importing directly from `../../../whatsapp-bot/src/` and merging the connection status with the Telegram/WhatsApp counters.
+> **Impact:** The backend can control and monitor the WhatsApp bridge from a single route without a separate process.
+> **Similar alternatives:** The whatsapp-bot could run as a standalone service, but direct import unifies its lifecycle with the server.
+> **If this were omitted:** The WhatsApp endpoints would not be mounted, so the bridge feature could not be reached via the API.
 <!-- annot:wa_setuproutes -->
 **Telegram guard — `TELEGRAM_BOT_TOKEN`** (`utils/telegramBot.js:11-16`). The bot is only constructed when the token env var is set; otherwise `getBot()` returns `null` and every send throws `"TELEGRAM_BOT_TOKEN not configured"`.
 
@@ -2222,10 +2192,10 @@ export function getBot() {
 }
 ```
 
-> **Apa kerjanya:** Menginisialisasi `TelegramBotApi` hanya bila `TELEGRAM_BOT_TOKEN` ada; jika tidak, `getBot()` mengembalikan `null` dan setiap kirim melempar error konfigurasi.
-> **Dampak:** Fitur Telegram otomatis mati saat token tak diset tanpa merusak startup server.
-> **Alternatif serupa:** Bisa membaca token dari file/secret manager, tapi env var sudah standar.
-> **Kalau tidak pakai ini:** Server akan crash saat mencoba kirim Telegram tanpa token.
+> **What it does:** Initializes `TelegramBotApi` only when `TELEGRAM_BOT_TOKEN` is present; otherwise `getBot()` returns `null` and every send throws a configuration error.
+> **Impact:** The Telegram feature auto-disables when the token is unset, without breaking server startup.
+> **Similar alternatives:** The token could be read from a file/secret manager, but an env var is standard.
+> **If this were omitted:** The server would crash when trying to send Telegram messages without a token.
 <!-- annot:tg_getbot -->
 `routes/send.js` exposes `/api/send/telegram` and `/api/send/all`; the `/telegram/status` endpoint reports `configured: !!process.env.TELEGRAM_BOT_TOKEN`, so the UI can hide the action when unconfigured.
 
@@ -2257,10 +2227,10 @@ function createClient() {
 }
 ```
 
-> **Apa kerjanya:** Membuat client `whatsapp-web.js` dengan `LocalAuth` + puppeteer headless, lalu mendaftarkan handler `qr`/`ready`/`disconnected`/`auth_failure`/dll dan auto-reconnect.
-> **Dampak:** Koneksi WhatsApp persisten dengan sesi tersimpan dan QR untuk pairing; putus otomatis menyambung ulang.
-> **Alternatif serupa:** Bisa pakai Baileys, tapi repo sudah memakai whatsapp-web.js.
-> **Kalau tidak pakai ini:** Tidak ada koneksi/QR WhatsApp sehingga bridge tak berfungsi.
+> **What it does:** Initializes the `whatsapp-web.js` client with `LocalAuth` + headless puppeteer, then registers the `qr`/`ready`/`disconnected`/`auth_failure`/etc. handlers and auto-reconnect.
+> **Impact:** A persistent WhatsApp connection with a saved session and a QR for pairing; on disconnect it auto-reconnects.
+> **Similar alternatives:** Baileys could be used, but the repo already uses whatsapp-web.js.
+> **If this were omitted:** There would be no WhatsApp connection/QR, so the bridge would not function.
 <!-- annot:wa_connection -->
 **Keyword / hashtag trigger** (`whatsapp-bot/src/listener.js:123-131`). The listener fires only when a video is quoted (or sent) together with a configured keyword (e.g. `save`) or hashtag (e.g. `#upload`).
 
@@ -2282,10 +2252,10 @@ function createClient() {
   }
 ```
 
-> **Apa kerjanya:** Mengecek apakah pesan mengandung keyword atau hashtag trigger, dan memicu hanya bila video dikutip/dikirim bersama trigger tersebut.
-> **Dampak:** Menyaring pesan agar hanya media + perintah tertentu yang diproses (mis. simpan video), mencegah aksi sembarangan.
-> **Alternatif serupa:** Bisa pakai regex command global, tapi pemeriksaan keyword/hashtag per-pesan lebih terarah.
-> **Kalau tidak pakai ini:** Semua pesan video akan diproses tanpa filter, memicu unggahan tak diinginkan.
+> **What it does:** Checks whether a message contains a keyword or hashtag trigger, and only fires when a video is quoted/sent together with that trigger.
+> **Impact:** Filters messages so only specific media + commands are processed (e.g. save a video), preventing arbitrary actions.
+> **Similar alternatives:** A global regex command could be used, but per-message keyword/hashtag checks are more targeted.
+> **If this were omitted:** All video messages would be processed without filtering, triggering unwanted uploads.
 <!-- annot:wa_listener -->
 ### 8.9 Video Cache (`routes/videoCache.js`)
 
@@ -2335,10 +2305,10 @@ export async function embedCover(filePath, imageBuffer, mimeType) {
 }
 ```
 
-> **Apa kerjanya:** Menulis buffer gambar ke file temp lalu menyematkan cover lewat `embed_cover.py` (FLAC) atau `ffmpeg` per-format (mp3/ogg/opus/m4a/webm) ke `.tmp` lalu atomic-rename.
-> **Dampak:** Cover art tersimpan di dalam file audio/video tanpa merusak file asli (rename atomik), mendukung banyak format.
-> **Alternatif serupa:** Bisa pakai `music-metadata` untuk tulis tag, tapi ffmpeg/python menangani cover gambar lintas format.
-> **Kalau tidak pakai ini:** Perubahan cover tak tersimpan ke file sehingga metadata cover hilang saat dibaca ulang.
+> **What it does:** Writes the image buffer to a temp file then embeds the cover via `embed_cover.py` (FLAC) or `ffmpeg` per-format (mp3/ogg/opus/m4a/webm) into a `.tmp` file, then atomic-rename.
+> **Impact:** Cover art is stored inside the audio/video file without corrupting the original (atomic rename), supporting many formats.
+> **Similar alternatives:** `music-metadata` could be used to write tags, but ffmpeg/python handle image covers across formats.
+> **If this were omitted:** Cover changes would not be saved to the file, so cover metadata would be lost on re-read.
 <!-- annot:meta_embedcover -->
 **MusicBrainz / Cover Art Archive** (`musicbrainz.js:43-56`, `72-93`). `getCoverArt` hits the Cover Art Archive for a release MBID; `searchCoverArt` tries a recording search first, then falls back to artist+album, then artist-only.
 
@@ -2360,10 +2330,10 @@ export async function getCoverArt(mbid) {
 }
 ```
 
-> **Apa kerjanya:** Menghitung URL Cover Art Archive dari release MBID lalu mengambil gambar depan (`front`) via `mbFetch`.
-> **Dampak:** Menyediakan sumber cover art resmi dari MusicBrainz untuk pencarian metadata.
-> **Alternatif serupa:** Bisa pakai penyedia cover lain (mis. iTunes), tapi CAA terikat MBID yang sudah diverifikasi.
-> **Kalau tidak pakai ini:** Pencarian cover art tak memiliki sumber resmi berdasarkan MusicBrainz MBID.
+> **What it does:** Builds the Cover Art Archive URL from the release MBID then fetches the front image via `mbFetch`.
+> **Impact:** Provides an official MusicBrainz cover art source for metadata search.
+> **Similar alternatives:** Other cover providers (e.g. iTunes) could be used, but CAA is tied to an already-verified MBID.
+> **If this were omitted:** Cover art search would have no official source based on the MusicBrainz MBID.
 <!-- annot:mb_getcoverart -->
 **LRCLIB lyrics** (`lrclib.js:22-44`). `getLyrics` does an exact track/artist/duration lookup (5 s `AbortController` timeout); `searchLyricsByMetadata` falls back to a free-text search.
 
@@ -2394,10 +2364,10 @@ export async function getLyrics(trackName, artistName, albumName, duration) {
 }
 ```
 
-> **Apa kerjanya:** Membangun query LRCLIB dari track/artist/album/durasi lalu mengambil lirik plaintext dan synced via `lrclibFetch`.
-> **Dampak:** Mendapatkan lirik (biasa/sinkron) untuk ditampilkan di pemutar audio.
-> **Alternatif serupa:** Bisa pakai Genius/NetEase, tapi LRCLIB fokus pada LRC terstruktur gratis.
-> **Kalau tidak pakai ini:** Fitur lirik tak terisi dari sumber LRCLIB.
+> **What it does:** Builds an LRCLIB query from track/artist/album/duration then fetches plain and synced lyrics via `lrclibFetch`.
+> **Impact:** Retrieves lyrics (plain/synced) to display in the audio player.
+> **Similar alternatives:** Genius/NetEase could be used, but LRCLIB focuses on free, structured LRC.
+> **If this were omitted:** The lyrics feature would not be populated from the LRCLIB source.
 <!-- annot:lrclib_getlyrics -->
 ---
 
@@ -2433,13 +2403,14 @@ The frontend is a React 18 SPA built with Vite 5, Tailwind 3.4, Zustand 5.0, hls
 ### 9.3 Zustand Stores (6)
 
 |  Store                  |  Path                                    |  Persistence               |
-|-----------------------|----------------------------------------|--------------------------|
-|  `monitoringStore`      |  `monitoring/stores/monitoringStore.js`  |  memory (partial)          |
-|  `playbackStore`        |  `store/playbackStore.js`                |  memory                    |
-|  `playlistStore`        |  `store/playlistStore.js`                |  localStorage (`persist`)  |
-|  `folderSortStore`      |  `store/folderSortStore.js`              |  localStorage (`persist`)  |
-|  `folderMetaSortStore`  |  `store/folderMetaSortStore.js`          |  localStorage (`persist`)  |
-|  `useDebugStore`        |  `debug/useDebugStore.js`                |  memory                    |
+|------------------------|----------------------------------------|--------------------------|
+|  `favoritesStore`        |  `store/favoritesStore.js`              |  localStorage (`persist`)  |
+|  `monitoringStore`       |  `monitoring/stores/monitoringStore.js`  |  memory (partial)          |
+|  `playbackStore`         |  `store/playbackStore.js`                |  memory                    |
+|  `playlistStore`         |  `store/playlistStore.js`                |  localStorage (`persist`)  |
+|  `folderSortStore`       |  `store/folderSortStore.js`              |  localStorage (`persist`)  |
+|  `folderMetaSortStore`   |  `store/folderMetaSortStore.js`          |  localStorage (`persist`)  |
+|  `useDebugStore`         |  `debug/useDebugStore.js`                |  memory                    |
 
 ### 9.4 Communication Model
 
@@ -2459,277 +2430,15 @@ The frontend is a React 18 SPA built with Vite 5, Tailwind 3.4, Zustand 5.0, hls
 
 `vite` dev server proxies to `http://127.0.0.1:3001`: `/api`, `/stream`, `/file`, `/thumbnails`, `/ws` (ws), and `/api/audio` → `/stream/audio`.
 
-### 9.7 Frontend code (verbatim)
+### 9.7 Frontend code (summary)
 
-#### 9.7.1 `useWebSocket` — WS + heartbeat + fallback polling resilience
+> The full verbatim source was removed for readability. The frontend is a React 18 + Vite 5 SPA (see `frontend/src/App.jsx`, `frontend/src/main.jsx`, `frontend/vite.config.js`):
 
-`frontend/src/hooks/useWebSocket.js`. This hook is the key "powerful" pattern: it uses **WebSocket** for live stats, a **heartbeat** watchdog that detects dead sockets, and a **fallback polling loop** (`GET /api/monitoring/stats`, 1 s foreground / 15 s background) that keeps the dashboard alive when WS drops.
-
-```javascript
-// frontend/src/hooks/useWebSocket.js:82
-const scheduleReconnect = useCallback(() => {
-  cancelReconnect();
-  const count = coreRef.current.retryCount;
-  if (count >= MAX_RETRIES) {
-    log('MAX_RETRIES reached — force reload', { count: MAX_RETRIES });
-    window.location.reload();
-    return;
-  }
-  const base = Math.min(1000 * Math.pow(2, count), MAX_DELAY);
-  const jitter = base * 0.2 * Math.random();
-  const delay = Math.round(base + jitter);
-  log('RETRY scheduled', { delay, retryCount: count });
-  timersRef.current.reconnect = setTimeout(() => {
-    timersRef.current.reconnect = null;
-    connect();
-  }, delay);
-}, [log, cancelReconnect]);
-```
-
-> **Apa kerjanya:** Menjadwalkan ulang koneksi WS dengan exponential backoff (base = 1000*2^count, maks 30 s) plus jitter 20%, lalu memanggil connect() setelah delay.
-> **Dampak:** Mencegah reconnect storm; setelah MAX_RETRIES (15) gagal, halaman di-reload paksa. Triple-fallback WS -> polling -> probe /health membuat dashboard tetap hidup saat backend restart, tab di-background, atau proxy memutus WS.
-> **Alternatif serupa:** Exponential backoff + jitter adalah pola standar (mirip library p-retry/backo).
-> **Kalau tidak pakai ini:** Tanpa backoff, reconnect membanjiri server; tanpa reload paksa, WS mati permanen saat gagal terus-menerus.
-
-```javascript
-// frontend/src/hooks/useWebSocket.js:50
-const startPolling = useCallback(() => {
-  if (timersRef.current.poll) return;
-  const ms = envRef.current.isVisible ? POLL_FG_MS : POLL_BG_MS;
-  timersRef.current.poll = setInterval(async () => {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), POLL_TIMEOUT_MS);
-    try {
-      const res = await fetch('/api/monitoring/stats', { signal: ctrl.signal });
-      clearTimeout(timer);
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.timestamp) setStats(data);
-      }
-    } catch (err) {
-      clearTimeout(timer);
-    }
-  }, ms);
-  log('POLL start', { interval: ms });
-}, [setStats, log]);
-```
-
-> **Apa kerjanya:** Memulai polling interval ke GET /api/monitoring/stats: 1 s saat tab terlihat (foreground) atau 15 s saat tersembunyi (background), dengan AbortController timeout 5 s.
-> **Dampak:** Menjaga gauge tetap segar saat WS terputus dan otomatis berhenti saat WS kembali OPEN (onopen memanggil stopPolling).
-> **Alternatif serupa:** SSE atau long-polling; namun polling sederhana paling mudah dipakai sebagai fallback saat WS drop.
-> **Kalau tidak pakai ini:** Dashboard menampilkan data usang/blank saat koneksi WS putus.
-
-The `ws.onclose` handler (and the heartbeat watchdog at `useWebSocket.js:110-133`) both call `startPolling()` + `scheduleReconnect()`, so a dropped socket instantly downgrades to polling until WS recovers.
-
-#### 9.7.2 `api.js` — in-flight dedup + 2 s response cache
-
-`frontend/src/utils/api.js:7-35`. Repeated identical GETs share one in-flight promise; successful responses are cached for `CACHE_TTL = 2000` ms (evicting entries older than `2×ttl` once the map exceeds 100).
-
-```javascript
-// frontend/src/utils/api.js:7
-function dedupFetch(url) {
-  if (inFlight.has(url)) return inFlight.get(url);
-  const promise = fetch(url).finally(() => inFlight.delete(url));
-  inFlight.set(url, promise);
-  return promise;
-}
-
-const responseCache = new Map();
-const CACHE_TTL = 2000; // 2 seconds
-
-function cachedFetch(url, ttl = CACHE_TTL) {
-  const now = Date.now();
-  const cached = responseCache.get(url);
-  if (cached && now - cached.time < ttl) return Promise.resolve(cached.data);
-  return dedupFetch(url).then(async (res) => {
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    responseCache.set(url, { data, time: now });
-    if (responseCache.size > 100) {
-      for (const [key, val] of responseCache) {
-        if (now - val.time > ttl * 2) responseCache.delete(key);
-      }
-    }
-    return data;
-  });
-}
-```
-
-> **Apa kerjanya:** dedupFetch membagi satu promise in-flight untuk URL GET yang sama; cachedFetch menyimpan respons ke Map dengan TTL 2 s dan meng-evict entri > 2xTTL bila map melebihi 100 entri.
-> **Dampak:** Mengurangi request berlebih dan mempercepat render ulang daftar folder yang sama dalam jendela 2 detik.
-> **Alternatif serupa:** React Query/SWR yang punya dedupe + stale-while-revalidate bawaan.
-> **Kalau tidak pakai ini:** Banyak request duplikat (mis. scroll cepat) membebani backend dan melambatkan UI.
-
-#### 9.7.3 `parseHash()` — hash-router state machine
-
-`frontend/src/App.jsx:90-142`. The entire SPA navigation is this pure function over `location.hash`, with `sessionStorage` view persistence and a typed route table.
-
-```javascript
-// frontend/src/App.jsx:90
-function parseHash(hash) {
-  const cleaned = (hash || '').replace(/^#+/, '').trim();
-
-  if (!cleaned || cleaned === '/') {
-    const savedView = sessionStorage.getItem('view') || 'media';
-    if (savedView === 'monitoring') {
-      const savedSub = sessionStorage.getItem('monitoringSubPath') || '';
-      return { type: 'monitoring', subPath: savedSub };
-    }
-    if (savedView === 'downloader') return { type: 'downloader' };
-    if (savedView === 'adb') return { type: 'adb' };
-    if (savedView === 'playlists') return { type: 'playlists' };
-    if (savedView === 'audio') return { type: 'audio' };
-    if (savedView === 'scrcpy') return { type: 'scrcpy' };
-    return { type: 'root', view: 'media' };
-  }
-
-  const parts = cleaned.split('/').filter(Boolean);
-  if (parts[0] === 'monitoring') return { type: 'monitoring', subPath: parts[1] || '' };
-  if (parts[0] === 'downloader') return { type: 'downloader' };
-  if (parts[0] === 'adb') return { type: 'adb' };
-  if (parts[0] === 'scrcpy') return { type: 'scrcpy' };
-  if (parts[0] === 'playlists') {
-    if (parts[1]) return { type: 'playlist-detail', playlistId: parts[1] };
-    return { type: 'playlists' };
-  }
-  if (parts[0] === 'audio') {
-    if (parts[1] === 'playlist' && parts[2] && parts[3] === 'track' && parts[4] !== undefined) {
-      return { type: 'audio', playlistId: parts[2], trackIdx: parseInt(parts[4], 10) || 0 };
-    }
-    if (parts[1] === 'single' && parts[2]) return { type: 'audio', fileId: parts[2] };
-    const tab = parts[1] || 'nowplaying';
-    return { type: 'audio', tab };
-  }
-  if (parts[0] === 'media' && parts[1] === 'v' && parts[2]) return { type: 'root-file', fileId: parts[2] };
-  if (parts[0] === 'media') return { type: 'root', view: 'media' };
-  if (parts[0] === 'f' && parts[1]) {
-    const folderId = parts[1];
-    if (parts[2] === 'v' && parts[3]) {
-      if (folderId === 'root') return { type: 'root-file', fileId: parts[3] };
-      return { type: 'file', folderId, fileId: parts[3] };
-    }
-    return { type: 'folder', folderId };
-  }
-  return { type: 'root', view: 'media' };
-}
-```
-
-> **Apa kerjanya:** Fungsi murni yang mengubah location.hash menjadi objek rute terdefinisi; membaca view tersimpan dari sessionStorage bila hash kosong atau hanya '/'.
-> **Dampak:** Menggantikan react-router; state navigasi persisten lintas reload tanpa library routing eksternal.
-> **Alternatif serupa:** react-router-dom (terinstall tapi tidak dipakai) atau tinyrouter.
-> **Kalau tidak pakai ini:** Tanpa ini, navigasi SPA butuh dependensi eksternal dan tidak ada pemulihan view saat reload.
-
-#### 9.7.4 `monitoringStore` — shape, `applyRuntimeSetting`, persist middleware
-
-`frontend/src/monitoring/stores/monitoringStore.js:7-53`. A Zustand store wrapped in `persist` (key `mediavault-monitoring`); `setStats` throttles to 1 s, and `applyRuntimeSetting` maps the `monitor.*` backend settings into local UI state.
-
-```javascript
-// frontend/src/monitoring/stores/monitoringStore.js:7
-const useMonitoringStore = create(
-  persist(
-    (set) => ({
-      stats: null,
-      connected: false,
-      lastUpdated: null,
-      alertCount: 0,
-      refreshIntervalMs: 1000,
-      smoothEnabled: true,
-      smoothMs: 900,
-      setStats: (stats) => {
-        const now = Date.now();
-        if (now - lastStatsUpdate < STATS_THROTTLE_MS) return;
-        lastStatsUpdate = now;
-        set({ stats, lastUpdated: now });
-      },
-      setConnected: (connected) => set({ connected }),
-      setAlertCount: (alertCount) => set({ alertCount }),
-      applyRuntimeSetting: (key, value) => {
-        if (key === 'monitor.refreshInterval') {
-          const ms = Math.max(250, Math.min(Number(value) || 1000, 60000));
-          set({ refreshIntervalMs: ms });
-        }
-        if (key === 'monitor.uiSmooth') set({ smoothEnabled: Boolean(value) });
-        if (key === 'monitor.uiSmoothMs') {
-          const ms = Math.max(0, Math.min(Number(value) || 0, 5000));
-          set({ smoothMs: ms });
-        }
-      },
-    }),
-    {
-      name: 'mediavault-monitoring',
-      version: 1,
-      partialize: (state) => ({
-        stats: state.stats,
-        refreshIntervalMs: state.refreshIntervalMs,
-        smoothEnabled: state.smoothEnabled,
-        smoothMs: state.smoothMs,
-      }),
-    }
-  )
-);
-```
-
-> **Apa kerjanya:** Store Zustand dibungkus persist (key 'mediavault-monitoring'); setStats di-throttle 1 s, dan applyRuntimeSetting memetakan setting backend monitor.* ke state UI (interval refresh, smoothing).
-> **Dampak:** Membatasi update gauge berlebih tiap frame dan menyimpan preferensi UI di localStorage melalui partialize.
-> **Alternatif serupa:** localStorage manual tanpa persist, atau lodash.throttle untuk throttling.
-> **Kalau tidak pakai ini:** Gauge update setiap frame (berat) dan preferensi UI hilang saat reload.
-
-#### 9.7.5 `VideoPlayer.jsx` — hls.js attach + adaptive + fallback
-
-`frontend/src/components/VideoPlayer.jsx:110-144`. Loads the HLS playlist into an hls.js instance (worker on, bounded buffers), and on a **fatal** HLS error falls back to the direct `/stream/video/:id` range stream.
-
-```javascript
-// frontend/src/components/VideoPlayer.jsx:110
-    if (useHLS) {
-      if (Hls.isSupported()) {
-        const hls = new Hls({
-          enableWorker: true,
-          lowLatencyMode: false,
-          maxBufferLength: 8,
-          maxMaxBufferLength: 16,
-          backbufferLength: 8,
-          startLevel: -1,
-          maxBandwidth: 2000000,
-        });
-        hlsRef.current = hls;
-        hls.loadSource(`/stream/video/${file.id}/hls/playlist.m3u8`);
-        hls.attachMedia(video);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          video.currentTime = 0;
-          setIsLoading(false);
-          video.play().catch(() => {});
-        });
-        hls.on(Hls.Events.ERROR, (event, data) => {
-          if (data.fatal) {
-            console.error('[VideoPlayer] HLS fatal error, falling back to direct stream:', data);
-            hls.destroy();
-            hlsRef.current = null;
-            video.currentTime = 0;
-            video.src = `/stream/video/${file.id}`;
-            video.load();
-            // ... attach loadedmetadata fallback handler ...
-          }
-        });
-        // ... media event listeners ...
-        return () => { /* cleanup + hls.destroy() */ };
-      } else {
-        video.currentTime = 0;
-        video.src = `/stream/video/${file.id}`;
-        video.load();
-      }
-    } else {
-      video.currentTime = 0;
-      video.src = `/stream/video/${file.id}`;
-      video.load();
-    }
-```
-
-> **Apa kerjanya:** Membuat instance Hls (worker on, buffer terbatas), loadSource playlist.m3u8, lalu attachMedia ke elemen video; bila Hls.Events.ERROR fatal, hls.destroy() dan fallback ke stream langsung /stream/video/:id.
-> **Dampak:** Adaptive bitrate otomatis plus jaminan pemutaran walau HLS gagal (termasuk kasus tanpa dukungan Hls.isSupported()).
-> **Alternatif serupa:** Native HLS via <video> (Safari saja) atau dash.js untuk MPEG-DASH.
-> **Kalau tidak pakai ini:** Video HLS tidak bisa diputar di Chrome/Firefox, atau berhenti total saat terjadi error fatal.
-
----
+- **Entry / shell** — `main.jsx` mounts `<App/>`; `App.jsx` implements a custom hash-based router and the top-level layout (sidebar, media grid, player, monitoring).
+- **State** — six Zustand stores (`useLibraryStore`, `usePlayerStore`, `useSettingsStore`, `useMonitoringStore`, `useUiStore`, `useSendStore`).
+- **Comms** — REST via `fetch` to `/api/*`, plus WebSocket (`/ws`) and SSE (`/api/logs/stream`, `/api/whatsapp/logs/stream`) for live updates.
+- **Playback** — HTML5 video with range/HLS (`hls.js`) and HTML5 audio with waveform + synced LRC lyrics.
+- **Dev proxy** — `vite.config.js` proxies `/api`, `/stream`, `/file`, `/thumbnails`, `/ws` to `https://127.0.0.1:3001`.
 
 ## 10. Flow Diagrams
 
@@ -3259,7 +2968,7 @@ function checkAlerts(currentStats) {
 2. If needs DB: add prepared statement in `db.js`
 3. Add settings key in `deferredDbInit()` if configurable
 4. Test endpoint with curl/postman
-5. Update ARCHITECTURE.md with endpoint spec
+5. Update README.md (and READMEID.md) with the endpoint spec
 
 ### 20.2 Adding New Downloader Source
 

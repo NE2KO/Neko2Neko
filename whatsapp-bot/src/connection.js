@@ -9,7 +9,7 @@ import { execSync } from 'node:child_process';
 import { rmSync } from 'node:fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const AUTH_DIR = join(__dirname, '..', '.wwebjs_auth');
+const AUTH_DIR = process.env.WA_AUTH_DIR || join(__dirname, '..', '..', 'credentials', '.wwebjs_auth');
 
 const { Client, LocalAuth } = WAWebJS;
 let eventCount = 0;

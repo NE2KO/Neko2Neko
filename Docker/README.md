@@ -13,10 +13,10 @@ This folder contains Docker configuration files for setting up the media server 
 
 1. Copy environment files:
    ```bash
-   cp .env.example .env
+   cp .env.example credentials/.env
    ```
 
-2. Set required environment variables in `.env`:
+2. Set required environment variables in `credentials/.env`:
    ```bash
    NVIDIA_API_KEY=your_api_key_here
    LITELLM_MASTER_KEY=your_master_key_here

@@ -41,6 +41,9 @@ const PATHS = {
   get downloader()         { return ensureDir(join(this.cacheRoot, 'downloader')); },
   get metadata()           { return ensureDir(join(this.cacheRoot, 'metadata')); },
   get temp()               { return ensureDir(join(this.cacheRoot, 'temp')); },
+  get credentials()        { return join(PROJECT_ROOT, 'credentials'); },
+  get cookiesTxt()         { return join(this.credentials, 'cookies.txt'); },
+  get gtwTxt()             { return join(this.credentials, 'gtw.txt'); },
 
   get logsRoot()           { return ensureDir(join(PROJECT_ROOT, 'logs')); },
   get logsPlayback()       { return ensureDir(join(this.logsRoot, 'playback')); },

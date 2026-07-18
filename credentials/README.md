@@ -27,9 +27,9 @@ This folder is in `.gitignore` and will not be tracked by git.
 
 If you need to move files here from other locations:
 ```bash
-mv cookies.txt credentials/
-mv gtw.txt credentials/
-mv .env credentials/
-mv .wwebjs_auth/ credentials/
-mv .wwebjs_cache/ credentials/
+mv cookies.txt .
+mv gtw.txt .
+mv .env .
+mv .wwebjs_auth/ .
+mv .wwebjs_cache/ .
 ```

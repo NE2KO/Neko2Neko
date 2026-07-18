@@ -5,9 +5,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node --env-file-if-exists=.env src/server.js",
-    "dev": "node --env-file-if-exists=.env --expose-gc --watch src/server.js",
-    "debug": "node --env-file-if-exists=.env --inspect --expose-gc src/server.js"
+    "start": "node --env-file=../credentials/.env src/server.js",
+    "dev": "node --env-file=../credentials/.env --expose-gc --watch src/server.js",
+    "debug": "node --env-file=../credentials/.env --inspect --expose-gc src/server.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",

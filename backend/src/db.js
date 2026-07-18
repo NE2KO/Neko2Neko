@@ -3,6 +3,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync } from 'node:fs';
 import { fork } from 'node:child_process';
+import { PATHS } from './config/paths.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_PATH = join(__dirname, '../../data/media.db');
@@ -358,7 +359,7 @@ export function deferredDbInit() {
       ['network.streaming', 'buffered', 'enum', 'network', 'Streaming Mode', 'Media streaming strategy', JSON.stringify({enum: ['chunked', 'buffered', 'direct']}), now],
       ['network.trackSessions', 'true', 'boolean', 'network', 'Track Sessions', 'Enable active session tracking', null, now],
       ['network.sessionTimeout', '30', 'number', 'network', 'Session Timeout (min)', 'Inactive session timeout', null, now],
-      ['downloader.youtubeCookiesPath', '/home/CATIAA/homelab-media-server/cookies.txt', 'string', 'downloader', 'YouTube Cookies Path', 'Netscape cookies.txt untuk lewati verifikasi bot YouTube. Kosongkan untuk nonaktif.', null, now],
+      ['downloader.youtubeCookiesPath', PATHS.cookiesTxt, 'string', 'downloader', 'YouTube Cookies Path', 'Netscape cookies.txt untuk lewati verifikasi bot YouTube. Kosongkan untuk nonaktif.', null, now],
     ];
     const tx = db.transaction(() => {
       for (const row of defaults) {
@@ -434,7 +435,7 @@ export function deferredDbInit() {
     ['whatsapp.retryDelay', '10', 'number', 'whatsapp', 'Retry Delay (s)', 'Seconds between reconnect attempts', null, migrateTime],
     ['scanner.watchEnabled', 'true', 'boolean', 'scanner', 'File Watcher', 'Watch for file changes and auto-scan', null, migrateTime],
     ['scanner.debounceMs', '5000', 'number', 'scanner', 'Watch Debounce (ms)', 'Debounce delay for file watcher events', null, migrateTime],
-    ['downloader.youtubeCookiesPath', '/home/CATIAA/homelab-media-server/cookies.txt', 'string', 'downloader', 'YouTube Cookies Path', 'Netscape cookies.txt untuk lewati verifikasi bot YouTube. Kosongkan untuk nonaktif.', null, migrateTime],
+    ['downloader.youtubeCookiesPath', PATHS.cookiesTxt, 'string', 'downloader', 'YouTube Cookies Path', 'Netscape cookies.txt untuk lewati verifikasi bot YouTube. Kosongkan untuk nonaktif.', null, migrateTime],
   ];
   for (const row of migrationDefaults) {
     ensureInsert.run(...row);
