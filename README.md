@@ -72,7 +72,7 @@ Media Vault is a self-hosted media server born from the need to access media fil
 
 | Menu | Status | Description | Technology Used |
 |------|--------|-------------|---------------|
-| Media Vault | Optional | Overkill implementation featuring adaptive HLS streaming, configurable transcoding profiles, waveform visualization, multi-track audio extraction, and millisecond-precise synchronization — browse and stream offline video/audio/image files seamlessly. Developed as the core feature with extensive optimization investment. | hls.js, FFmpeg, better-sqlite3 FTS, recharts, framer-motion |
+| Media Vault | Optional | Browse and stream offline video/audio/image files seamlessly with adaptive HLS streaming, waveform visualization, multi-track audio extraction, and millisecond-precise synchronization | hls.js, FFmpeg, better-sqlite3 FTS, recharts, framer-motion |
 | Library Management | Optional | Auto-scan, full-text search, thumbnail generation | better-sqlite3 WAL, incremental scanning |
 | Playlists | Optional | XSPF import, full CRUD, drag-reorder | XSPF parser, folder-based playlists |
 | Metadata Editing | Optional | Read/write audio tags, cover art, lyrics | FFprobe, MusicBrainz, LRCLIB |
@@ -80,7 +80,7 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | Downloader | Optional | YouTube, TikTok, Instagram, Twitter/X, torrent | yt-dlp, gallery-dl, aria2c, Telegram bot |
 | ADB Transfer | Optional | Push/pull files Android <-> laptop | ADB, concurrent workers |
 | Scrcpy Monitor | Optional | Remote phone screen viewing | node-pty, WebRTC |
-| Music Player | Optional | Overkill audio player developed with heavy focus on perfection: dual modes (cover mode or video mode with independently synchronized components), high-precision timing, metadata editor, MusicBrainz covers, LRCLIB lyrics with synced LRC support — prevents drift/interruptions that plagued other players. Heavy investment in sync engine development. | waveform, synced LRC, hls.js, precision sync engine |
+| Music Player | Optional | Dual modes (cover mode or video mode with independently synchronized components), high-precision timing to prevent drift/interruptions, includes metadata editor, MusicBrainz covers, LRCLIB lyrics with synced LRC support | waveform, synced LRC, hls.js, precision sync engine |
 | Send Queue | Optional | Queue monitoring for WA/Telegram; dedicated WA status queue sends full-size uncompressed videos to maintain active WhatsApp feed | Tick-based precision, SSE, WA/Telegram APIs |
 | Git Integration | Optional | Web-based Git operations | Simple Git wrapper |
 
