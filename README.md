@@ -72,7 +72,7 @@ Media Vault is a self-hosted media server born from the need to access media fil
 
 | Menu | Status | Description | Technology Used |
 |------|--------|-------------|---------------|
-| Media Vault | Optional | Browse and stream offline video/audio/image files seamlessly with adaptive HLS streaming, waveform visualization, multi-track audio extraction, and millisecond-precise synchronization | hls.js, FFmpeg, better-sqlite3 FTS, recharts, framer-motion |
+| Media Vault | Optional | Browse and stream offline video/audio/image files seamlessly with adaptive HLS streaming, waveform visualization, and instant search | hls.js, FFmpeg, better-sqlite3 FTS, recharts, framer-motion |
 | Library Management | Optional | Auto-scan, full-text search, thumbnail generation | better-sqlite3 WAL, incremental scanning |
 | Playlists | Optional | XSPF import, full CRUD, drag-reorder | XSPF parser, folder-based playlists |
 | Metadata Editing | Optional | Read/write audio tags, cover art, lyrics | FFprobe, MusicBrainz, LRCLIB |
