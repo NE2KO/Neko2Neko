@@ -1,0 +1,89 @@
+# IDE/Editor
+.aider*
+.kilo/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+cache/
+
+# Environment & Secrets
+.env
+.env.*
+backend/.env
+backend/.env.*
+certs/
+
+# Node.js
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+package-lock.json
+frontend/package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Build outputs
+dist/
+frontend/dist/
+*.min.js
+*.css.map
+
+# Database & Media
+*.db
+*.sqlite
+*.sqlite3
+media/
+backend/media/
+backend/data/
+backend/media.db
+backup/
+
+# WhatsApp Web
+.wwebjs_auth/
+.wwebjs_cache/
+whatsapp-bot/.sessions
+whatsapp-bot/media/raw/*
+whatsapp-bot/media/processed/*
+whatsapp-bot/logs/*
+!whatsapp-bot/logs/.gitkeep
+
+# Python
+*.pyc
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+
+# OS files
+.DS_Store
+Thumbs.db
+cookies.txt
+cookies.txt.*
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
+*.backup
+*.old
+
+# Test files
+test-results/
+coverage/
+*.test.js
+*.spec.js
+
+# Development tools
+*.orig
+*.backup
+ARCHITECTURE.md
+docs/
+Dockerfile
+docker-compose*.yml
+Docker/
