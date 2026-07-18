@@ -20,6 +20,8 @@ cache/
 backend/.env
 backend/.env.*
 gtw.txt
+credentials/
+credentials/**
 
 # Node.js
 node_modules/
@@ -49,8 +51,6 @@ backup/
 backend/metadata_cache/
 
 # WhatsApp Web
-.wwebjs_auth/
-.wwebjs_cache/
 whatsapp-bot/.sessions
 whatsapp-bot/sessions/
 whatsapp-bot/media/raw/*
@@ -73,8 +73,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 .directory
-cookies.txt
-cookies.txt.*
 
 # Backup files
 *.bak
