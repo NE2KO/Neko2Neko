@@ -1,6 +1,6 @@
 # Media Vault
 
-> **Catatan:** Platform ini dikerjakan oleh berbagai model AI gratis, dengan review langsung oleh pengembang yang tidak terlalu paham dunia coding. Menu-menu yang ada mewakili keinginan pengembang untuk membuat web sesuai kebutuhan, dan masih dalam tahap pengembangan aktif.
+> **Note:** This platform is built by various free AI models, reviewed directly by a developer who is not deeply familiar with coding. Each menu represents the developer's desire to create a web application that suits their personal needs. All menus are still under active development and may have new features added.
 
 ## Tech Stack Overview
 
@@ -52,27 +52,36 @@
 
 ## 1. Overview
 
-Media Vault is a self-hosted media server for browsing, streaming, downloading, and managing personal media libraries. It combines media playback, library management, and system monitoring into a single web interface.
+Media Vault is a self-hosted media server for browsing, streaming, downloading, and managing personal media libraries. The platform provides the following menus accessible from mobile devices:
+
+- **Media Vault**: Browse and stream video, audio, and image files from phone without opening laptop
+- **Monitoring**: Monitor laptop from phone, control fan speed via nbfc and clock via ryzenadj (hardware-locked, not universal)
+- **Downloader**: Download directly to laptop storage via Telegram bot that auto-downloads links with configurable parameters
+- **ADB Transfer**: Transfer files between phone and laptop without file manager or terminal commands (under development)
+- **Scrcpy Monitor**: View phone screen remotely (under development)
+- **Music Player**: Two playback modes (cover mode or video mode with separate audio/video components, high-precision sync)
+- **Send Queue**: Monitor sent/failed/cancelled items to WA/Telegram with tick-based precision queue (WA status dedicated, single-send or batch options)
+- **Git Integration**: Use Git/GitHub without opening terminal
 
 ---
 
 ## 2. Main Features
 
-| Menu | Status | Deskripsi | Implementasi |
-|------|--------|-----------|--------------|
-| Media Vault | Opsional | Lihat file video, audio, image dari HP tanpa buka laptop | Sangat bagus - HLS streaming, thumbnail, search |
-| Library Management | Opsional | Auto-scan, pencarian full-text, generasi thumbnail | Bagus - SQLite WAL, incremental scanning |
-| Playlists | Opsional | XSPF import, CRUD lengkap, drag-reorder | Bagus - queue audio, folder-based playlists |
-| Metadata Editing | Opsional | Baca/tulis tag audio, cover MusicBrainz, lirik LRCLIB | Bagus - synced LRC, waveform |
-| Monitoring | Opsional | Monitoring laptop dari HP, kontrol fan via nbfc, clock via ryzenadj | Bagus - statistik real-time, tapi masih hardware-lock |
-| Downloader | Opsional | Download otomatis via bot Telegram saat kirim link | Bagus - yt-dlp, gallery-dl, aria2c tersedia |
-| ADB Transfer | Opsional | Transfer file HP<->laptop tanpa file manager/terminal | Masih dikembangkan - worker concurrent tersedia |
-| Scrcpy Monitor | Opsional | Lihat layar HP dari jauh | Masih dikembangkan - basic view |
-| Music Player | Opsional | Play musik dengan mode cover/video, sinkronisasi presisi tinggi | Bagus - waveform, lyrics, sinkronisasi tinggi |
-| Send Queue | Opsional | Monitor status terkirim/gagal/batal ke WA/Telegram, antrian presisi | Bagus - tick presisi, opsi grup/channel |
-| Git Integration | Opsional | Gunakan Git/GitHub tanpa terminal | Bagus - tampilan web, operasi dasar lengkap |
+| Menu | Status | Description | Technology Used |
+|------|--------|-------------|---------------|
+| Media Vault | Optional | Browse, stream, and download media files | hls.js, FFmpeg thumbnails, FTS search |
+| Library Management | Optional | Auto-scan, full-text search, thumbnail generation | better-sqlite3 WAL, incremental scanning |
+| Playlists | Optional | XSPF import, full CRUD, drag-reorder | XSPF parser, folder-based playlists |
+| Metadata Editing | Optional | Read/write audio tags, cover art, lyrics | FFprobe, MusicBrainz, LRCLIB |
+| Monitoring | Optional | System stats, fan/clock control | dockerode, nbfc, ryzenadj |
+| Downloader | Optional | YouTube, TikTok, Instagram, Twitter/X, torrent | yt-dlp, gallery-dl, aria2c, Telegram bot |
+| ADB Transfer | Optional | Push/pull files Android <-> laptop | ADB, concurrent workers |
+| Scrcpy Monitor | Optional | Remote phone screen viewing | node-pty, WebRTC |
+| Music Player | Optional | High-precision audio synchronization | waveform, synced LRC, hls.js |
+| Send Queue | Optional | Queue monitoring for WA/Telegram | Tick-based precision, SSE |
+| Git Integration | Optional | Web-based Git operations | Simple Git wrapper |
 
-> **Catatan:** Semua menu masih aktif dikerjakan dan masih dikembangkan. Rencana akan ada menu baru.
+> **Note:** All menus are still actively worked on and under development. New menus may be added in the future.
 
 ---
 
