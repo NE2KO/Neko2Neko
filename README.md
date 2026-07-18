@@ -649,71 +649,13 @@ Graceful shutdown on `SIGINT`/`SIGTERM`/`SIGQUIT` via `handleShutdown`:
 
 ### 6.2 Core Tables
 
-#### PRAGMA block (verbatim)
-
 `db.js:14-20`. The tuning is applied once, synchronously, at module load.
 
-```javascript
-// backend/src/db.js:14
-// Performance Pragmas
-db.pragma('journal_mode = WAL');
-db.pragma('synchronous = NORMAL');
-db.pragma('temp_store = MEMORY');
-db.pragma('cache_size = -80000'); // ~80MB cache — sufficient for 112K files
-db.pragma('mmap_size = 4294967296'); // 4GB — prevents kernel over-mapping
-db.pragma('page_size = 32768'); // Larger page size for better sequential I/O
-```
-
 > **What it does:** Applies the SQLite PRAGMA tuning once at module load: WAL (write-ahead log), `synchronous=NORMAL`, `temp_store=MEMORY`, `cache_size=-80000` (~80MB), `mmap_size=4GB`, `page_size=32768`.
-> **Impact:** WAL allows concurrent reads during writes; 32KB pages + a large mmap speed up sequential I/O for hundreds of thousands of rows; `NORMAL` balances safety vs. performance.
-> **Similar alternatives:** `journal_mode=DELETE` (default) is safer but locks the entire DB during writes; `synchronous=FULL` is safer but slower. Trade-off: WAL+NORMAL is fast with the risk of losing the last transaction on crash.
-> **If this were omitted:** A scan query over 100K+ files would be slow and writes would block reads, degrading API responsiveness.
-
-#### `files` and `folders` CREATE statements (verbatim)
 
 `db.js:23-55`. Folders are created first (parent/child via `parent_id`); files reference `dir_id` and carry the codec/stream-compatibility columns.
 
-```javascript
-// backend/src/db.js:23
-db.exec(`
-  CREATE TABLE IF NOT EXISTS folders (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    path TEXT UNIQUE NOT NULL,
-    parent_id INTEGER,
-    depth INTEGER DEFAULT 0,
-    file_count INTEGER DEFAULT 0,
-    total_size INTEGER DEFAULT 0,
-    last_scanned INTEGER,
-    last_updated INTEGER
-  );
-
-  CREATE TABLE IF NOT EXISTS files (
-    id TEXT PRIMARY KEY,
-    dir_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    type TEXT NOT NULL,
-    ext TEXT,
-    size INTEGER NOT NULL DEFAULT 0,
-    mtime INTEGER NOT NULL DEFAULT 0,
-    duration REAL DEFAULT 0,
-    has_thumb INTEGER DEFAULT 0,
-    thumb_cache_path TEXT,
-    last_accessed INTEGER DEFAULT 0,
-    access_count INTEGER DEFAULT 0,
-    last_verified INTEGER DEFAULT 0,
-    created_at INTEGER NOT NULL DEFAULT 0,
-    codec_info TEXT,
-    is_stream_compatible INTEGER DEFAULT 0,
-    youtube_id TEXT,
-    video_offset REAL DEFAULT 0
-  );
-`);
-```
-
 > **What it does:** Creates the `folders` table (parent/child via `parent_id`, depth, counters) and the `files` table (media metadata + the `codec_info`, `is_stream_compatible`, `youtube_id`, `video_offset` columns) if they do not exist.
-> **Impact:** This deterministic schema underpins all catalog, search, and streaming-decision features; the stream-compat column stores the ffprobe probe result.
-> **Similar alternatives:** Could use an ORM (Prisma/Sequelize) or separate migrations; trade-off: raw `db.exec` is simple and transparent, with no migration tooling.
-> **If this were omitted:** Without this schema there is no persistent storage for the media library, thumbnails, or playback progress.
 
 #### `files` Table
 
@@ -767,49 +709,7 @@ db.exec(`
 Virtual FTS5 table for full-text search on file names:
 `files_fts USING fts5(name, content='files', tokenize='unicode61 remove_diacritics 1')` with triggers. Rebuilt via the forked `src/fts-rebuild-worker.mjs`.
 
-#### 6.2.1 FTS5 setup, triggers & forked worker (verbatim)
-
 `db.js:60-146`. `setupFTS()` forks `fts-rebuild-worker.mjs` (120s timeout); on failure it falls back to `deltaSyncFTS()`, which recreates the virtual table + the three `AFTER INSERT/DELETE/UPDATE` triggers and reconciles missing/orphan rowids without wiping the index.
-
-```javascript
-// backend/src/db.js:60
-export function setupFTS() {
-  if (ftsReady) return Promise.resolve();
-  return new Promise((resolve) => {
-    const workerPath = join(__dirname, 'fts-rebuild-worker.mjs');
-    const child = fork(workerPath, [DB_PATH], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], timeout: 120000 });
-    let stderr = '';
-    child.stderr?.on('data', d => { stderr += d; });
-  child.on('message', (msg) => {
-    if (msg.type === 'progress') {
-      console.log(`[db] FTS rebuild: ${msg.done}/${msg.total}`);
-    } else if (msg.type === 'done') {
-      if (msg.ok) {
-        ftsReady = true;
-        console.log(`[db] FTS setup complete via worker (${msg.reason || msg.count + ' entries'})`);
-      } else {
-        console.error('[db] FTS worker failed:', msg.error || stderr);
-        deltaSyncFTS();
-      }
-      resolve();
-    }
-  });
-  child.on('error', (e) => {
-    console.error('[db] FTS worker spawn error:', e.message);
-    deltaSyncFTS();
-    resolve();
-  });
-  child.on('exit', (code) => {
-    if (!ftsReady) {
-      console.error('[db] FTS worker exited with code', code, stderr.slice(0, 200));
-      deltaSyncFTS();
-      resolve();
-    }
-  });
-  });
-}
-
-``` 
 
 ## 7. Backend — API Endpoints
 
@@ -1102,487 +1002,70 @@ Reconstructed from the route handlers in `backend/src/routes/`. Every router is 
 
 ### 8.1 Playback Engine
 
-#### 8.1.1 Playback decision (code)
+#### 8.1.1 Playback decision
 
-`getPlaybackDecision()` probes the file (cached codec_info or live ffprobe), then walks a small decision tree: browser container + H.264/HEVC + no Opus → `direct`; browser container + Opus → `remux` (copy to MKV); otherwise → `transcode` to H.264/AAC. The cache key is an MD5 of `filePath:size:mtime`.
-
-```javascript
-// backend/src/utils/playbackEngine.js
-export async function getPlaybackDecision(file) {
-  const t0 = Date.now();
-  const ext = file.ext?.toLowerCase();
-
-  const cachedProbe = parseCodecInfo(file);
-  const liveProbe = cachedProbe ? null : await probeVideoFile(file.fullPath);
-  const probe = cachedProbe || liveProbe;
-  // ... probeMs accounting ...
-  const codec = `${probe.video_codec || ''} ${probe.video_codec_tag || ''}`.toLowerCase();
-  const audioCodec = `${probe.audio_codec || ''} ${probe.audio_codec_tag || ''}`.toLowerCase();
-  const isBrowserContainer = BROWSER_CONTAINERS.includes(ext);
-  const isH264 = H264_RE.test(codec);
-  const isHevc = HEVC_RE.test(codec);
-  const hasOpus = OPUS_RE.test(audioCodec);
-  const videoCompatible = isBrowserContainer && (isH264 || isHevc);
-
-  if (videoCompatible && !hasOpus) {
-    return { action: 'direct', path: file.fullPath, contentType: MIME_MAP[ext] || 'video/mp4', reason: 'browser_compatible', /* ... */ };
-  }
-  if (videoCompatible && hasOpus) {
-    return await handleRemux(file, probe, t0, probeMs);
-  }
-  return await handleTranscode(file, probe, t0, probeMs);
-}
-
-function computeCacheHash(filePath, size, mtime) {
-  return createHash('md5').update(`${filePath}:${size}:${mtime}`).digest('hex').slice(0, 16);
-}
-```
+`getPlaybackDecision()` probes the file (cached codec_info or live ffprobe), then walks a small decision tree: browser container + H.264/HEVC + no Opus -> `direct`; browser container + Opus -> `remux` (copy to MKV); otherwise -> `transcode` to H.264/AAC.
 
 > **What it does:** Picks the playback method (direct/remux/transcode) from the codec probe result, then computes the MD5 cache key `filePath:size:mtime`.
 > **Impact:** Browser-compatible files play directly with no processing; Opus-in-MP4 is remuxed quickly; everything else is transcoded — so startup is faster and CPU is saved.
-> **Similar alternatives:** Could use static per-extension profiles, but dynamic probing handles real-world codec variation.
-> **If this were omitted:** Unsupported formats would fail to play or force a transcode on every request (wasteful CPU/IO).
 
-```javascript
-// backend/src/utils/playbackEngine.js
-function remuxToMkv(inputPath, outputPath) {
-  return new Promise((resolve, reject) => {
-    const ff = spawn('ffmpeg', [
-      '-i', inputPath, '-c', 'copy', '-f', 'matroska', '-y', outputPath,
-    ]);
-    // ... on close: resolve(outputPath) / reject ...
-  });
-}
-
-function transcodeToH264Mp4(inputPath, outputPath) {
-  return new Promise((resolve, reject) => {
-    const ff = spawn('ffmpeg', [
-      '-i', inputPath,
-      '-map', '0:v:0', '-map', '0:a?',
-      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
-      '-pix_fmt', 'yuv420p',
-      '-c:a', 'aac', '-b:a', '160k',
-      '-movflags', '+faststart',
-      '-f', 'mp4', '-y', outputPath,
-    ]);
-    // ... on close: resolve(outputPath) / reject ...
-  });
-}
-```
-
-> **What it does:** `remuxToMkv` copies streams into MKV without re-encoding; `transcodeToH264Mp4` converts video to H.264/yuv420p and audio to AAC with `+faststart`.
-> **Impact:** Opus-in-MP4 becomes playable (remux) and other codecs become universal H.264/AAC (transcode) with the moov atom at the front for streaming.
-> **Similar alternatives:** Use `ffmpeg` with `-c copy` to MP4 for the no-Opus case, but MKV is safer for generic remux.
-> **If this were omitted:** Opus/HEVC videos would be unusable in the browser and, with no transcode fallback, would fail to play.
-
-```javascript
-// backend/src/utils/playbackEngine.js — FFmpeg concurrency limiter (prevents OOM storms)
-const MAX_FFMPEG_CONCURRENT = 2;
-let ffmpegActive = 0;
-const ffmpegQueue = [];
-
-function acquireFfmpegSlot() {
-  return new Promise((resolve) => {
-    if (ffmpegActive < MAX_FFMPEG_CONCURRENT) {
-      ffmpegActive++;
-      resolve();
-    } else {
-      ffmpegQueue.push(resolve);
-    }
-  });
-}
-
-function releaseFfmpegSlot() {
-  if (ffmpegQueue.length > 0) {
-    const next = ffmpegQueue.shift();
-    next();
-  } else {
-    ffmpegActive--;
-  }
-}
-```
-
-> **What it does:** Limits ffmpeg to at most 2 concurrent processes via slots; the rest queue until one finishes.
-> **Impact:** Avoids transcoding spikes that flood RAM/CPU when many requests arrive at once.
-> **Similar alternatives:** Could use a worker pool (e.g. `p-queue`), but a counter variable plus a queue is sufficient and dependency-free.
-> **If this were omitted:** Concurrent transcode load could trigger an OOM kill on the server.
-
-#### 8.1.2 HLS (code)
+#### 8.1.2 HLS
 
 `spawnFfmpeg()` wraps `ffmpeg` in a promise; HLS generation uses `-f hls -hls_time 3` with segment filenames, and falls back to a `+faststart` remux when the moov atom is missing.
 
-```javascript
-// backend/src/utils/hlsGenerator.js
-function spawnFfmpeg(args) {
-  return new Promise((resolve, reject) => {
-    const ff = spawn('ffmpeg', args);
-    let stderr = '';
-    ff.stderr.on('data', d => { stderr += d.toString(); });
-    ff.on('close', code => {
-      if (code === 0) resolve(stderr);
-      else reject(new Error(stderr.slice(-300)));
-    });
-    ff.on('error', reject);
-  });
-}
-
-// inside startHLSGeneration():
-const ffmpegArgs = [
-  '-i', filePath, '-c', 'copy', '-f', 'hls',
-  '-hls_time', String(SEGMENT_DURATION), '-hls_list_size', '0',
-  '-hls_segment_filename', join(workDir, 'segment-%d.ts'),
-  playlistPath,
-];
-await spawnFfmpeg(ffmpegArgs);
-```
-
 > **What it does:** `spawnFfmpeg` wraps the ffmpeg call in a promise; the HLS args slice the video into 3-second `.ts` segments via `-f hls -hls_time 3`.
 > **Impact:** Enables segment-based adaptive streaming without transcoding (copy), keeping latency low.
-> **Similar alternatives:** DASH or per-segment transcoding could be used, but copy-based HLS is enough for progressive playback.
-> **If this were omitted:** Large videos would have to be fully downloaded before playing (no progressive streaming).
 
 ### 8.2 File Scanner & Thumbnails
 
-#### 8.2.1 Scanner (code)
+#### 8.2.1 Scanner
 
-`computeContentHash()` samples the first and last 64 KB plus the file size to build a fast content fingerprint without reading the whole file. The incremental sync dedups on `size`+`mtime` first, and only re-checks the content hash when `scan.compareByHash` is enabled.
-
-```javascript
-// backend/src/utils/fileScanner.js
-async function computeContentHash(filePath, size) {
-  try {
-    const SAMPLE = 65536;
-    const h = createHash('md5');
-    h.update(String(size));
-    const fd = await fs.open(filePath, 'r');
-    try {
-      const buf1 = Buffer.allocUnsafe(Math.min(SAMPLE, size));
-      await fd.read(buf1, 0, Math.min(SAMPLE, size), 0);
-      h.update(buf1);
-      if (size > SAMPLE * 2) {
-        const buf2 = Buffer.allocUnsafe(SAMPLE);
-        await fd.read(buf2, 0, SAMPLE, size - SAMPLE);
-        h.update(buf2);
-      }
-    } finally {
-      await fd.close();
-    }
-    return h.digest('hex');
-  } catch {
-    return null;
-  }
-}
-```
+`computeContentHash()` samples the first and last 64 KB plus the file size to build a fast content fingerprint without reading the whole file.
 
 > **What it does:** Builds an MD5 hash from the size + first 64 KB + last 64 KB of the file as a fast content fingerprint.
-> **Impact:** Detects content changes without reading the whole file, keeping scans fast even for large files.
-> **Similar alternatives:** A full SHA-256 hash is more accurate but slower; sampling is sufficient for ordinary change detection.
-> **If this were omitted:** A file changed but with identical size/time could be missed by metadata updates.
-
-```javascript
-// backend/src/utils/fileScanner.js — mtime/size/hash dedup loop (incrementalSync)
-if (existing && existing.size === entry.size && existing.mtime === entry.mtime) {
-  const useHashCheck = get('scan.compareByHash', false);
-  if (useHashCheck && existing.checksum) {
-    const currentHash = entry._currentHash;
-    if (currentHash && currentHash === existing.checksum) {
-      skipped++;
-      existingIds.delete(entry.id);
-      continue;
-    }
-  } else {
-    skipped++;
-    existingIds.delete(entry.id);
-    continue;
-  }
-}
-```
 
 > **What it does:** Skips files whose size and mtime match the DB; only when `compareByHash` is enabled is the content hash checked.
-> **Impact:** Incremental scans are very fast because unchanged files are skipped immediately.
-> **Similar alternatives:** Always computing a full hash is possible, but it wastes I/O on files that rarely change.
-> **If this were omitted:** Every scan would re-compare all files, becoming slow and heavy on disk.
 
-#### 8.2.2 Watcher (code)
+#### 8.2.2 Watcher
 
 `startWatcher()` uses `fs.watch` (recursive) per media root and routes changes through `debouncedRescan()`, which waits 2 s after the last event (and skips a 30 s startup grace) before running `incrementalSync()` and broadcasting an SSE `folder_updated` event.
 
-```javascript
-// backend/src/utils/watcher.js
-async function broadcastFolderUpdate(folderPath) {
-  const msg = `data: ${JSON.stringify({
-    type: 'folder_updated',
-    path: folderPath || '',
-    timestamp: Date.now()
-  })}
-
-`;
-  sseClients = sseClients.filter((res) => {
-    try { res.write(msg); return true; } catch { return false; }
-  });
-}
-
-function debouncedRescan(folderPath) {
-  if (Date.now() - watcherStartTime < STARTUP_GRACE_MS) return;
-  clearTimeout(scanTimeout);
-  scanTimeout = setTimeout(async () => {
-    if (isScanning) { pendingRescan = true; return; }
-    isScanning = true;
-    try {
-      await incrementalSync();
-      if (folderPath) await broadcastFolderUpdate(folderPath);
-    } finally {
-      isScanning = false;
-      if (pendingRescan) { pendingRescan = false; debouncedRescan(); }
-    }
-  }, 2000);
-}
-
-function startWatcher() {
-  if (watcherRunning) return;
-  watcherRunning = true;
-  watcherStartTime = Date.now();
-  for (const root of MEDIA_ROOTS) {
-    try {
-      const w = watch(root, { recursive: true }, (eventType, filename) => {
-        if (filename && !filename.startsWith('.')) {
-          debouncedRescan();
-        }
-      });
-      w.on('error', (err) => { /* log */ });
-      watchers.push(w);
-    } catch (err) { /* log */ }
-  }
-  periodicInterval = setInterval(async () => { await runIncrementalScan(); }, 15 * 60 * 1000);
-  setTimeout(() => runIncrementalScan().catch(() => {}), 6 * 60 * 1000);
-}
-```
-
 > **What it does:** Watches directory changes via `fs.watch`, then waits 2 seconds before an incremental scan + SSE event broadcast to clients.
-> **Impact:** The UI refreshes automatically when new files arrive, without constant polling.
-> **Similar alternatives:** `chokidar` is more portable across OSes, but recursive `fs.watch` is enough on Linux.
-> **If this were omitted:** The user would have to manually refresh to see new files.
 
-#### 8.2.3 Thumbnails (code)
+#### 8.2.3 Thumbnails
 
 `extractFrameThumbnail()` seeks to 1 s and pulls one frame, scaled to width 200 via `scale=200:-1` using ffmpeg (no `sharp` dependency). `hasEmbeddedCover()`/`extractEmbeddedThumbnail()` detect and copy an embedded picture stream (`attached_pic`/mjpeg/png) instead of sampling a random frame.
 
-```javascript
-// backend/src/utils/thumbnailUtils.js
-export async function extractFrameThumbnail(inputPath, outputPath, quality = 12) {
-  return new Promise((resolve) => {
-    const baseArgs = VAAPI_DEVICE
-      ? ['-hwaccel', 'vaapi', '-hwaccel_device', VAAPI_DEVICE]
-      : ['-skip_frame', 'nokey'];
-
-    const args = [
-      ...baseArgs,
-      '-ss', '1.0',
-      '-i', inputPath,
-      '-vframes', '1',
-      '-vf', 'scale=200:-1:flags=fast_bilinear',
-      '-f', 'image2',
-      '-c:v', 'mjpeg',
-      '-q:v', String(quality),
-      '-y',
-      outputPath,
-    ];
-    const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    proc.on('close', (code) => {
-      if (code === 0) resolve(true);
-      else if (VAAPI_DEVICE) { /* fallback software */ }
-      else resolve(false);
-    });
-    proc.on('error', () => resolve(false));
-  });
-}
-
-export async function hasEmbeddedCover(inputPath) {
-  // ffprobe for a video stream with disposition.attached_pic === 1 or codec mjpeg/png
-}
-
-export async function extractEmbeddedThumbnail(inputPath, outputPath) {
-  return new Promise((resolve) => {
-    const args = ['-i', inputPath, '-map', '0:v:0', '-c', 'copy', '-frames:v', '1', '-y', outputPath];
-    const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    proc.on('close', (code) => resolve(code === 0));
-    proc.on('error', () => resolve(false));
-  });
-}
-```
-
 > **What it does:** Copies a single video frame that is an embedded cover art (`attached_pic`/mjpeg/png) out to an image file via `-c copy -frames:v 1`.
-> **Impact:** Music/video with internal cover art gets a thumbnail immediately without sampling a random frame — more visually relevant.
-> **Similar alternatives:** Could use `music-metadata` to read the cover, but ffmpeg already handles audio+video uniformly; trade-off: ffmpeg is sufficient.
-> **If this were omitted:** Files with embedded cover art would still get a random frame sampled, which is less aesthetically pleasing.
 
 ### 8.3 Downloader (`downloader/manager.js`)
 
 Supported sources (`SOURCE_ROUTES`): youtube, tiktok, twitter, instagram, torrent. Tools: yt-dlp, gallery-dl, aria2c, ffmpeg/ffprobe.
 
-|  Source     |  Tool               |  Output Path                                                     |
+| Source | Tool | Output Path |
 |-----------|-------------------|----------------------------------------------------------------|
-|  YouTube    |  yt-dlp             |  /home/CATIAA/Videos/YouTube                                     |
-|  TikTok     |  gallery-dl         |  /home/CATIAA/Videos/TikTok, /home/CATIAA/Pictures/TikTok        |
-|  Twitter/X  |  gallery-dl         |  /home/CATIAA/Videos/Twitter, /home/CATIAA/Pictures/Twitter      |
-|  Instagram  |  yt-dlp/gallery-dl  |  /home/CATIAA/Videos/Instander, /home/CATIAA/Pictures/Instander  |
-|  Torrent    |  aria2c             |  /home/CATIAA/homelab                                            |
+| YouTube | yt-dlp | /home/CATIAA/Videos/YouTube |
+| TikTok | gallery-dl | /home/CATIAA/Videos/TikTok, /home/CATIAA/Pictures/TikTok |
+| Twitter/X | gallery-dl | /home/CATIAA/Videos/Twitter, /home/CATIAA/Pictures/Twitter |
+| Instagram | yt-dlp/gallery-dl | /home/CATIAA/Videos/Instander, /home/CATIAA/Pictures/Instander |
+| Torrent | aria2c | /home/CATIAA/homelab |
 
 Instagram pipeline: 1 concurrent + 12s delay, SHA256 dedup, VP9/AV1 → H.264/AAC transcode, staging under `/home/CATIAA/homelab/DUMMY`.
 
-#### 8.3.1 Downloader code (verbatim)
+**`SOURCE_ROUTES` + `QUALITY_MAP`**: Maps each source to its output directories and allowed quality list; output dirs are created at module load via `mkdirSync`.
 
-Excerpts from `backend/src/downloader/manager.js`.
-
-**`SOURCE_ROUTES` + `QUALITY_MAP`** (`manager.js:20-72`). Maps each source to its output directories and allowed quality list; output dirs are `mkdirSync`-ed at load.
-
-```javascript
-// backend/src/downloader/manager.js:20
-const SOURCE_ROUTES = {
-  youtube: { label: 'YouTube', video: '/home/CATIAA/Videos/YouTube', audio: '/home/CATIAA/homelab/Music/YouTube' },
-  tiktok: { label: 'TikTok', video: '/home/CATIAA/Videos/TikTok', image: '/home/CATIAA/Pictures/TikTok' },
-  twitter: { label: 'Twitter', video: '/home/CATIAA/Videos/Twitter', image: '/home/CATIAA/Pictures/Twitter' },
-  instagram: { label: 'Instagram', video: '/home/CATIAA/Videos/Instander', image: '/home/CATIAA/Pictures/Instander' },
-  torrent: { label: 'Torrent', any: '/home/CATIAA/homelab' },
-};
-
-// backend/src/downloader/manager.js:66
-const QUALITY_MAP = {
-  youtube: ['best', '2160p', '1440p', '1080p', '720p', '480p', '360p', 'audio'],
-  tiktok: ['best', 'audio'],
-  instagram: ['best', 'audio'],
-  twitter: ['best', 'audio'],
-  torrent: ['standard'],
-};
-```
-
-> **What it does:** Defines the mapping of each source (youtube, tiktok, twitter, instagram, torrent) to its video/audio/image output directories, plus the allowed quality list per source; output dirs are created at module load via `mkdirSync`.
+> **What it does:** Defines the mapping of each source (youtube, tiktok, twitter, instagram, torrent) to its video/audio/image output directories, plus the allowed quality list per source.
 > **Impact:** Guarantees downloads land in consistent, per-platform locations; the category/quality validation in `createTask` relies entirely on this map.
-> **Similar alternatives:** Could read the mapping from env/JSON; trade-off: a hardcoded map is simpler and sufficient for fixed sources.
-> **If this were omitted:** Output paths would be undefined and category/quality validation would fail, so download tasks could not be created.
 
-**`spawnYtdlp`** (`manager.js:1511-1549`). Builds the yt-dlp argument vector — `--concurrent-fragments 4`, format selectors per category (Instagram forces an H.264/AVC MP4 merge), audio extraction, and the output template.
-
-```javascript
-// backend/src/downloader/manager.js:1511
-function spawnYtdlp(task) {
-  const args = ['--newline', '--no-warnings', '--no-playlist', '--concurrent-fragments', '4'];
-  const downloadDir = task.category === 'instagram' ? createDownloadWorkDir(task.outputDir, task) : task.outputDir;
-
-  if (task.category === 'instagram') {
-    task._downloadDir = downloadDir;
-    task._requireExactPath = true;
-    args.push('--no-mtime');
-    args.push('--print', 'before_dl:__IG_USERNAME__%(channel)s');
-    args.push('--print', 'after_move:__DOWNLOADED_FILE__%(filepath)s');
-  }
-
-  if (task.twitterCookiesPath) {
-    args.push('--cookies', task.twitterCookiesPath);
-  }
-
-  if (task.formatId) {
-    args.push('-f', task.formatId);
-    args.push('--merge-output-format', 'mp4');
-    args.push('-S', 'lang:original');
-  } else if (task.audioExtract) {
-    const bitrate = AUDIO_BITRATE_MAP[task.audioBitrate] || '0';
-    args.push('-f', 'bestaudio[ext=m4a]/bestaudio/best');
-    args.push('-S', 'lang:original');
-    args.push('--extract-audio', '--audio-format', task.audioFormat, '--audio-quality', bitrate);
-  } else if (task.quality === 'audio') {
-    args.push('-f', 'bestaudio[ext=m4a]/bestaudio/best');
-    args.push('-S', 'lang:original');
-    args.push('--extract-audio', '--audio-format', 'mp3', '--audio-quality', '0');
-  } else if (task.category === 'instagram') {
-    args.push('-f', INSTAGRAM_FORMAT_SELECTOR);
-    args.push('--merge-output-format', 'mp4');
-    addLog(task, `Instagram format policy: ${INSTAGRAM_FORMAT_SELECTOR}`);
-  } else {
-    const srcPref = SOURCE_FORMAT_PREFERENCE[task.category];
-    args.push('-f', srcPref || FORMAT_MAP[task.quality] || 'bestvideo[height<=2160]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best[height<=2160]');
-    args.push('--merge-output-format', 'mp4');
-    args.push('-S', 'lang:original');
-  }
-  // ... -o outputTemplate, task.url, then spawn('yt-dlp', args, ...)
-```
+**`spawnYtdlp`**: Builds the yt-dlp argument vector — `--concurrent-fragments 4`, format selectors per category (Instagram forces an H.264/AVC MP4 merge), audio extraction, and the output template.
 
 > **What it does:** Builds the `yt-dlp` argument vector based on task category — concurrent fragment count, format selection (Instagram forces an MP4 H.264/AVC merge), audio extraction, output template, and Twitter cookies.
-> **Impact:** Determines quality, browser compatibility, and final file location; Instagram is always routed to MP4 so it plays directly in the client.
-> **Similar alternatives:** A wrapper like `ytdl-core` could be used; trade-off: calling the binary directly is more flexible and tracks the latest `yt-dlp` releases.
-> **If this were omitted:** Downloads could not run because the arguments would not be formed, or would produce a player-incompatible format.
 
-**Instagram VP9/AV1 → H.264/AAC transcode** (`manager.js:503-531`). Re-encodes non-browser-compatible Instagram video at `crf 18` / `preset medium` so it plays directly in the browser.
+**Instagram VP9/AV1 → H.264/AAC transcode**: Re-encodes non-browser-compatible Instagram video at `crf 18` / `preset medium` so it plays directly in the browser.
 
-```javascript
-// backend/src/downloader/manager.js:503
-function transcodeInstagramVideoToH264(task, filePath) {
-  const ext = path.extname(filePath).toLowerCase();
-  const outputDir = path.dirname(filePath);
-  const base = path.basename(filePath, ext);
-  const outputPath = path.join(outputDir, `${base}.h264.mp4`);
-  if (fs.existsSync(outputPath)) return outputPath;
+> **What it does:** Re-encodes incompatible Instagram videos (VP9/AV1) to H.264/AAC MP4 via `ffmpeg` with `crf 18`/`preset medium`.
 
-  addLog(task, `Transcoding ${path.basename(filePath)} to H.264/AAC MP4 (avoid VP9/AV1)`);
-  const args = [
-    '-i', filePath,
-    '-map', '0:v:0',
-    '-map', '0:a?',
-    '-c:v', 'libx264',
-    '-preset', 'medium',
-    '-crf', '18',
-    '-pix_fmt', 'yuv420p',
-    '-c:a', 'aac',
-    '-b:a', '192k',
-    '-movflags', '+faststart',
-    '-y',
-    outputPath,
-  ];
-  const result = spawnSync('ffmpeg', args, { encoding: 'utf-8', timeout: 0 });
-  if (result.status !== 0 || !fs.existsSync(outputPath)) {
-    const stderr = (result.stderr || '').slice(-500).trim();
-    throw new Error(`H.264 transcode failed${stderr ? `: ${stderr}` : ''}`);
-  }
-  return outputPath;
-}
-```
-
-> **What it does:** Re-encodes incompatible Instagram videos (VP9/AV1) to H.264/AAC MP4 via `ffmpeg` with `crf 18`/`preset medium`, then checks the output file exists before returning it.
-> **Impact:** Guarantees every Instagram video plays directly in the browser without playback failure. As noted in the overkill note, this transcode is heavy/slow, but it is worthwhile because Instagram is the primary ingest path and it avoids client playback errors.
-> **Similar alternatives:** The transcode can be skipped when the source is already `avc1`/`h264` via `probeVideoFile` + `isInstagramVideoCodecCompatible`; trade-off: faster but risks failure in some browsers.
-> **If this were omitted:** VP9/AV1 videos cannot play in many browsers, causing playback errors on Instagram media.
-
-**Instagram 1-concurrent + 12 s rate limit** (`manager.js:16-18`, `manager.js:1160-1186`). The queue scheduler serializes Instagram tasks and inserts a 12 s gap between them to stay under Instagram's rate limits.
-
-```javascript
-// backend/src/downloader/manager.js:16
-const INSTAGRAM_CONCURRENT = 1;
-const INSTAGRAM_DELAY_MS = 12000;
-let lastInstagramTaskAt = 0;
-
-// backend/src/downloader/manager.js:1167
-    if (task.category === 'instagram') {
-      const igRunning = Array.from(tasks.values()).filter(
-        t => t.status === 'downloading' && t.category === 'instagram'
-      ).length;
-      if (igRunning >= INSTAGRAM_CONCURRENT) continue;
-
-      const elapsed = Date.now() - lastInstagramTaskAt;
-      if (lastInstagramTaskAt > 0 && elapsed < INSTAGRAM_DELAY_MS) {
-        const wait = INSTAGRAM_DELAY_MS - elapsed;
-        addLog(task, `Instagram rate limit: waiting ${(wait / 1000).toFixed(1)}s`);
-        task.statusText = `Rate limit: waiting ${(wait / 1000).toFixed(1)}s...`;
-        savePersistentTasks();
-        setTimeout(() => processQueue(), wait + 200);
-        continue;
-      }
-    }
-```
-
-> **What it does:** Limits the Instagram queue to 1 concurrent task and inserts a minimum 12-second gap between tasks via `INSTAGRAM_CONCURRENT`/`INSTAGRAM_DELAY_MS` in `processQueue`.
-> **Impact:** Avoids rate-limiting/blocking from Instagram by not triggering too many simultaneous downloads.
-> **Similar alternatives:** A token bucket or a rate-limiter library could be used; trade-off: a simple counter + `setTimeout` is dependency-free and sufficient.
-> **If this were omitted:** Instagram could throttle or block the account due to too many simultaneous requests in a short time.
+**Instagram 1-concurrent + 12 s rate limit**: The queue scheduler serializes Instagram tasks and inserts a 12 s gap between them to stay under Instagram's rate limits.
 
 ### 8.4 ADB Transfer (`utils/adbManager.js`, `adbTransaction.js`, `adbWorkerPool.js`, `routes/adb.js`)
 
@@ -1590,141 +1073,22 @@ Job lifecycle: `adbManager.push(device, sources, dest, { maxWorkers: 3, conflict
 
 ADB database tables (`adb_jobs`, `adb_transactions`). Transaction states: PENDING, CONFLICT_CHECK, CONFLICT, TRANSFERRING, VERIFYING, DONE, CANCELLED, FAILED, SKIPPED. Conflict resolution: skip / overwrite / rename / cancel / applyAll.
 
-#### 8.4.1 ADB code (verbatim)
-
-**Transaction state machine** (`adbTransaction.js:6-30`). Explicit `TX_STATUS` enum + a `VALID_TRANSITIONS` map enforce legal progress (`pending → checking → transferring → verifying → metadata → committed`). Illegal transitions are rejected by `updateStatus`.
-
-```javascript
-// backend/src/utils/adbTransaction.js:6
-export const TX_STATUS = {
-  PENDING: 'pending',
-  CONFLICT_CHECK: 'checking',
-  TRANSFERRING: 'transferring',
-  VERIFYING: 'verifying',
-  METADATA: 'metadata',
-  COMMITTED: 'committed',
-  FAILED: 'failed',
-  SKIPPED: 'skipped',
-  CANCELLED: 'cancelled',
-  CONFLICT: 'conflict',
-};
-
-const VALID_TRANSITIONS = {
-  [TX_STATUS.PENDING]: [TX_STATUS.CONFLICT_CHECK, TX_STATUS.CANCELLED, TX_STATUS.SKIPPED],
-  [TX_STATUS.CONFLICT_CHECK]: [TX_STATUS.TRANSFERRING, TX_STATUS.CONFLICT, TX_STATUS.SKIPPED, TX_STATUS.CANCELLED],
-  [TX_STATUS.CONFLICT]: [TX_STATUS.PENDING, TX_STATUS.SKIPPED, TX_STATUS.CANCELLED],
-  [TX_STATUS.TRANSFERRING]: [TX_STATUS.VERIFYING, TX_STATUS.FAILED, TX_STATUS.CANCELLED],
-  [TX_STATUS.VERIFYING]: [TX_STATUS.METADATA, TX_STATUS.FAILED],
-  [TX_STATUS.METADATA]: [TX_STATUS.VERIFYING, TX_STATUS.COMMITTED, TX_STATUS.FAILED],
-  [TX_STATUS.FAILED]: [TX_STATUS.PENDING],
-  [TX_STATUS.COMMITTED]: [],
-  [TX_STATUS.SKIPPED]: [],
-  [TX_STATUS.CANCELLED]: [],
-};
-```
+**Transaction state machine**: Explicit `TX_STATUS` enum + a `VALID_TRANSITIONS` map enforce legal progress (`pending → checking → transferring → verifying → metadata → committed`). Illegal transitions are rejected by `updateStatus`.
 
 > **What it does:** Defines the ADB transaction status enum (PENDING, CONFLICT_CHECK, TRANSFERRING, VERIFYING, METADATA, COMMITTED, etc.) along with `VALID_TRANSITIONS`, which only permits legal transitions between statuses.
 > **Impact:** Prevents transaction-state corruption; `updateStatus` rejects illegal transitions so the transfer lifecycle stays consistent and recoverable after a crash.
 > **Similar alternatives:** A state-machine library (e.g. `xstate`) could be used; trade-off: an explicit map is lighter and easier to audit.
 > **If this were omitted:** Transactions could jump to invalid statuses (e.g. committed→transferring), making verification and recovery unreliable.
 
-**Concurrency-limited worker pool** (`adbWorkerPool.js:90-168`). `AdbWorkerPool.processJob` spins up `min(maxWorkers, pending.length)` workers and a `_prepAhead` look-ahead that pre-stats remote dirs and resolves conflicts before transfer begins.
-
-```javascript
-// backend/src/utils/adbWorkerPool.js:90
-export class AdbWorkerPool {
-  constructor(maxWorkers = 3) {
-    this.maxWorkers = maxWorkers;
-  }
-
-  async processJob(job, callbacks) {
-    const pending = transactionEngine.getPendingTransactions(job.id);
-    const results = [];
-    let cursor = 0;
-    let stopped = false;
-
-    const shouldStop = () =>
-      stopped || job.status === 'cancelled' || job.status === 'paused';
-
-    // ... processOne() with retry / conflict resolution ...
-
-    const worker = async () => {
-      while (!shouldStop()) {
-        if (cursor >= pending.length) {
-          await new Promise(r => setTimeout(r, 100));
-          if (cursor >= pending.length) break;
-          continue;
-        }
-        const tx = pending[cursor++];
-        if (!tx || tx.status !== TX_STATUS.PENDING) continue;
-        const result = await processOne(tx);
-        // ...
-      }
-    };
-
-    const workerCount = Math.min(this.maxWorkers, Math.max(pending.length, 1));
-    await Promise.all([
-      ...Array.from({ length: workerCount }, () => worker()),
-      this._prepAhead(job, pending, () => cursor, shouldStop),
-    ]);
-
-    while (!shouldStop() && cursor < pending.length) {
-      const tx = pending[cursor++];
-      if (tx?.status === TX_STATUS.PENDING) {
-        await processOne(tx);
-      }
-    }
-
-    return { results, stopped: shouldStop() };
-  }
-  // ...
-}
-```
+**Concurrency-limited worker pool**: `AdbWorkerPool.processJob` spins up `min(maxWorkers, pending.length)` workers and a `_prepAhead` look-ahead that pre-stats remote dirs and resolves conflicts before transfer begins.
 
 > **What it does:** Runs transfers with a worker pool sized `min(maxWorkers, pending count)`; each worker processes one transaction while `_prepAhead` does remote stat and conflict resolution up front.
-> **Impact:** Enables safe-concurrency parallel transfers across files; auto-retry and conflict handling are centralized in the worker.
-> **Similar alternatives:** `p-queue` or `worker_threads` could be used; trade-off: a self-built promise-based implementation is enough for ADB orchestration.
-> **If this were omitted:** Transfers would run serially or with unbounded concurrency, slowing large jobs or flooding the target device.
 
-**Checksum / size verification after push** (`adbWorkerPool.js:418-426`). Each file is re-stated on-device and compared to the expected size (and, post-metadata, mtime). A size mismatch throws and the transaction is retried (up to `max_attempts`).
-
-```javascript
-// backend/src/utils/adbWorkerPool.js:418
-    transactionEngine.updateStatus(tx.id, TX_STATUS.VERIFYING);
-    let verify = await verifyFile(deviceId, tx.dst, tx.size);
-    if (!verify.ok) {
-      console.error(`[adb] VERIFY FAILED for ${tx.dst}: expected=${tx.size}, reason=${verify.reason}`);
-      const err = new Error(`Verification failed: ${verify.reason}`);
-      err.type = verify.reason === 'size_mismatch' ? ERROR_TYPES.SIZE_MISMATCH : ERROR_TYPES.FILE_MISSING;
-      throw err;
-    }
-```
+**Checksum / size verification after push**: Each file is re-stated on-device and compared to the expected size (and, post-metadata, mtime). A size mismatch throws and the transaction is retried (up to `max_attempts`).
 
 > **What it does:** After a push, calls `verifyFile` on the device to compare the destination file's size (and mtime after metadata) with the expected size; on failure it throws a `SIZE_MISMATCH`/`FILE_MISSING` error.
-> **Impact:** Guarantees the integrity of transferred files; a verification failure triggers automatic retries up to `max_attempts` before being marked failed.
-> **Similar alternatives:** Could compare a SHA256 checksum instead of size; trade-off: size is faster, SHA256 is more robust but requires re-reading.
-> **If this were omitted:** Corrupted/truncated files could pass as success, corrupting the library on the device.
 
-**`push()` job creation** (`adbManager.js:461-503`). Builds the job record carrying `maxWorkers` and `conflictStrategy` (`skip` | `overwrite` | `ask`), persists it, and enqueues on the per-device queue.
-
-```javascript
-// backend/src/utils/adbManager.js:461
-  push(deviceId, sources, destDir, options = {}) {
-    const jobId = `push_${++this.jobIdCounter}_${Date.now()}`;
-    const ident = this._getDeviceIdentity(deviceId);
-    const job = {
-      id: jobId,
-      type: 'push',
-      device: deviceId,
-      deviceSerial: ident.serial,
-      deviceIp: ident.ip,
-      sources: [...sources],
-      dest: destDir,
-      status: 'queued',
-      progress: 0,
-      totalBytes: 0,
-      transferredBytes: 0,
-      speed: 0,
+**`push()` job creation**: Builds the job record carrying `maxWorkers` and `conflictStrategy` (`skip` | `overwrite` | `ask`), persists it, and enqueues on the per-device queue.
       eta: null,
       error: null,
       createdAt: Date.now(),
@@ -1771,103 +1135,19 @@ Controls Strawberry MPD player via `mpd2` on `localhost:6600`. Player, playlist,
 
 Excerpts from `backend/src/routes/mpd.js`.
 
-**`mpdSend`** (`mpd.js:20-23`) — lazy-connecting wrapper around `mpd2`'s `sendCommand`. The connection is cached and reset on `close`.
-
-```javascript
-// backend/src/routes/mpd.js:20
-async function mpdSend(cmd) {
-  const c = await getClient();
-  return c.sendCommand(cmd);
-}
-```
+**`mpdSend`**: lazy-connecting wrapper around `mpd2`'s `sendCommand`. The connection is cached and reset on `close`.
 
 > **What it does:** Sends an MPD command to the already-connected client via `getClient()` then `c.sendCommand(cmd)`.
-> **Impact:** All player/playlist/queue endpoints call `mpdSend`, so Strawberry control is centralized in one wrapper.
-> **Similar alternatives:** Could call `client.sendCommand` directly in each handler, but this wrapper adds lazy-connect and reset-on-close.
-> **If this were omitted:** Each handler would have to manage its own connection, which is prone to duplication and unhandled disconnects.
-<!-- annot:mpd_send -->
-**Loop-mode mapping** (`mpd.js:250-258`). The one/all/off UI maps to MPD's `repeat` + `single` flags.
 
-```javascript
-// backend/src/routes/mpd.js:250
-router.post('/player/loop', async (req, res) => {
-  try {
-    const mode = String(req.body?.mode || 'off').toLowerCase();
-    if (mode === 'one') { await mpdSend('repeat 1'); await mpdSend('single 1'); }
-    else if (mode === 'all') { await mpdSend('repeat 1'); await mpdSend('single 0'); }
-    else { await mpdSend('repeat 0'); await mpdSend('single 0'); }
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-```
+**Loop-mode mapping**: The one/all/off UI maps to MPD's `repeat` + `single` flags.
 
 > **What it does:** Maps the UI loop mode one/all/off to the MPD `repeat` and `single` flags (one = repeat 1 + single 1, all = repeat 1 + single 0, off = both 0).
-> **Impact:** The frontend only needs to send a single `mode` and the backend translates it into the two MPD commands.
-> **Similar alternatives:** A single `repeat` command could be used, but MPD distinguishes repeat vs. single for the one mode.
-> **If this were omitted:** The single-track loop mode could not be expressed because MPD separates the repeat and single flags.
-<!-- annot:mpd_loop -->
-> The status→loopMode decode lives in `GET /player/status` (`mpd.js:148-150`): `repeat && single → 'one'`, `repeat → 'all'`, else `'off'`.
 
 ### 8.7 Monitoring (`monitor/*`)
 
-Engine poll interval is **3000ms** (`pollIntervalMs = 3000` in `engine.js`); WebSocket broadcast throttle **3000ms** (`BROADCAST_THROTTLE_MS`); historical snapshot every **30s**. The dashboard *setting* `monitor.refreshInterval` defaults to **1000ms** and is the **frontend polling fallback** interval — it does **not** change the backend engine poll. Backend uses a forked `monitor/monitoringCache.js` → `src/sensors-worker.mjs` for sensor reads; GPU collection is skippable via `MONITOR_DISABLE_GPU`.
+Engine poll interval is **3000ms**; WebSocket broadcast throttle **3000ms**; historical snapshot every **30s**.
 
-#### 8.7.1 Monitoring code (verbatim)
-
-**`collectAll()` poll loop** (`engine.js:32-97`). All six collectors run concurrently with a 3 s per-collector `Promise.race` timeout; results are broadcast (throttled) and snapshotted every 30 s. `pollIntervalMs = 3000` is the constant at `engine.js:20`.
-
-```javascript
-// backend/src/monitor/engine.js:32
-async function collectAll() {
-  if (collecting) return;
-  collecting = true;
-  try {
-    const collectors = {
-      cpu: collectCpu, ram: collectMemory, gpu: collectGpu,
-      disk: collectDisk, network: collectNetwork, system: collectSystem,
-    };
-
-    const results = [];
-    for (const [key, fn] of Object.entries(collectors)) {
-      try {
-        const result = await Promise.race([
-          Promise.resolve(fn()),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Timeout')), COLLECTOR_TIMEOUT)
-          ),
-        ]);
-        results.push({ key, result });
-      } catch {
-        results.push({ key, result: null });
-      }
-      await new Promise(r => setImmediate(r));
-    }
-
-    const stats = { timestamp: Date.now() };
-    for (const res of results) stats[res.key] = res.result;
-    try { stats.thumbnails = getThumbQueueStatus(); } catch { stats.thumbnails = null; }
-    currentStats = stats;
-
-    let alerts = [];
-    try { alerts = checkAlerts(currentStats); } catch (err) {
-      console.error('[monitor] Alert check failed:', err.message);
-    }
-
-    const now = Date.now();
-    if (now - lastBroadcastTime >= BROADCAST_THROTTLE_MS) {
-      lastBroadcastTime = now;
-      try { broadcast({ type: 'stats', data: currentStats, alerts }); } catch (err) {
-        console.error('[monitor] Broadcast failed:', err.message);
-      }
-    }
-
-    historyTick++;
-    if (historyTick * pollIntervalMs >= HISTORY_INTERVAL) {
-      try { recordSnapshot(currentStats); } catch (err) { console.error('[monitor] Snapshot failed:', err.message); }
-      historyTick = 0;
-    }
-  } finally {
-    collecting = false;
+**`collectAll()` poll loop**: All six collectors run concurrently with a 3 s per-collector `Promise.race` timeout; results are broadcast (throttled) and snapshotted every 30 s.
   }
 }
 ```
@@ -1881,68 +1161,12 @@ async function collectAll() {
 
 
 
-```javascript
-// backend/src/monitor/monitoringCache.js:69
-// ─── Sensor refresh (detached child process — sysfs D-safe) ───
-function refreshSensors() {
-  try {
-    const child = spawn('node', [SENSORS_WORKER], { stdio: 'ignore', detached: true, timeout: 3000 });
-    child.unref();
-    setTimeout(() => {
-      try { cache.sensors = JSON.parse(readFileSync(SENSORS_CACHE, 'utf8')); } catch {}
-    }, 1500);
-  } catch {}
-}
-```
 
 > **What it does:** Forks a separate Node process (`sensors-worker.mjs`) that reads sysfs hwmon, then after 1.5s reads its JSON result from a cache file; the child is `unref()`-ed so it does not hold the process alive.
 > **Impact:** Sensor reads that can hang in D-state (uninterruptible sleep) no longer block the main HTTP event loop, so the server stays responsive when hardware misbehaves.
 > **Similar alternatives:** Could read `/sys/class/hwmon` directly on the main thread (cheaper), but that risks a hang on flaky sensors — a separate process is a deliberate robustness/overkill trade-off.
 > **If this were omitted:** A sysfs D-state hang could freeze the entire media server so it cannot respond to requests.
 <!-- annot:cache_refreshsensors -->
-```javascript
-// backend/src/sensors-worker.mjs:1
-// Worker script: reads hwmon sensors from sysfs and writes to cache file
-// Runs in a separate process so D-state hangs don't block the main server
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
-
-const CACHE_FILE = '/tmp/homelab_sensors.json';
-
-try {
-  const sensors = {};
-  const hwmonDir = '/sys/class/hwmon';
-  let hwmons;
-  try { hwmons = readdirSync(hwmonDir); } catch { process.exit(0); }
-
-  for (const hwmon of hwmons) {
-    const base = `${hwmonDir}/${hwmon}`;
-    let name = '';
-    try { name = readFileSync(`${base}/name`, 'utf8').trim(); } catch { continue; }
-    let inputs;
-    try { inputs = readdirSync(base).filter(f => f.endsWith('_input')); } catch { continue; }
-    for (const input of inputs) {
-      const label = input.replace('_input', '');
-      const labelFile = `${base}/${label}_label`;
-      let labelText = label;
-      try { labelText = readFileSync(labelFile, 'utf8').trim(); } catch {}
-      let raw;
-      try { raw = readFileSync(`${base}/${input}`, 'utf8').trim(); } catch { continue; }
-      const val = parseInt(raw);
-      if (!isNaN(val)) {
-        const path = `${name}.${labelText}`;
-        const tempC = Math.round(val / 1000 * 100) / 100;
-        let high = null, crit = null;
-        try { high = Math.round(parseInt(readFileSync(`${base}/${label}_max`, 'utf8').trim()) / 1000 * 100) / 100; } catch {}
-        try { crit = Math.round(parseInt(readFileSync(`${base}/${label}_crit`, 'utf8').trim()) / 1000 * 100) / 100; } catch {}
-        sensors[path] = { chip: name, feature: labelText, label: labelText, value: tempC, high, crit };
-      }
-    }
-  }
-  writeFileSync(CACHE_FILE, JSON.stringify(sensors));
-} catch {
-  // If anything fails, just exit silently
-}
-```
 
 > **What it does:** Reads all `hwmon` entries from sysfs, converts raw values to °C (divide by 1000), grabs `high`/`crit`, then writes the result to `/tmp/homelab_sensors.json`.
 > **Impact:** Provides sensor data gathered outside the main process so the parent can read it safely.
@@ -1953,47 +1177,12 @@ The background refresh loops (`monitoringCache.js:165-184`) re-run each reader o
 
 **GPU collector — `nvidia-smi` + `MONITOR_DISABLE_GPU` short-circuit** (`gpu.js:149-153`, `72-95`).
 
-```javascript
-// backend/src/monitor/collectors/gpu.js:149
-export function collect() {
-  if (process.env.MONITOR_DISABLE_GPU) return null;
-  refreshGpu();
-  return cachedGpu;
-}
-```
 
 > **What it does:** `collect()` immediately returns `null` if `MONITOR_DISABLE_GPU` is set, otherwise calls `refreshGpu()` and returns `cachedGpu`.
 > **Impact:** Allows disabling the GPU collector without changing the engine — useful when no NVIDIA GPU is present.
 > **Similar alternatives:** The collector could be filtered in `engine.js`, but the env guard here is more localized.
 > **If this were omitted:** The engine would keep calling `nvidia-smi`, which would fail continuously on a host without a GPU.
 <!-- annot:gpu_collect -->
-```javascript
-// backend/src/monitor/collectors/gpu.js:72
-async function refreshNvidia() {
-  try {
-    const { stdout } = await execAsync(
-      'nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,clocks.current.graphics,clocks.current.memory,power.draw,driver_version --format=csv,noheader,nounits 2>/dev/null',
-      { encoding: 'utf8', timeout: 5000 }
-    );
-    const parts = stdout.trim().split(',').map(s => s.trim());
-    if (parts.length >= 5) {
-      return {
-        available: true,
-        vendor: 'nvidia',
-        usedPercent: Math.round(parseFloat(parts[0]) * 10) / 10,
-        vramUsed: parseFloat(parts[1]) * 1024 * 1024,
-        vramTotal: parseFloat(parts[2]) * 1024 * 1024,
-        temperature: parseFloat(parts[3]),
-        clockGraphics: parseInt(parts[4]),
-        clockMemory: parseInt(parts[5] || 0),
-        powerDraw: parseFloat((parts[6] || '').trim()) || 0,
-        driver: parts[7]?.trim() || '',
-      };
-    }
-  } catch {}
-  return null;
-}
-```
 
 > **What it does:** Runs `nvidia-smi --query-gpu=...` then parses its CSV into a metrics object (utilization, VRAM, temperature, clock, power, driver).
 > **Impact:** The GPU dashboard is populated from `nvidia-smi` output with a 5-second timeout; on failure it returns null and uses the cache.
@@ -2002,80 +1191,12 @@ async function refreshNvidia() {
 <!-- annot:gpu_refreshnvidia -->
 **Disk collector — `statvfs` + `smartctl` with cache** (`disk.js:49-102`, `132-159`).
 
-```javascript
-// backend/src/monitor/collectors/disk.js:49
-async function refreshSmart(partitions) {
-  const physDisks = partitions.filter(isPhysicalDisk);
-  if (physDisks.length === 0) return;
-
-  let smartHealth = null;
-  let diskTemp = null;
-
-  const results = await Promise.allSettled(
-    physDisks.map(async (disk) => {
-      const device = `/dev/${disk.name}`;
-      const [health, temp] = await Promise.allSettled([
-        execAsync(['smartctl', '-H', device].join(' '), { timeout: 5000 })
-          .then(({ stdout }) => {
-            if (stdout.includes('PASSED')) return 'PASSED';
-            if (stdout.includes('FAILED')) return 'FAILED';
-            return 'Unknown';
-          })
-          .catch(() => null),
-        execAsync(['smartctl', '-A', device].join(' '), { timeout: 5000 })
-          .then(({ stdout }) => {
-            const line = stdout.split('
-').find(l => l.toLowerCase().includes('temperature'));
-            if (line) {
-              const m = line.match(/(\d+)/);
-              if (m) return parseInt(m[1]);
-            }
-            return null;
-          })
-          .catch(() => null),
-      ]);
-      return { status: health.status === 'fulfilled' ? health.value : null, temp: temp.status === 'fulfilled' ? temp.value : null };
-    })
-  );
-  // ... aggregate: FAILED wins, keep first non-null temp ...
-  smartCache = { smart: smartHealth, temperature: diskTemp };
-  smartCacheTime = Date.now();
-}
-```
 
 > **What it does:** Runs `smartctl -H` and `smartctl -A` in parallel per physical disk (`Promise.allSettled`), determines PASSED/FAILED status and temperature, then stores it in `smartCache` (60s TTL).
 > **Impact:** SMART disk health is available to the disk widget without calling `smartctl` on every poll.
 > **Similar alternatives:** `libatasmart`/direct ioctl could be used, but the `smartctl` CLI is already present and easy to time out.
 > **If this were omitted:** The disk widget would not show SMART status/temperature and per-poll updates would be slow.
 <!-- annot:disk_refreshsmart -->
-```javascript
-// backend/src/monitor/collectors/disk.js:132
-function getFilesystems() {
-  const fss = [];
-  try {
-    const data = fs.readFileSync('/proc/mounts', 'utf8');
-    for (const line of data.split('
-')) {
-      const parts = line.trim().split(/\s+/);
-      if (parts.length < 3) continue;
-      const [, mountPoint, fstype] = parts;
-      if (fstype === 'ext4' || fstype === 'btrfs' || fstype === 'xfs' || fstype === 'zfs' || mountPoint === '/') {
-        try {
-          const s = fs.statfsSync(mountPoint);
-          const total = s.blocks * s.bsize;
-          const free = s.bfree * s.bsize;
-          const used = total - free;
-          fss.push({
-            mount: mountPoint, fstype, total, used, free,
-            usedPercent: total > 0 ? Math.round((used / total) * 1000) / 10 : 0,
-          });
-        } catch {}
-      }
-    }
-  } catch {}
-  return fss;
-}
-```
 
 > **What it does:** Reads `/proc/mounts`, filters to fstype ext4/btrfs/xfs/zfs or the `/` mount, then uses `statfsSync` to compute total/used/free and the usage percentage.
 > **Impact:** Provides the partition list with disk usage shown on the dashboard.
@@ -2086,45 +1207,6 @@ function getFilesystems() {
 
 **Alerts — `checkAlerts()` thresholds + 60 s dedupe** (`alerts.js:59-129`). CPU/RAM/disk/temp/gpuTemp each emit `warning`/`critical` events; identical type+severity is suppressed for 60 s.
 
-```javascript
-// backend/src/monitor/alerts.js:59
-export function checkAlerts(currentStats) {
-  const alerts = loadAlerts();
-  const now = new Date().toISOString();
-  let triggered = [];
-
-  const cpu = currentStats.cpu;
-  const ram = currentStats.ram;
-  const disk = currentStats.disk;
-  const gpu = currentStats.gpu;
-
-  if (alerts.thresholds.cpu?.enabled && cpu?.usedPercent != null) {
-    const val = cpu.usedPercent;
-    if (val >= alerts.thresholds.cpu.critical) {
-      triggered.push({ type: 'cpu', severity: 'critical', value: val, threshold: alerts.thresholds.cpu.critical, message: `CPU usage at ${val}% (critical: ${alerts.thresholds.cpu.critical}%)`, timestamp: now });
-    } else if (val >= alerts.thresholds.cpu.warning) {
-      triggered.push({ type: 'cpu', severity: 'warning', value: val, threshold: alerts.thresholds.cpu.warning, message: `CPU usage at ${val}% (warning: ${alerts.thresholds.cpu.warning}%)`, timestamp: now });
-    }
-  }
-  // ... memory / disk / cpuTemp / gpuTemp checks mirror the same pattern ...
-
-  if (triggered.length > 0) {
-    const newAlerts = triggered.filter(t => {
-      const prev = alerts.history.find(e => e.type === t.type && e.severity === t.severity);
-      if (!prev) return true;
-      return (new Date(t.timestamp) - new Date(prev.timestamp)) > 60000;
-    });
-    if (newAlerts.length > 0) {
-      alerts.history.unshift(...newAlerts);
-      if (alerts.history.length > 200) alerts.history = alerts.history.slice(0, 200);
-      alertsCache = alerts;
-      debouncedSaveAlerts();
-    }
-  }
-
-  return triggered;
-}
-```
 
 > **What it does:** Compares cpu/ram/disk/temperature/gpuTemp metrics against warning/critical thresholds, then filters duplicates by type+severity within the last 60 seconds.
 > **Impact:** Prevents the same alert from spamming; history is stored (max 200) and disk writes are debounced by 5 seconds.
@@ -2139,24 +1221,6 @@ WhatsApp bridge is loaded by `server.js` via `initWhatsApp()` (10s after listen,
 
 **`setupWhatsAppRoutes(app)`** (`routes/whatsapp.js:34`). The backend route module imports directly from `../../../whatsapp-bot/src/` and mounts the `/api/whatsapp/*` REST + SSE endpoints onto the Express `app`.
 
-```javascript
-// backend/src/routes/whatsapp.js:34
-export function setupWhatsAppRoutes(app) {
-  app.get('/api/whatsapp/status', (req, res) => {
-    try {
-      const status = getConnectionStatus();
-      res.json({ ...status, telegramCount: getTelegramCount(), whatsappCount: getWhatsAppCount() });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  app.get('/api/whatsapp/qr', (req, res) => { /* ... */ });
-  app.get('/api/whatsapp/qr-image', (req, res) => { /* ... */ });
-  // ... start/stop/restart/scan control endpoints ...
-  app.get('/api/whatsapp/logs/stream', (req, res) => { /* SSE of pushLog() buffer */ });
-}
-```
 
 > **What it does:** Registers the REST+SSE endpoints `/api/whatsapp/*` on the Express `app`, importing directly from `../../../whatsapp-bot/src/` and merging the connection status with the Telegram/WhatsApp counters.
 > **Impact:** The backend can control and monitor the WhatsApp bridge from a single route without a separate process.
@@ -2165,15 +1229,6 @@ export function setupWhatsAppRoutes(app) {
 <!-- annot:wa_setuproutes -->
 **Telegram guard — `TELEGRAM_BOT_TOKEN`** (`utils/telegramBot.js:11-16`). The bot is only constructed when the token env var is set; otherwise `getBot()` returns `null` and every send throws `"TELEGRAM_BOT_TOKEN not configured"`.
 
-```javascript
-// backend/src/utils/telegramBot.js:11
-export function getBot() {
-  if (!bot && BOT_TOKEN) {
-    bot = new TelegramBotApi(BOT_TOKEN, { polling: false });
-  }
-  return bot;
-}
-```
 
 > **What it does:** Initializes `TelegramBotApi` only when `TELEGRAM_BOT_TOKEN` is present; otherwise `getBot()` returns `null` and every send throws a configuration error.
 > **Impact:** The Telegram feature auto-disables when the token is unset, without breaking server startup.
@@ -2184,31 +1239,6 @@ export function getBot() {
 
 **WhatsApp connection** (`whatsapp-bot/src/connection.js:42-60`). Uses `whatsapp-web.js` (LocalAuth + headless puppeteer), registers the `qr`/`ready`/`disconnected`/`auth_failure`/`message` handlers, and auto-reconnects with exponential backoff capped at 5 min.
 
-```javascript
-// whatsapp-bot/src/connection.js:42
-function createClient() {
-  const c = new Client({
-    authStrategy: new LocalAuth({ clientId: 'whatsapp-bot-session', dataPath: AUTH_DIR }),
-    puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] },
-  });
-
-  c.on('qr', (qr) => {
-    lastQr = qr;
-    connected = false;
-    console.log('');
-    console.log('═══════════════════════════════════════════');
-    console.log('           QR CODE - SCAN NOW           ');
-    console.log('═══════════════════════════════════════════');
-    console.log('');
-    qrcode.generate(qr, { small: true });
-    console.log('');
-    log('warn', 'QR code rendered above. Scan with WhatsApp > Linked Devices');
-    botEvents.emit('qr', qr);
-  });
-  // ... ready / disconnected / auth_failure handlers, knownEvents registration ...
-  return c;
-}
-```
 
 > **What it does:** Initializes the `whatsapp-web.js` client with `LocalAuth` + headless puppeteer, then registers the `qr`/`ready`/`disconnected`/`auth_failure`/etc. handlers and auto-reconnect.
 > **Impact:** A persistent WhatsApp connection with a saved session and a QR for pairing; on disconnect it auto-reconnects.
@@ -2217,23 +1247,6 @@ function createClient() {
 <!-- annot:wa_connection -->
 **Keyword / hashtag trigger** (`whatsapp-bot/src/listener.js:123-131`). The listener fires only when a video is quoted (or sent) together with a configured keyword (e.g. `save`) or hashtag (e.g. `#upload`).
 
-```javascript
-// whatsapp-bot/src/listener.js:123
-  const kwMatch = config.triggerKeywords.some(kw => text.includes(kw));
-  const tagMatch = config.triggerHashtags.some(tag => text.includes(tag));
-
-  log('info', `[5] kwMatch=${kwMatch} tagMatch=${tagMatch}`);
-
-  const triggered =
-    (isQuotedVideo && kwMatch) ||
-    (isQuotedVideo && tagMatch) ||
-    (isVideo(msg) && tagMatch);
-
-  if (!triggered) {
-    log('info', `[NO TRIGGER]`);
-    return;
-  }
-```
 
 > **What it does:** Checks whether a message contains a keyword or hashtag trigger, and only fires when a video is quoted/sent together with that trigger.
 > **Impact:** Filters messages so only specific media + commands are processed (e.g. save a video), preventing arbitrary actions.
@@ -2250,43 +1263,6 @@ Mounted at `/api/video-cache`. Provides video cache bookkeeping (the `videoCache
 
 **Cover-art embedding** (`metadataWriter.js:74-111`). Per-format `ffmpeg`/`python3` command strings. FLAC uses the spawned `embed_cover.py`; MP3/OGG/Opus/M4A/WebM use `ffmpeg` with appropriate disposition/container flags, writing to a `.tmp` then atomic-rename.
 
-```javascript
-// backend/src/utils/metadataWriter.js:74
-export async function embedCover(filePath, imageBuffer, mimeType) {
-  const { execSync } = await import('node:child_process');
-  const { writeFileSync, unlinkSync } = await import('node:fs');
-  const { tmpdir } = await import('node:os');
-  const { join, dirname } = await import('node:path');
-
-  const ext = extname(filePath).toLowerCase();
-  const tmpFile = join(tmpdir(), `cover_${Date.now()}${ext}`);
-
-  try {
-    writeFileSync(tmpFile, imageBuffer);
-
-    if (ext === '.flac') {
-      const pyScript = join(dirname(fileURLToPath(import.meta.url)), 'embed_cover.py');
-      execSync(`python3 "${pyScript}" "${filePath}" "${tmpFile}" "${mimeType}"`, { stdio: 'pipe', timeout: 120000 });
-    } else if (ext === '.mp3') {
-      const ffmpegArgs = `-i "${filePath}" -i "${tmpFile}" -map 0:a -map 1:0 -c copy -id3v2_version 3 -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" "${filePath}.tmp"`;
-      execSync(`ffmpeg -y ${ffmpegArgs}`, { stdio: 'pipe', timeout: 120000 });
-      const { renameSync } = await import('node:fs');
-      renameSync(`${filePath}.tmp`, filePath);
-    } else if (ext === '.ogg' || ext === '.opus') {
-      // ... -c copy -f ogg ...
-    } else if (ext === '.m4a') {
-      // ... -disposition:v:0 attached_pic -f mp4 ...
-    } else if (ext === '.webm') {
-      // ... -c:a copy -c:v libvpx-vp9 -deadline realtime -cpu-used 5 -f webm ...
-    } else {
-      throw new Error(`Unsupported format for cover embedding: ${ext}`);
-    }
-    return true;
-  } catch (err) {
-    // ... cleanup tmp files ...
-  }
-}
-```
 
 > **What it does:** Writes the image buffer to a temp file then embeds the cover via `embed_cover.py` (FLAC) or `ffmpeg` per-format (mp3/ogg/opus/m4a/webm) into a `.tmp` file, then atomic-rename.
 > **Impact:** Cover art is stored inside the audio/video file without corrupting the original (atomic rename), supporting many formats.
@@ -2295,23 +1271,6 @@ export async function embedCover(filePath, imageBuffer, mimeType) {
 <!-- annot:meta_embedcover -->
 **MusicBrainz / Cover Art Archive** (`musicbrainz.js:43-56`, `72-93`). `getCoverArt` hits the Cover Art Archive for a release MBID; `searchCoverArt` tries a recording search first, then falls back to artist+album, then artist-only.
 
-```javascript
-// backend/src/utils/musicbrainz.js:43
-export async function getCoverArt(mbid) {
-  const url = `${CAA_BASE}/release/${mbid}`;
-  const data = await mbFetch(url);
-  if (!data?.images) return null;
-  const front = data.images.find(i => i.front) || data.images[0];
-  if (!front) return null;
-  return {
-    id: front.id,
-    image: front.image,
-    thumbnails: front.thumbnails || {},
-    types: front.types || [],
-    approved: front.approved,
-  };
-}
-```
 
 > **What it does:** Builds the Cover Art Archive URL from the release MBID then fetches the front image via `mbFetch`.
 > **Impact:** Provides an official MusicBrainz cover art source for metadata search.
@@ -2320,32 +1279,6 @@ export async function getCoverArt(mbid) {
 <!-- annot:mb_getcoverart -->
 **LRCLIB lyrics** (`lrclib.js:22-44`). `getLyrics` does an exact track/artist/duration lookup (5 s `AbortController` timeout); `searchLyricsByMetadata` falls back to a free-text search.
 
-```javascript
-// backend/src/utils/lrclib.js:22
-export async function getLyrics(trackName, artistName, albumName, duration) {
-  const params = new URLSearchParams({
-    track_name: trackName,
-    artist_name: artistName,
-  });
-  if (albumName) params.set('album_name', albumName);
-  if (duration) params.set('duration', String(Math.round(duration)));
-
-  const url = `${LRCLIB_BASE}/get?${params}`;
-  const data = await lrclibFetch(url);
-  if (!data) return null;
-
-  return {
-    id: data.id,
-    trackName: data.trackName,
-    artistName: data.artistName,
-    albumName: data.albumName,
-    duration: data.duration,
-    plainLyrics: data.plainLyrics || null,
-    syncedLyrics: data.syncedLyrics || null,
-    instrumental: data.instrumental || false,
-  };
-}
-```
 
 > **What it does:** Builds an LRCLIB query from track/artist/album/duration then fetches plain and synced lyrics via `lrclibFetch`.
 > **Impact:** Retrieves lyrics (plain/synced) to display in the audio player.
@@ -2875,33 +1808,6 @@ Ignored: `.aider*`, `*.log`, `whatsapp-bot/.sessions`, `whatsapp-bot/media/raw/*
 
 ### 18.3 Alert Threshold Logic (`monitor/alerts.js`)
 
-```javascript
-const defaultThresholds = {
-  cpu: { enabled: true, warning: 80, critical: 95 },
-  memory: { enabled: true, warning: 85, critical: 95 },
-  disk: { enabled: true, warning: 85, critical: 95 },
-  temperature: { enabled: true, warning: 75, critical: 85 },
-  gpuTemp: { enabled: true, warning: 80, critical: 90 },
-};
-
-function checkAlerts(currentStats) {
-  const alerts = loadAlerts();
-  const triggered = [];
-  // CPU / memory / disk / cpuTemp / gpuTemp checks (see §18.1 collectors)
-  // Deduplication: only new alerts every 60s
-  const newAlerts = triggered.filter(t => {
-    const prev = alerts.history.find(e => e.type === t.type && e.severity === t.severity);
-    if (!prev) return true;
-    return (new Date(t.timestamp) - new Date(prev.timestamp)) > 60000;
-  });
-  if (newAlerts.length > 0) {
-    alerts.history.unshift(...newAlerts);
-    alerts.history = alerts.history.slice(0, 200);
-    flushToDisk();
-  }
-  return triggered;
-}
-```
 
 ### 18.4 Dashboard Widgets
 
