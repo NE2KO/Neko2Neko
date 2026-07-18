@@ -1,7 +1,5 @@
 # Media Vault
 
-> **English** · [Bahasa Indonesia](READMEID.md)
-
 ## Tech Stack Overview
 
 | Layer | Technology | Version | Description |
@@ -132,8 +130,13 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 | Directory | Description |
 |-----------|-------------|
 | `backend/` | Express API, SQLite, media processing |
-| `frontend/` | React 18 SPA (Vite) |
-| `whatsapp-bot/` | WhatsApp integration |
+| `backend/src/` | Server entry point, database, routes |
+| `backend/src/routes/` | 19 route modules (files, stream, download, etc.) |
+| `backend/src/monitor/` | System monitoring (CPU, RAM, GPU, disk, network) |
+| `backend/src/utils/` | Helper utilities (watcher, downloader, upload) |
+| `frontend/` | React 18 SPA (Vite + TailwindCSS) |
+| `frontend/src/` | Components, store, hooks |
+| `whatsapp-bot/` | WhatsApp integration via whatsapp-web.js |
 | `data/` | `media.db`, download tasks, thumbnails |
 | `cache/` | HLS, remux, transcode cache |
 | `logs/` | Rotating logs |

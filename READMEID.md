@@ -1,7 +1,5 @@
 # Media Vault — Dokumentasi & Arsitektur
 
-> 🇮🇩 **Bahasa Indonesia** · 🇬🇧 [English](README.md)
-
 > **Versi dokumen:** Doc v3.0 — 2026-07-08
 > **Versi paket basis kode:** backend `homelab-media-server` **v1.0.0**, frontend `homelab-media-frontend` **v1.0.0**, whatsapp-bot **v1.0.0**
 > **Tumpukan:** Node.js (ESM) + Express + SQLite (better-sqlite3) · React 18 + Vite 5 + TailwindCSS 3 · FFmpeg + FFprobe · hls.js
