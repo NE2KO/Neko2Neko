@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AnimTest — Rolling / Odometer Number Animation</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #0a0a0a; color: #e5e5e5;
+    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    padding: 24px;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  p.sub { color: #888; font-size: 13px; margin: 0 0 24px; }
+  .controls {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    margin-bottom: 28px;
+  }
+  button {
+    background: #1f1f22; color: #e5e5e5; border: 1px solid #333;
+    padding: 8px 14px; border-radius: 10px; font-size: 14px; cursor: pointer;
+  }
+  button:hover { background: #2a2a2e; }
+  input {
+    width: 90px; background: #1f1f22; color: #fff; border: 1px solid #333;
+    padding: 8px 10px; border-radius: 10px; font-size: 14px;
+  }
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 16px;
+  }
+  .card {
+    background: #141416; border: 1px solid #262626; border-radius: 16px;
+    padding: 18px;
+  }
+  .card h2 { font-size: 13px; font-weight: 600; color: #aaa; margin: 0 0 14px; }
+  .big { font-size: 44px; font-weight: 700; line-height: 1; color: #fff; font-variant-numeric: tabular-nums; }
+
+  /* 1. Odometer reel: each digit is a vertical strip that spins fast then
+        decelerates 1-by-1 to the target (like a car odometer). */
+  .odo { display: inline-flex; }
+  .odo .digit {
+    position: relative; width: 28px; height: 52px; overflow: hidden;
+  }
+  .odo .digit .strip {
+    position: absolute; top: 0; left: 0; display: flex; flex-direction: column;
+    /* strong ease-out so it races then settles 1 digit at a time */
+    transition: transform 900ms cubic-bezier(.12,.78,.22,1);
+    will-change: transform, filter;
+  }
+  .odo .digit .strip.spinning { filter: blur(1.5px); }
+  .odo .digit .strip span {
+    height: 52px; display: flex; align-items: center; justify-content: center;
+  }
+
+  /* 2. Slide digits: whole number slides up/down */
+  .slide { position: relative; height: 52px; overflow: hidden; }
+  .slide .num {
+    transition: transform 400ms ease, opacity 400ms ease;
+  }
+
+  /* 3. Count-up: handled in JS by interpolating textContent */
+  .count { transition: color 200ms; }
+
+  /* 4. Flip */
+  .flip { perspective: 300px; }
+  .flip .inner {
+    transition: transform 500ms; transform-style: preserve-3d;
+  }
+  .tag { font-size: 11px; color: #666; margin-top: 10px; }
+</style>
+</head>
+<body>
+  <h1>AnimTest — Rolling / Odometer Number Animation</h1>
+  <p class="sub">Pilih gaya animasi angka. Tekan + / − atau ketik nilai, lalu lihat transisinya.</p>
+
+  <div class="controls">
+    <button id="dec">− Kurang</button>
+    <button id="inc">+ Tambah</button>
+    <input id="val" type="number" value="3" />
+    <button id="set">Set</button>
+    <span class="tag">Range 0–999 (biar kelihatan per-digit)</span>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>1 · Odometer Reel (spin cepat → decel 1-per-1)</h2>
+      <div class="big odo" id="odo"></div>
+      <div class="tag">Digit lari cepat lalu melambat & berhenti 1 angka di tujuan.</div>
+    </div>
+
+    <div class="card">
+      <h2>2 · Slide Digits (angka geser)</h2>
+      <div class="big slide" id="slide"><span class="num">3</span></div>
+      <div class="tag">Whole number slides up/down.</div>
+    </div>
+
+    <div class="card">
+      <h2>3 · Count-up Smooth (interpolasi)</h2>
+      <div class="big count" id="count">3</div>
+      <div class="tag">Angka di-interpolasi halus ke target.</div>
+    </div>
+
+    <div class="card">
+      <h2>4 · Flip</h2>
+      <div class="big flip" id="flip"><span class="inner" style="display:inline-block">3</span></div>
+      <div class="tag">Kartu membalik (rotateX) ke nilai baru.</div>
+    </div>
+  </div>
+
+<script>
+  let current = 3;
+  const clamp = (n) => Math.max(0, Math.min(999, Math.round(n)));
+  const ODO_H = 52;
+
+  // ---- 1. Odometer ----
+  const odo = document.getElementById('odo');
+  function buildOdo(len) {
+    odo.innerHTML = '';
+    for (let i = 0; i < len; i++) {
+      const d = document.createElement('div');
+      d.className = 'digit';
+      const strip = document.createElement('div');
+      strip.className = 'strip';
+      for (let n = 0; n <= 9; n++) {
+        const s = document.createElement('span');
+        s.textContent = n;
+        strip.appendChild(s);
+      }
+      d.appendChild(strip);
+      odo.appendChild(d);
+    }
+  }
+  function renderOdo(val) {
+    const str = String(val).padStart(3, '0');
+    if (odo.children.length !== str.length) buildOdo(str.length);
+    [...str].forEach((ch, i) => {
+      const strip = odo.children[i].querySelector('.strip');
+      const target = Number(ch);
+      // Add full spins for a longer travel = faster apparent scroll, then it
+      // decelerates via the cubic-bezier ease-out and lands 1 digit at a time.
+      const currentPos = Math.round(-parseFloat(strip.style.transform.replace(/[^0-9.-]/g,'')) / ODO_H) || 0;
+      const spins = 2 + (odo.children.length - 1 - i); // higher digits spin more
+      const nextPos = currentPos - (currentPos % 10) + spins * 10 + target;
+      strip.classList.add('spinning');
+      strip.style.transform = `translateY(${-nextPos * ODO_H}px)`;
+      clearTimeout(strip._t);
+      strip._t = setTimeout(() => strip.classList.remove('spinning'), 900);
+    });
+  }
+
+  // ---- 2. Slide ----
+  const slide = document.getElementById('slide');
+  function renderSlide(val) {
+    const old = slide.querySelector('.num');
+    const next = document.createElement('span');
+    next.className = 'num';
+    next.textContent = val;
+    const dir = val >= Number(old.textContent) ? -100 : 100;
+    next.style.transform = `translateY(${dir}%)`;
+    next.style.opacity = '0';
+    slide.appendChild(next);
+    requestAnimationFrame(() => {
+      old.style.transform = `translateY(${-dir}%)`;
+      old.style.opacity = '0';
+      next.style.transform = 'translateY(0)';
+      next.style.opacity = '1';
+    });
+    setTimeout(() => old.remove(), 420);
+  }
+
+  // ---- 3. Count-up ----
+  const count = document.getElementById('count');
+  let countRAF = null;
+  function renderCount(val) {
+    cancelAnimationFrame(countRAF);
+    const from = Number(count.textContent) || 0;
+    const start = performance.now();
+    const dur = 500;
+    const step = (t) => {
+      const k = Math.min(1, (t - start) / dur);
+      const e = 1 - Math.pow(1 - k, 3);
+      count.textContent = Math.round(from + (val - from) * e);
+      if (k < 1) countRAF = requestAnimationFrame(step);
+    };
+    countRAF = requestAnimationFrame(step);
+  }
+
+  // ---- 4. Flip ----
+  const flipInner = document.querySelector('#flip .inner');
+  function renderFlip(val) {
+    flipInner.style.transform = 'rotateX(90deg)';
+    setTimeout(() => {
+      flipInner.textContent = val;
+      flipInner.style.transform = 'rotateX(0deg)';
+    }, 240);
+  }
+
+  function renderAll(val) {
+    renderOdo(val);
+    renderSlide(val);
+    renderCount(val);
+    renderFlip(val);
+  }
+
+  document.getElementById('inc').onclick = () => { current = clamp(current + 1); renderAll(current); };
+  document.getElementById('dec').onclick = () => { current = clamp(current - 1); renderAll(current); };
+  document.getElementById('set').onclick = () => {
+    const v = Number(document.getElementById('val').value);
+    if (!Number.isNaN(v)) { current = clamp(v); renderAll(current); }
+  };
+  document.getElementById('val').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('set').click();
+  });
+
+  renderAll(current);
+</script>
+</body>
+</html>

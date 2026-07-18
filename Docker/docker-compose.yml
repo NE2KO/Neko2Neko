@@ -1,0 +1,20 @@
+services:
+  waha:
+    image: devlikeapro/waha
+    container_name: waha
+    restart: unless-stopped
+    ports:
+      - "3002:3000"
+    environment:
+      - WHATSAPP_DEFAULT_ENGINE=WEBJS
+    volumes:
+      - ./waha-data:/app/.sessions
+
+  nginx-nvidia:
+    image: nginx:alpine
+    container_name: nginx-nvidia
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./nginx-nvidia/nginx.conf:/etc/nginx/nginx.conf:ro

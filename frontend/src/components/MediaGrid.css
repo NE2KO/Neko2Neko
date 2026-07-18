@@ -1,0 +1,80 @@
+/* MEDIA THUMBNAIL WRAPPER - FILLS PARENT CONTAINER */
+.media-thumb-wrapper {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 12px;
+  background: black;
+  position: relative;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* MEDIA THUMBNAIL - COVER + CENTER CROP */
+.media-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  /* Animation controlled by inline style opacity, not CSS */
+}
+
+/* PORTRAIT MODE - CONTAIN FOR VIDEO PORTRAIT */
+.media-thumb.portrait {
+  object-fit: contain;
+}
+
+/* VISUAL ENHANCEMENT - GRADIENT OVERLAY */
+.media-thumb-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    transparent 60%,
+    rgba(0,0,0,0.4)
+  );
+  pointer-events: none;
+  opacity: 0.8;
+}
+
+/* LOADING PLACEHOLDER - Overlaid during image load */
+.media-thumb-loading {
+  background: #0a0a0a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+}
+
+/* SKELETON SHIMMER - shown while the thumbnail image is still loading */
+.media-thumb-shimmer {
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  background: linear-gradient(
+    100deg,
+    #171717 30%,
+    #262626 50%,
+    #171717 70%
+  );
+  background-size: 200% 100%;
+  animation: media-thumb-shimmer 1.2s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes media-thumb-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+
+
+/* ANIMATION - Removed, opacity controlled by inline style */
+@keyframes media-fade-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}

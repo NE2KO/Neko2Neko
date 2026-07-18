@@ -1,0 +1,28 @@
+{
+  "name": "homelab-media-server",
+  "version": "1.0.0",
+  "description": "Self-hosted media server with transcoding",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/server.js",
+    "dev": "node --env-file-if-exists=.env --expose-gc --watch src/server.js",
+    "debug": "node --env-file-if-exists=.env --inspect --expose-gc src/server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.9.0",
+    "busboy": "^1.6.0",
+    "compression": "^1.8.1",
+    "cors": "^2.8.5",
+    "dockerode": "^5.0.0",
+    "express": "^4.21.0",
+    "fast-xml-parser": "^5.8.0",
+    "mime-types": "^2.1.35",
+    "mpd2": "^1.0.7",
+    "node-pty": "^1.1.0",
+    "node-telegram-bot-api": "^1.1.0",
+    "qrcode": "^1.5.4",
+    "uuid": "^10.0.0",
+    "ws": "^8.21.0"
+  }
+}

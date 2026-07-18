@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+    "music-metadata": "^11.13.0",
+    "ws": "^8.21.0"
+  },
+  "type": "commonjs"
+}

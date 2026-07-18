@@ -1,0 +1,247 @@
+import { existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { spawn } from 'node:child_process';
+import db, { stmts } from '../db.js';
+import { hasEmbeddedCover, extractEmbeddedThumbnail, extractFrameThumbnail, generateImageThumbnail, generateAudioPlaceholder, THUMBNAIL_DIR, VAAPI_AVAILABLE } from './thumbnailUtils.js';
+import { resolveFullPath, getFileId, getRelPath } from './fileScanner.js';
+import { get } from './runtimeSettings.js';
+
+mkdirSync(THUMBNAIL_DIR, { recursive: true });
+
+let queue = [];
+let processing = false;
+let scanRunning = false;
+let paused = false;
+let stopped = false;
+let totalProcessed = 0;
+let totalSkipped = 0;
+let totalMissing = 0;
+let startedAt = null;
+let existingThumbs = new Set();
+const activeProcs = new Set();
+
+function buildThumbCache() {
+  try { existingThumbs = new Set(readdirSync(THUMBNAIL_DIR)); } catch { existingThumbs = new Set(); }
+}
+buildThumbCache();
+
+function getQueueStatus() {
+  return {
+    type: 'thumbnail', pending: queue.length, processing, scanRunning, paused, stopped,
+    totalProcessed, totalSkipped, totalMissing, startedAt,
+  };
+}
+
+function killActive() {
+  for (const proc of activeProcs) {
+    try { proc.kill('SIGTERM'); } catch {}
+  }
+  activeProcs.clear();
+}
+
+function pauseQueue() { paused = true; killActive(); }
+
+function resumeQueue() { paused = false; drainQueue(); }
+
+function clearQueue() { queue = []; }
+
+function stopQueue() {
+  stopped = true; paused = false; queue = [];
+  killActive(); processing = false;
+  console.log('[thumbnails] Queue stopped');
+}
+
+function startQueue() { stopped = false; paused = false; drainQueue(); }
+
+function isQueueStopped() { return stopped; }
+
+const BATCH_SIZE = 20;
+const REFILL_DELAY_MS = 5000; // 5 seconds between refills
+
+async function scanForMissing() {
+  if (scanRunning) return;
+  scanRunning = true;
+  stopped = false;
+
+  try {
+    const files = db.prepare('SELECT id, name, type, dir_id FROM files WHERE (has_thumb = 0 OR has_thumb = 2) AND thumb_cache_path IS NULL').all();
+    totalMissing = files.length;
+
+    const missing = [];
+    for (const f of files) {
+      if (!existingThumbs.has(f.id + '.jpg')) {
+        const folder = stmts.getFolderById.get(f.dir_id);
+        if (folder) {
+          const relPath = folder.path ? join(folder.path, f.name) : f.name;
+          missing.push({ id: f.id, fullPath: resolveFullPath(relPath), type: f.type });
+        }
+      }
+      if (missing.length >= BATCH_SIZE) break;
+    }
+
+    if (missing.length > 0 && !startedAt) startedAt = Date.now();
+    queue.push(...missing);
+    if (missing.length > 0) {
+      console.log(`[thumbnails] Found ${missing.length} files, queue size: ${queue.length}`);
+      drainQueue();
+    } else {
+      console.log('[thumbnails] All thumbnails up to date');
+    }
+  } finally {
+    scanRunning = false;
+  }
+}
+
+function spawnTracked(args) {
+  const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  activeProcs.add(proc);
+  proc.on('close', () => activeProcs.delete(proc));
+  proc.on('error', () => activeProcs.delete(proc));
+  return proc;
+}
+
+function ffmpegRun(args, timeoutMs = 15000) {
+  return new Promise((resolve) => {
+    const proc = spawnTracked(args);
+    let done = false;
+    const timer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} }, timeoutMs);
+    proc.on('close', (code) => { if (!done) { done = true; clearTimeout(timer); resolve(code === 0); } });
+    proc.on('error', () => { if (!done) { done = true; clearTimeout(timer); resolve(false); } });
+  });
+}
+
+async function processOne(item) {
+  if (paused || stopped) return false;
+  const outPath = join(THUMBNAIL_DIR, item.id + '.jpg');
+  const quality = get('perf.thumbQuality', 10);
+  try {
+    if (existingThumbs.has(item.id + '.jpg')) {
+      stmts.updateThumbCachePath.run(outPath, item.id);
+      return true;
+    }
+    if (!existsSync(item.fullPath)) {
+      stmts.skipThumbStatus.run(item.id);
+      return false;
+    }
+
+    let ok = false;
+    if (item.type === 'image') {
+      ok = await generateImageThumbnail(item.fullPath, outPath, quality);
+    } else if (item.type === 'audio') {
+      const coverInfo = await hasEmbeddedCover(item.fullPath);
+      if (coverInfo) ok = await extractEmbeddedThumbnail(item.fullPath, outPath);
+      if (!ok) ok = await generateAudioPlaceholder(outPath);
+    } else {
+      const coverInfo = await hasEmbeddedCover(item.fullPath);
+      if (coverInfo) ok = await extractEmbeddedThumbnail(item.fullPath, outPath);
+      if (!ok) ok = await extractFrameThumbnail(item.fullPath, outPath, quality);
+    }
+    if (ok) {
+      existingThumbs.add(item.id + '.jpg');
+      stmts.updateThumbStatus.run(item.id);
+      stmts.updateThumbCachePath.run(outPath, item.id);
+    }
+    return ok;
+  } catch (err) {
+    console.error(`[thumbnails] Error: ${item.id}`, err.message);
+    return false;
+  }
+}
+
+async function drainQueue() {
+  if (processing || paused || stopped) return;
+  if (queue.length === 0) {
+    await tryRefill();
+    if (queue.length === 0) return;
+  }
+
+  processing = true;
+  let batchProcessed = 0;
+  let batchSkipped = 0;
+
+  try {
+    const concurrency = get('thumb.concurrent', 4);
+
+    while (queue.length > 0 && !paused && !stopped) {
+      const batch = queue.splice(0, concurrency);
+      const results = await Promise.all(batch.map(processOne));
+      for (const ok of results) {
+        if (ok) batchProcessed++;
+        else batchSkipped++;
+      }
+      totalProcessed += batchProcessed;
+      totalSkipped += batchSkipped;
+      batchProcessed = 0;
+      batchSkipped = 0;
+
+      // Log progress every 20 files
+      if (totalProcessed > 0 && totalProcessed % 20 === 0) {
+        const elapsed = (Date.now() - startedAt) / 1000;
+        const speed = totalProcessed / elapsed;
+        console.log(`[thumbnails] Progress: ${totalProcessed} processed, ${queue.length} queued, ${speed.toFixed(1)} thumb/s`);
+      }
+
+      // Delay between batches to avoid hammering CPU
+      if (queue.length > 0 && !paused && !stopped) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+
+    if (queue.length === 0 && !paused && !stopped) {
+      console.log('[thumbnails] Done. Generated:', totalProcessed, 'Skipped:', totalSkipped);
+      startedAt = null;
+    }
+  } finally {
+    processing = false;
+  }
+}
+
+let lastRefillAt = 0;
+
+async function tryRefill() {
+  if (stopped || paused || scanRunning) return;
+
+  const now = Date.now();
+  if (now - lastRefillAt < REFILL_DELAY_MS) return;
+  lastRefillAt = now;
+
+  const remaining = db.prepare('SELECT COUNT(*) as cnt FROM files WHERE (has_thumb = 0 OR has_thumb = 2) AND thumb_cache_path IS NULL').get();
+  totalMissing = remaining.cnt;
+  if (remaining.cnt === 0) return;
+
+  const files = db.prepare('SELECT id, name, type, dir_id FROM files WHERE (has_thumb = 0 OR has_thumb = 2) AND thumb_cache_path IS NULL').all();
+
+  const missing = [];
+  for (const f of files) {
+    if (!existingThumbs.has(f.id + '.jpg') && !queue.find(q => q.id === f.id)) {
+      const folder = stmts.getFolderById.get(f.dir_id);
+      if (folder) {
+        const relPath = folder.path ? join(folder.path, f.name) : f.name;
+        missing.push({ id: f.id, fullPath: resolveFullPath(relPath), type: f.type });
+      }
+    }
+    if (missing.length >= BATCH_SIZE) break;
+  }
+
+  if (missing.length > 0) {
+    if (!startedAt) startedAt = Date.now();
+    queue.push(...missing);
+    console.log(`[thumbnails] Refilled ${missing.length} files, queue: ${queue.length}, remaining in DB: ${remaining.cnt}`);
+  }
+}
+
+function addFile(fullPath, fileType) {
+  const relPath = getRelPath(fullPath);
+  const id = getFileId(relPath);
+  if (!existingThumbs.has(id + '.jpg') && !queue.find((v) => v.id === id)) {
+    const type = fileType || getFileTypeFromDb(id);
+    queue.push({ id, fullPath, type });
+    drainQueue();
+  }
+}
+
+function getFileTypeFromDb(id) {
+  try { const row = db.prepare('SELECT type FROM files WHERE id = ?').get(id); return row ? row.type : null; } catch { return null; }
+}
+
+export { addFile, scanForMissing, drainQueue, getQueueStatus, pauseQueue, resumeQueue, clearQueue, stopQueue, startQueue, isQueueStopped, buildThumbCache, existingThumbs, VAAPI_AVAILABLE };

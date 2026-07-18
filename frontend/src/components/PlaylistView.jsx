@@ -1,0 +1,1345 @@
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { VariableSizeList as List } from 'react-window';
+import AutoSizer from 'react-virtualized-auto-sizer';
+import { Music, RefreshCw, Trash2, Plus, Upload, X, Check, ChevronDown } from 'lucide-react';
+import usePlaylistStore from '../store/playlistStore';
+import { loadPlaylists, loadPlaylist, getPlaylistQueue, refreshPlaylists, importXSPFPlaylist, createEmptyPlaylist, removeTrackFromPlaylist, bulkRemoveTracksFromPlaylist } from '../utils/playlistApi';
+import { deletePlaylist } from '../utils/api';
+import { useToast } from './Toast';
+import PlaylistGrid from './PlaylistGrid';
+import PlaylistRow from './PlaylistRow';
+import ServiceStoppedBanner from './ServiceStoppedBanner';
+import PlaylistListRow, { injectPlaylistListRowStyles } from './PlaylistListRow';
+import PlaylistListItemRow, { injectPlaylistListItemRowStyles } from './PlaylistListItemRow';
+import AddMusicPanel from './AddMusicPanel';
+import FilterPanel from './FilterPanel';
+import { PlaylistListHeader, PlaylistDetailHeader } from './HeaderComponents';
+import { formatBytes as formatSize } from '../utils/format.js';
+
+import './PlaylistView.css';
+
+injectPlaylistListRowStyles();
+injectPlaylistListItemRowStyles();
+
+const API_BASE = import.meta.env.VITE_API_URL || '';
+
+const TYPE_COLORS = {
+  '.flac': 'text-yellow-400 bg-yellow-500/15',
+  '.mp3': 'text-purple-400 bg-purple-500/15',
+  '.m4a': 'text-pink-400 bg-pink-500/15',
+  '.opus': 'text-slate-300 bg-slate-500/15',
+  '.aac': 'text-green-400 bg-green-500/15',
+  '.wav': 'text-cyan-400 bg-cyan-500/15',
+};
+
+const COLORS = {
+  bg: {
+    primary: '#0a0a0a',
+    secondary: '#171717',
+    tertiary: '#0a0a0a',
+  },
+  border: {
+    primary: '#262626',
+    secondary: '#404040',
+  },
+  text: {
+    primary: '#e5e5e5',
+    secondary: '#a3a3a3',
+    tertiary: '#737373',
+  },
+  accent: '#0ea5e9',
+};
+
+const CONTAINER_MAX = 1600;
+const MIN_CARD = 135;
+const MAX_CARD = 165;
+const MAX_COLUMNS = 10;
+const GUTTER = 8;
+
+function formatDuration(seconds) {
+  if (!seconds) return '0:00';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) {
+    return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  }
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+const ThumbImg = React.memo(function ThumbImg({ fileId, colorClass, size = 48 }) {
+  const [src, setSrc] = useState(fileId ? `${API_BASE}/thumbnails/${fileId}.jpg` : null);
+  const [loaded, setLoaded] = useState(false);
+  const [err, setErr] = useState(!fileId);
+  const prevFileIdRef = useRef(fileId);
+
+  useEffect(() => {
+    if (fileId === prevFileIdRef.current) return;
+    prevFileIdRef.current = fileId;
+    if (fileId) {
+      setSrc(`${API_BASE}/thumbnails/${fileId}.jpg`);
+      setLoaded(false);
+      setErr(false);
+    } else {
+      setSrc(null);
+      setErr(true);
+    }
+  }, [fileId]);
+
+  if (err || !src) {
+    return (
+      <div style={{
+        width: size,
+        height: size,
+        borderRadius: '8px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+        background: colorClass,
+      }}>
+        <Music style={{ width: 24, height: 24 }} />
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      width: size,
+      height: size,
+      borderRadius: '8px',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      flexShrink: 0,
+      overflow: 'hidden',
+      position: 'relative',
+      background: '#262626',
+    }}>
+      {!loaded && <Music style={{ width: 24, height: 24, color: '#737373', position: 'absolute' }} />}
+      <img src={src} alt="" style={{
+        width: '100%',
+        height: '100%',
+        objectFit: 'cover',
+        opacity: loaded ? 1 : 0,
+      }}
+        onLoad={() => setLoaded(true)} onError={() => setErr(true)} />
+    </div>
+  );
+});
+
+// ========== DROPDOWN MENU COMPONENT ==========
+function DropdownMenu({ trigger, items, position = 'right' }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef(null);
+
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    }
+
+    if (isOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [isOpen]);
+
+  return (
+    <div style={{ position: 'relative' }} ref={dropdownRef}>
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+          padding: '8px 12px',
+          borderRadius: '8px',
+          border: `1px solid ${COLORS.border.primary}`,
+          background: COLORS.bg.secondary,
+          color: COLORS.text.primary,
+          cursor: 'pointer',
+          fontSize: '14px',
+          fontWeight: 500,
+          transition: 'all 0.2s ease',
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.borderColor = COLORS.border.secondary;
+          e.currentTarget.style.background = COLORS.bg.primary;
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.borderColor = COLORS.border.primary;
+          e.currentTarget.style.background = COLORS.bg.secondary;
+        }}
+      >
+        {trigger}
+        <ChevronDown size={16} />
+      </button>
+
+      {isOpen && (
+        <div style={{
+          position: 'absolute',
+          [position]: 0,
+          top: '100%',
+          marginTop: '4px',
+          background: COLORS.bg.primary,
+          border: `1px solid ${COLORS.border.primary}`,
+          borderRadius: '8px',
+          minWidth: '160px',
+          zIndex: 50,
+          boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+        }}>
+          {items.map((item, idx) => (
+            <button
+              key={idx}
+              onClick={() => {
+                item.onClick?.();
+                setIsOpen(false);
+              }}
+              disabled={item.disabled}
+              style={{
+                display: 'block',
+                width: '100%',
+                padding: '12px 16px',
+                textAlign: 'left',
+                border: 'none',
+                background: 'transparent',
+                color: item.disabled ? COLORS.text.tertiary : (item.danger ? '#ef4444' : COLORS.text.primary),
+                cursor: item.disabled ? 'not-allowed' : 'pointer',
+                fontSize: '14px',
+                fontWeight: 500,
+                transition: 'all 0.2s ease',
+                borderBottom: idx < items.length - 1 ? `1px solid ${COLORS.border.primary}` : 'none',
+              }}
+              onMouseEnter={(e) => {
+                if (!item.disabled) {
+                  e.currentTarget.style.background = COLORS.bg.secondary;
+                }
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent';
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ========== VIRTUALIZED TRACK GRID (memoized) ==========
+// Isolated + memoized so it does NOT re-render (and does NOT rebuild the row
+// layout / itemData object) on every PlaylistView render. `rows`, `gridData`
+// and `itemSize` are memoized so react-window's `PlaylistRow` memo actually
+// holds across scrolls (previously a fresh gridData object every render forced
+// every visible row+card to re-render → the "grid berat" jank).
+const PlaylistTrackGridInner = React.memo(function PlaylistTrackGridInner({
+  height, width, gridItems, onSelect, selectedForDelete, deletingTrackIds,
+}) {
+  const listRef = useRef(null);
+
+  const { cols, IW, CH } = useMemo(() => {
+    const effectiveWidth = Math.min(width || 0, CONTAINER_MAX);
+    const iw = Math.min(MAX_CARD, Math.max(MIN_CARD, Math.round(effectiveWidth * 0.10)));
+    const ch = Math.round(iw * 180 / 140);
+    const c = Math.max(1, Math.min(MAX_COLUMNS, Math.floor((effectiveWidth - GUTTER) / (iw + GUTTER))));
+    return { cols: c, IW: iw, CH: ch };
+  }, [width]);
+
+  const rows = useMemo(() => {
+    const r = [];
+    let currentRow = { items: [] };
+    for (let i = 0; i < gridItems.length; i++) {
+      currentRow.items.push(gridItems[i]);
+      if (currentRow.items.length === cols) { r.push(currentRow); currentRow = { items: [] }; }
+    }
+    if (currentRow.items.length > 0) r.push(currentRow);
+    return r;
+  }, [gridItems, cols]);
+
+  const gridData = useMemo(() => ({
+    rows, onSelect, itemWidth: IW, cardHeight: CH, columnCount: cols, selectedForDelete, deletingTrackIds,
+  }), [rows, onSelect, IW, CH, cols, selectedForDelete, deletingTrackIds]);
+
+  const itemSize = useCallback(() => CH + GUTTER, [CH]);
+
+  // Recompute cached row offsets when card height / column count changes (resize).
+  useEffect(() => {
+    listRef.current?.resetAfterIndex(0);
+  }, [CH, cols]);
+
+  if (!height || !width || height <= 0 || width <= 0) return null;
+  const gridHeight = Math.max(0, height - GUTTER);
+  return (
+    <List
+      ref={listRef}
+      key="track-grid"
+      height={gridHeight}
+      width={width}
+      itemCount={rows.length}
+      itemSize={itemSize}
+      overscanCount={3}
+      itemData={gridData}
+    >
+      {PlaylistRow}
+    </List>
+  );
+});
+
+// ========== MAIN COMPONENT ==========
+export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, onBackToPlaylistList }) {
+  const { playlists, setPlaylists, setLoading, setError, loading,
+    currentPlaylist, currentPlaylistTracks,
+    setCurrentPlaylist, setCurrentPlaylistTracks, clearCurrentPlaylist, clearPlaylistDetail,
+  } = usePlaylistStore();
+  const { showToast } = useToast();
+  const [selectedPlaylist, setSelectedPlaylist] = useState(() => {
+    const savedId = sessionStorage.getItem('selectedPlaylistId');
+    return savedId ? { id: savedId, title: '' } : null;
+  });
+  const [playlistTracks, setPlaylistTracks] = useState([]);
+  const [loadingTracks, setLoadingTracks] = useState(() => !!sessionStorage.getItem('selectedPlaylistId'));
+  const [viewMode, setViewMode] = useState(() => sessionStorage.getItem('selectedPlaylistId') ? 'detail' : 'list');
+  const [displayMode, setDisplayMode] = useState(() => sessionStorage.getItem('playlistDisplayMode') || 'list');
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [createTitle, setCreateTitle] = useState('');
+  const [isImporting, setIsImporting] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
+  const [showAddMusicPanel, setShowAddMusicPanel] = useState(false);
+
+  // Sort/Filter states
+  const PLAYLIST_SORT_OPTIONS = [
+    { key: null, label: 'None', order: 'asc' },
+    { key: 'name', label: 'Name', order: 'asc' },
+    { key: 'created_at', label: 'Created', order: 'desc' },
+  ];
+  const TRACK_FILTER_OPTIONS = [
+    { key: 'all', label: 'All' },
+    { key: 'flac', label: 'FLAC' },
+    { key: 'mp3', label: 'MP3' },
+    { key: 'm4a', label: 'M4A' },
+    { key: 'opus', label: 'OPUS' },
+    { key: 'aac', label: 'AAC' },
+    { key: 'wav', label: 'WAV' },
+  ];
+  const TRACK_SORT_OPTIONS = [
+    { key: null, label: 'None', order: 'asc' },
+    { key: 'track_num', label: 'Track #', order: 'asc' },
+    { key: 'track_index', label: 'Added', order: 'asc' },
+    { key: 'title', label: 'Title', order: 'asc' },
+    { key: 'artist', label: 'Artist', order: 'asc' },
+    { key: 'album', label: 'Album', order: 'asc' },
+    { key: 'duration', label: 'Duration', order: 'desc' },
+    { key: 'created_at', label: 'Created', order: 'desc' },
+    { key: 'mtime', label: 'Modified', order: 'desc' },
+    { key: 'size', label: 'Size', order: 'desc' },
+    { key: 'is_favorite', label: 'Love', order: 'desc' },
+  ];
+  const [playlistSort, setPlaylistSort] = useState(() => {
+    try { const s = JSON.parse(localStorage.getItem('playlistSort')); return s || { by: 'name', order: 'asc' }; } catch { return { by: 'name', order: 'asc' }; }
+  });
+  const [trackSort, setTrackSort] = useState(() => {
+    try { const s = JSON.parse(localStorage.getItem('trackSort')); return s || { by: 'track_num', order: 'asc' }; } catch { return { by: 'track_num', order: 'asc' }; }
+  });
+  const [trackFilterType, setTrackFilterType] = useState('all');
+  const [showFilterPanel, setShowFilterPanel] = useState(false);
+  const [filterPanelType, setFilterPanelType] = useState('playlist');
+
+  // Delete mode states
+  const [deleteMode, setDeleteMode] = useState(false);
+  const [selectedForDelete, setSelectedForDelete] = useState(new Set());
+  const [selectAllForDelete, setSelectAllForDelete] = useState(false);
+  const [deletingTrackIds, setDeletingTrackIds] = useState(new Set());
+  const [playlistDeleteMode, setPlaylistDeleteMode] = useState(false);
+  const [selectedPlaylistIds, setSelectedPlaylistIds] = useState(new Set());
+  const [deleteConfirm, setDeleteConfirm] = useState({ open: false, playlistId: null });
+
+  const fileInputRef = useRef(null);
+  const restoreAttemptedRef = useRef(false);
+  const playAllGuardRef = useRef(false);
+  const playTrackGuardRef = useRef(false);
+  const cachedPlaylistRef = useRef(null);
+  const cachedTracksRef = useRef(null);
+  const gridColsRef = useRef(0);
+
+  // Persist displayMode
+  useEffect(() => {
+    sessionStorage.setItem('playlistDisplayMode', displayMode);
+  }, [displayMode]);
+
+  // Persist sort state
+  useEffect(() => {
+    localStorage.setItem('playlistSort', JSON.stringify(playlistSort));
+  }, [playlistSort]);
+  useEffect(() => {
+    localStorage.setItem('trackSort', JSON.stringify(trackSort));
+  }, [trackSort]);
+
+  async function handleImportXSPF(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsImporting(true);
+    try {
+      await importXSPFPlaylist(file);
+      showToast('Playlist imported successfully', 'success');
+      const data = await loadPlaylists();
+      setPlaylists(data.playlists || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }
+
+  async function handleCreateManualPlaylist() {
+    if (!createTitle.trim()) return;
+    setIsCreating(true);
+    try {
+      const result = await createEmptyPlaylist(createTitle.trim());
+      showToast('Playlist created successfully', 'success');
+      setShowCreateModal(false);
+      setCreateTitle('');
+      const data = await loadPlaylists();
+      setPlaylists(data.playlists || []);
+      if (result.id) {
+        handleSelectPlaylist({ id: result.id, title: createTitle.trim() });
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsCreating(false);
+    }
+  }
+
+  // Restore playlist detail — Bug #9: validate URL hash before restoring
+  useEffect(() => {
+    if (restoreAttemptedRef.current) return;
+    restoreAttemptedRef.current = true;
+
+    const savedId = sessionStorage.getItem('selectedPlaylistId');
+    if (!savedId) return;
+
+    // Validate URL hash: only restore if URL explicitly targets this playlist
+    const hash = window.location.hash;
+    const playlistMatch = hash.match(/\/playlists\/(\d+)/);
+    const hashId = playlistMatch ? playlistMatch[1] : null;
+
+    if (!hashId || String(hashId) !== String(savedId)) {
+      // URL doesn't target this playlist — clear stale state and stay on list view
+      sessionStorage.removeItem('selectedPlaylistId');
+      clearPlaylistDetail();
+      setSelectedPlaylist(null);
+      setPlaylistTracks([]);
+      setViewMode('list');
+      return;
+    }
+
+    setViewMode('detail');
+
+    const cached = cachedPlaylistRef.current;
+    if (cached && String(cached.id) === String(savedId)) {
+      setSelectedPlaylist(cached);
+      setCurrentPlaylist(cached);
+      if (cachedTracksRef.current) {
+        setPlaylistTracks(cachedTracksRef.current);
+        setCurrentPlaylistTracks(cachedTracksRef.current);
+      } else {
+        setLoadingTracks(true);
+        loadPlaylist(savedId).then(data => {
+          cachedTracksRef.current = data.tracks || [];
+          setPlaylistTracks(data.tracks || []);
+          setCurrentPlaylistTracks(data.tracks || []);
+        }).catch(() => {}).finally(() => setLoadingTracks(false));
+      }
+      return;
+    }
+
+    setLoadingTracks(true);
+    loadPlaylist(savedId).then(data => {
+      cachedPlaylistRef.current = data;
+      cachedTracksRef.current = data.tracks || [];
+      setSelectedPlaylist(data);
+      setCurrentPlaylist(data);
+      setPlaylistTracks(data.tracks || []);
+      setCurrentPlaylistTracks(data.tracks || []);
+    }).catch(() => {
+      sessionStorage.removeItem('selectedPlaylistId');
+      clearPlaylistDetail();
+      setSelectedPlaylist(null);
+      setPlaylistTracks([]);
+      setViewMode('list');
+    }).finally(() => setLoadingTracks(false));
+  }, [viewMode, clearPlaylistDetail]);
+
+  useEffect(() => {
+    loadPlaylists().then(data => {
+      setPlaylists(data.playlists || []);
+    }).catch(() => {});
+  }, []);
+
+  const handleRefresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      await refreshPlaylists();
+      const data = await loadPlaylists();
+      setPlaylists(data.playlists || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [setLoading, setPlaylists, setError]);
+
+  const handleSelectPlaylist = useCallback((playlist) => {
+    cachedPlaylistRef.current = playlist;
+    cachedTracksRef.current = null;
+    sessionStorage.setItem('selectedPlaylistId', playlist.id);
+    setSelectedPlaylist(playlist);
+    setCurrentPlaylist(playlist);
+    setViewMode('detail');
+    // Clear tracks immediately so stale data doesn't leak into queue
+    setPlaylistTracks([]);
+    setCurrentPlaylistTracks([]);
+    setLoadingTracks(true);
+    const url = `#/playlists/${playlist.id}`;
+    if (window.location.hash !== url) {
+      window.history.pushState({}, '', url);
+    }
+    loadPlaylist(playlist.id).then(data => {
+      const tracks = data.tracks || [];
+      cachedTracksRef.current = tracks;
+      setPlaylistTracks(tracks);
+      setCurrentPlaylistTracks(tracks);
+    }).catch(err => {
+      console.error('Failed to load playlist:', err);
+      setPlaylistTracks([]);
+      setCurrentPlaylistTracks([]);
+    }).finally(() => setLoadingTracks(false));
+  }, [setCurrentPlaylist, setCurrentPlaylistTracks]);
+
+  const handleBackToList = useCallback(() => {
+    sessionStorage.removeItem('selectedPlaylistId');
+    cachedPlaylistRef.current = null;
+    cachedTracksRef.current = null;
+    setSelectedPlaylist(null);
+    setPlaylistTracks([]);
+    clearCurrentPlaylist();
+    setViewMode('list');
+    onBackToPlaylistList?.();
+    const url = '#/playlists';
+    if (window.location.hash !== url) {
+      window.history.pushState({}, '', url);
+    }
+  }, [clearCurrentPlaylist, onBackToPlaylistList]);
+
+  const handleDeletePlaylist = useCallback((playlistId, e) => {
+    if (e) e.stopPropagation();
+    setDeleteConfirm({ open: true, playlistId });
+  }, []);
+
+  const confirmDeletePlaylist = useCallback(async () => {
+    const playlistId = deleteConfirm.playlistId;
+    if (!playlistId) return;
+    try {
+      await fetch(`${import.meta.env.VITE_API_URL || ''}/api/playlists/${playlistId}`, { method: 'DELETE' });
+      showToast('Playlist deleted', 'success');
+      setPlaylists(prev => prev.filter(p => p.id !== playlistId));
+      if (String(selectedPlaylist?.id) === String(playlistId)) {
+        handleBackToList();
+      }
+    } catch (err) {
+      showToast('Failed to delete playlist', 'error');
+    } finally {
+      setDeleteConfirm({ open: false, playlistId: null });
+    }
+  }, [deleteConfirm.playlistId, selectedPlaylist?.id, setPlaylists, showToast, handleBackToList]);
+
+  const handleRemoveTrack = useCallback(async (trackId, e) => {
+    if (e) e.stopPropagation();
+    if (!selectedPlaylist) return;
+    try {
+      await removeTrackFromPlaylist(selectedPlaylist.id, trackId);
+      setPlaylistTracks(prev => prev.filter(t => t.id !== trackId));
+      showToast('Track removed', 'success');
+      loadPlaylist(selectedPlaylist.id).then(data => {
+        setSelectedPlaylist(prev => prev ? { ...prev, track_count: data.track_count, total_duration: data.total_duration } : prev);
+      });
+    } catch (err) {
+      showToast('Failed to remove track', 'error');
+    }
+  }, [selectedPlaylist, showToast]);
+
+  const toggleSelectForDelete = useCallback((trackId) => {
+    setSelectedForDelete(prev => {
+      const next = new Set(prev);
+      if (next.has(trackId)) next.delete(trackId);
+      else next.add(trackId);
+      return next;
+    });
+  }, []);
+
+  // Sorted data
+  const sortedPlaylists = useMemo(() => {
+    const list = Array.isArray(playlists) ? [...playlists] : [];
+    const { by, order } = playlistSort;
+    list.sort((a, b) => {
+      let valA = a[by] ?? '';
+      let valB = b[by] ?? '';
+      if (by === 'created_at') {
+        valA = new Date(valA).getTime() || 0;
+        valB = new Date(valB).getTime() || 0;
+      } else {
+        valA = String(valA).toLowerCase();
+        valB = String(valB).toLowerCase();
+      }
+      if (valA < valB) return order === 'asc' ? -1 : 1;
+      if (valA > valB) return order === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return list;
+  }, [playlists, playlistSort]);
+
+  const sortedTracks = useMemo(() => {
+    let list = [...playlistTracks];
+    if (trackFilterType !== 'all') {
+      list = list.filter(t => {
+        const filePath = t.resolved_path || t.location || '';
+        const ext = filePath.split('.').pop().toLowerCase();
+        return ext === trackFilterType;
+      });
+    }
+    // When sorting by is_favorite, show only loved tracks
+    if (trackSort.by === 'is_favorite') {
+      list = list.filter(t => t.is_favorite === 1);
+      return list;
+    }
+    const { by, order } = trackSort;
+    list.sort((a, b) => {
+      let valA = a[by] ?? '';
+      let valB = b[by] ?? '';
+      if (by === 'duration' || by === 'track_num' || by === 'track_index' || by === 'created_at' || by === 'mtime' || by === 'size') {
+        valA = Number(valA) || 0;
+        valB = Number(valB) || 0;
+      } else {
+        valA = String(valA).toLowerCase();
+        valB = String(valB).toLowerCase();
+      }
+      if (valA < valB) return order === 'asc' ? -1 : 1;
+      if (valA > valB) return order === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return list;
+  }, [playlistTracks, trackSort, trackFilterType]);
+
+  const handleBulkDelete = useCallback(async () => {
+    if (!selectedPlaylist) return;
+    const ids = selectAllForDelete
+      ? sortedTracks.map(t => t.id).filter(id => !selectedForDelete.has(id))
+      : Array.from(selectedForDelete);
+    if (ids.length === 0) return;
+    setDeletingTrackIds(new Set(ids));
+    await new Promise(r => setTimeout(r, 400));
+    try {
+      const result = await bulkRemoveTracksFromPlaylist(selectedPlaylist.id, ids);
+      const remainingTracks = sortedTracks.filter(t => !ids.includes(t.id));
+      setPlaylistTracks(remainingTracks);
+      setCurrentPlaylistTracks(remainingTracks);
+      cachedTracksRef.current = remainingTracks;
+      const updatedPlaylist = {
+        ...selectedPlaylist,
+        track_count: result.track_count ?? remainingTracks.length,
+        total_size: remainingTracks.reduce((sum, t) => sum + (t.size || 0), 0),
+      };
+      cachedPlaylistRef.current = updatedPlaylist;
+      setSelectedPlaylist(updatedPlaylist);
+      setCurrentPlaylist(updatedPlaylist);
+      setPlaylists(prev => prev.map(p => p.id === updatedPlaylist.id ? { ...p, ...updatedPlaylist } : p));
+      showToast(`${ids.length} track(s) deleted`, 'success');
+    } catch (err) {
+      showToast('Failed to delete from server', 'error');
+    } finally {
+      setSelectedForDelete(new Set());
+      setDeleteMode(false);
+      setSelectAllForDelete(false);
+      setDeletingTrackIds(new Set());
+    }
+  }, [selectedPlaylist, sortedTracks, selectedForDelete, selectAllForDelete, showToast, setCurrentPlaylist, setCurrentPlaylistTracks]);
+
+  const handleCancelDeleteMode = useCallback(() => {
+    setDeleteMode(false);
+    setSelectedForDelete(new Set());
+    setSelectAllForDelete(false);
+    setDeletingTrackIds(new Set());
+  }, []);
+
+  const bulkSelectedCount = deleteMode
+    ? (selectAllForDelete ? sortedTracks.length - selectedForDelete.size : selectedForDelete.size)
+    : 0;
+
+  // Filter panel handlers
+  const handleOpenPlaylistFilters = useCallback(() => {
+    setFilterPanelType('playlist');
+    setShowFilterPanel(true);
+  }, []);
+
+  const handleOpenTrackFilters = useCallback(() => {
+    setFilterPanelType('track');
+    setShowFilterPanel(true);
+  }, []);
+
+  const handleFilterApply = useCallback((key, order) => {
+    if (filterPanelType === 'playlist') {
+      setPlaylistSort({ by: key, order: order || 'asc' });
+    } else {
+      setTrackSort({ by: key, order: order || 'asc' });
+    }
+  }, [filterPanelType]);
+
+  const handleTrackFilterTypeChange = useCallback((type) => {
+    setTrackFilterType(type);
+  }, []);
+
+  const handlePlaylistOrderToggle = useCallback(() => {
+    setPlaylistSort(prev => ({ ...prev, order: prev.order === 'asc' ? 'desc' : 'asc' }));
+  }, []);
+
+  const handleTrackOrderToggle = useCallback(() => {
+    setTrackSort(prev => ({ ...prev, order: prev.order === 'asc' ? 'desc' : 'asc' }));
+  }, []);
+
+  const togglePlaylistSelect = useCallback((playlistId) => {
+    setSelectedPlaylistIds(prev => {
+      const next = new Set(prev);
+      if (next.has(playlistId)) next.delete(playlistId);
+      else next.add(playlistId);
+      return next;
+    });
+  }, []);
+
+  const fullQueueMemo = useMemo(() => {
+    return sortedTracks.map((t, i) => ({
+      file_id: t.file_id,
+      track_index: i,
+      display_name: t.display_name,
+      artist: t.artist || '',
+      album: t.album || '',
+      duration: t.duration || 0,
+      path: t.resolved_path || t.location || '',
+      resolved_path: t.resolved_path,
+      location: t.location,
+      exists: !!t.exists && !!t.file_id,
+      type: 'audio',
+      ext: t.resolved_path ? t.resolved_path.split('.').pop()?.toLowerCase() || '' : '',
+      size: t.size || 0,
+      is_favorite: t.is_favorite || 0,
+      youtube_id: t.youtube_id || null,
+      video_offset: t.video_offset || 0,
+    }));
+  }, [sortedTracks]);
+
+  const handlePlay = useCallback(() => {
+    if (playAllGuardRef.current) return;
+    if (loadingTracks || sortedTracks.length === 0) return;
+    playAllGuardRef.current = true;
+    setTimeout(() => { playAllGuardRef.current = false; }, 1000);
+
+    const queue = fullQueueMemo.filter(t => t.exists);
+    if (queue.length === 0) return;
+    onPlayPlaylist({ queue, playlist: selectedPlaylist });
+  }, [fullQueueMemo, sortedTracks, selectedPlaylist, onPlayPlaylist, loadingTracks]);
+
+  const handlePlayTrack = useCallback((track, index) => {
+    if (playTrackGuardRef.current) return;
+    if (loadingTracks) return;
+    // Only a resolvable file id is required to play. Previously a missing
+    // `exists`/`resolved_path` silently dropped the click and left the previous
+    // track playing ("thrown to another song"). The player resolves the stream
+    // by file_id, so relax the guard to require only that.
+    const fileId = track?.file_id || track?.id;
+    if (!fileId) return;
+    playTrackGuardRef.current = true;
+    setTimeout(() => { playTrackGuardRef.current = false; }, 500);
+
+    const queue = fullQueueMemo.filter(t => t.exists && (t.file_id || t.id));
+    if (queue.length === 0) return;
+
+    // Resolve the play index AUTHORITATIVELY by file_id. This is immune to any
+    // sort/filter/refresh divergence between the displayed list and the queue, and
+    // to a stale persisted currentTrackIndex (playbackStore persists it to
+    // localStorage). The DISPLAY position is only used as a tie-breaker when the
+    // playlist genuinely contains duplicate file_ids, so we still pick the exact
+    // clicked row in that edge case.
+    let clickedIdx = queue.findIndex(t => (t.file_id || t.id) === fileId);
+
+    if (clickedIdx >= 0 && typeof index === 'number' && index >= 0) {
+      const positional = sortedTracks.slice(0, index).filter(t => t.exists && (t.file_id || t.id)).length;
+      if (
+        positional >= 0 && positional < queue.length &&
+        (queue[positional]?.file_id || queue[positional]?.id) === fileId
+      ) {
+        clickedIdx = positional;
+      }
+    }
+
+    // Guarantee the clicked track ALWAYS appears in the carousel/player. A newly
+    // added track can be filtered out of the playable queue (e.g. not yet flagged
+    // exists, or excluded by a type filter) — if so, synthesize a queue entry from
+    // it and insert at the clicked display position so the user never sees the
+    // track they just opened "vanish".
+    if (clickedIdx < 0) {
+      const entry = fullQueueMemo.find(t => (t.file_id || t.id) === fileId) || {
+        file_id: track.file_id,
+        track_index: typeof index === 'number' ? index : 0,
+        display_name: track.display_name || track.title || track.name,
+        artist: track.artist || '',
+        album: track.album || '',
+        duration: track.duration || 0,
+        path: track.resolved_path || track.path || '',
+        resolved_path: track.resolved_path,
+        location: track.location,
+        exists: true,
+        type: track.type || 'audio',
+        ext: track.ext || (track.resolved_path ? track.resolved_path.split('.').pop()?.toLowerCase() : '') || '',
+        is_favorite: track.is_favorite || 0,
+        youtube_id: track.youtube_id || null,
+        video_offset: track.video_offset || 0,
+      };
+      const insertAt = Math.max(0, Math.min(typeof index === 'number' ? index : queue.length, queue.length));
+      queue.splice(insertAt, 0, entry);
+      clickedIdx = insertAt;
+    }
+
+    if (clickedIdx < 0 || clickedIdx >= queue.length) return;
+    onPlayTrack(track, queue, clickedIdx, selectedPlaylist);
+  }, [fullQueueMemo, sortedTracks, selectedPlaylist, onPlayTrack, loadingTracks]);
+
+  const listRowData = useMemo(() => ({
+    tracks: sortedTracks,
+    deleteMode,
+    selectedForDelete,
+    deletingTrackIds,
+    onSelect: (track, index) => {
+      if (deleteMode) { toggleSelectForDelete(track.id); return; }
+      // Only a resolvable id is required to attempt playback. The player resolves
+      // the stream by file_id, so don't silently drop the click for tracks that
+      // aren't yet flagged exists/resolved_path (e.g. a freshly added track).
+      if (track.file_id || track.id) handlePlayTrack(track, index);
+    },
+    onRemove: handleRemoveTrack,
+  }), [sortedTracks, deleteMode, selectedForDelete, deletingTrackIds, handlePlayTrack, handleRemoveTrack, toggleSelectForDelete]);
+
+  const listItemSize = useCallback(() => 64, []);
+
+  const playlistListItemSize = useCallback(() => 72, []);
+
+  const playlistListRowData = useMemo(() => ({
+    playlists: sortedPlaylists,
+    playlistDeleteMode,
+    selectedPlaylistIds,
+    onSelect: playlistDeleteMode
+      ? (p) => togglePlaylistSelect(p.id)
+      : handleSelectPlaylist,
+    onDelete: handleDeletePlaylist,
+    onToggleSelect: togglePlaylistSelect,
+  }), [sortedPlaylists, playlistDeleteMode, selectedPlaylistIds, handleSelectPlaylist, handleDeletePlaylist, togglePlaylistSelect]);
+
+  const gridItems = useMemo(() => {
+    return sortedTracks.map((track, i) => ({
+      id: track.file_id || `track-${i}`,
+      _cardTitle: track.display_name,
+      _cardSubtitle: track.duration > 0 ? formatDuration(track.duration) : (track.artist || ''),
+      _cardThumbnail: track.file_id ? `/thumbnails/${track.file_id}.jpg` : null,
+      _cardHasImage: true,
+      _typeLabel: 'AUDIO',
+      _trackIndex: i,
+      _exists: !!(track.exists && track.file_id),
+      _file_id: track.file_id,
+      _is_favorite: track.is_favorite || 0,
+    }));
+  }, [sortedTracks]);
+
+  const handleTrackGridSelect = useCallback((item) => {
+    if (deleteMode) {
+      const realTrack = sortedTracks[item._trackIndex] || item;
+      if (realTrack?.id) toggleSelectForDelete(realTrack.id);
+      return;
+    }
+    const realTrack = sortedTracks[item._trackIndex] || item;
+    handlePlayTrack(realTrack, item._trackIndex);
+  }, [deleteMode, handlePlayTrack, sortedTracks, toggleSelectForDelete]);
+
+  // Create modal
+  const createModal = showCreateModal && (
+    <div style={{
+      position: 'fixed',
+      inset: 0,
+      zIndex: 50,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      background: 'rgba(0,0,0,0.7)',
+      backdropFilter: 'blur(4px)',
+    }}>
+      <div style={{
+        background: COLORS.bg.primary,
+        borderRadius: '16px',
+        border: `1px solid ${COLORS.border.primary}`,
+        width: '100%',
+        maxWidth: '420px',
+        display: 'flex',
+        flexDirection: 'column',
+      }}>
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '20px',
+          borderBottom: `1px solid ${COLORS.border.primary}`,
+        }}>
+          <h2 style={{ margin: 0, fontSize: '16px', color: COLORS.text.primary, fontWeight: 600 }}>
+            Create New Playlist
+          </h2>
+          <button
+            onClick={() => { setShowCreateModal(false); setCreateTitle(''); }}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: COLORS.text.secondary,
+              cursor: 'pointer',
+              fontSize: '20px',
+              padding: '4px',
+              display: 'flex',
+              alignItems: 'center',
+            }}
+          >
+            <X size={20} />
+          </button>
+        </div>
+        <div style={{ padding: '20px' }}>
+          <label style={{ display: 'block', fontSize: '12px', color: COLORS.text.secondary, marginBottom: '8px', fontWeight: 500 }}>
+            Playlist Title
+          </label>
+          <input
+            type="text"
+            value={createTitle}
+            onChange={(e) => setCreateTitle(e.target.value)}
+            placeholder="My Awesome Playlist"
+            autoFocus
+            onKeyDown={(e) => { if (e.key === 'Enter' && createTitle.trim()) handleCreateManualPlaylist(); }}
+            style={{
+              width: '100%',
+              padding: '10px 12px',
+              borderRadius: '8px',
+              background: COLORS.bg.secondary,
+              border: `1px solid ${COLORS.border.primary}`,
+              color: COLORS.text.primary,
+              fontSize: '14px',
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'flex-end',
+          gap: '12px',
+          padding: '20px',
+          borderTop: `1px solid ${COLORS.border.primary}`,
+        }}>
+          <button
+            onClick={() => { setShowCreateModal(false); setCreateTitle(''); }}
+            style={{
+              padding: '10px 16px',
+              borderRadius: '8px',
+              background: 'transparent',
+              border: `1px solid ${COLORS.border.primary}`,
+              color: COLORS.text.secondary,
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: 500,
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleCreateManualPlaylist}
+            disabled={!createTitle.trim() || isCreating}
+            style={{
+              padding: '10px 16px',
+              borderRadius: '8px',
+              background: COLORS.accent,
+              border: 'none',
+              color: 'white',
+              cursor: !createTitle.trim() || isCreating ? 'not-allowed' : 'pointer',
+              fontSize: '14px',
+              fontWeight: 600,
+              opacity: !createTitle.trim() || isCreating ? 0.5 : 1,
+            }}
+          >
+            {isCreating ? 'Creating...' : 'Create'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const deleteConfirmModal = deleteConfirm.open && (
+    <div style={{
+      position: 'fixed',
+      inset: 0,
+      zIndex: 50,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      background: 'rgba(0,0,0,0.7)',
+      backdropFilter: 'blur(4px)',
+    }}>
+      <div style={{
+        background: COLORS.bg.primary,
+        borderRadius: '16px',
+        border: `1px solid ${COLORS.border.primary}`,
+        width: '100%',
+        maxWidth: '420px',
+        display: 'flex',
+        flexDirection: 'column',
+      }}>
+        <div style={{
+          padding: '20px',
+          borderBottom: `1px solid ${COLORS.border.primary}`,
+        }}>
+          <h2 style={{ margin: 0, fontSize: '16px', color: COLORS.text.primary, fontWeight: 600 }}>
+            Delete Playlist
+          </h2>
+          <p style={{ margin: '8px 0 0 0', fontSize: '14px', color: COLORS.text.secondary }}>
+            Are you sure you want to delete this playlist? This action cannot be undone.
+          </p>
+        </div>
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'flex-end',
+          gap: '12px',
+          padding: '20px',
+        }}>
+          <button
+            onClick={() => setDeleteConfirm({ open: false, playlistId: null })}
+            style={{
+              padding: '10px 16px',
+              borderRadius: '8px',
+              background: 'transparent',
+              border: `1px solid ${COLORS.border.primary}`,
+              color: COLORS.text.secondary,
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: 500,
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={confirmDeletePlaylist}
+            style={{
+              padding: '10px 16px',
+              borderRadius: '8px',
+              background: '#ef4444',
+              border: 'none',
+              color: 'white',
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: 600,
+            }}
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <ServiceStoppedBanner service="playlists" />
+      {/* List View */}
+      {!selectedPlaylist && (
+        <>
+        <PlaylistListHeader
+          playlistCount={sortedPlaylists.length}
+          selectionMode={playlistDeleteMode}
+          selectedCount={selectedPlaylistIds.size}
+          onMenuOpen={onMenuOpen}
+          onToggleSelect={() => {
+            setPlaylistDeleteMode(true);
+            setSelectedPlaylistIds(new Set());
+          }}
+          onSelectAll={() => {
+            if ((Array.isArray(playlists) ? playlists : []).length === selectedPlaylistIds.size) {
+              setSelectedPlaylistIds(new Set());
+            } else {
+              setSelectedPlaylistIds(new Set((Array.isArray(playlists) ? playlists : []).map(p => p.id)));
+            }
+          }}
+          onDeleteSelected={async () => {
+            if (selectedPlaylistIds.size === 0) return;
+            for (const id of selectedPlaylistIds) {
+              try { await deletePlaylist(id); } catch {}
+            }
+            setPlaylists(prev => prev.filter(p => !selectedPlaylistIds.has(p.id)));
+            showToast(`${selectedPlaylistIds.size} playlist(s) deleted`, 'success');
+            setSelectedPlaylistIds(new Set());
+            setPlaylistDeleteMode(false);
+          }}
+          onCancelSelect={() => {
+            setPlaylistDeleteMode(false);
+            setSelectedPlaylistIds(new Set());
+          }}
+          onImport={() => fileInputRef.current?.click()}
+          onRefresh={() => { setLoading(true); handleRefresh(); }}
+          onToggleView={() => setDisplayMode(d => d === 'grid' ? 'list' : 'grid')}
+          displayMode={displayMode}
+          isImporting={isImporting}
+          fileInputRef={fileInputRef}
+          onImportFile={handleImportXSPF}
+          onCreate={() => setShowCreateModal(true)}
+          sortBy={playlistSort.by}
+          sortOrder={playlistSort.order}
+          onOpenFilters={handleOpenPlaylistFilters}
+          onToggleOrder={handlePlaylistOrderToggle}
+        />
+        <div style={{ flex: 1, overflow: 'hidden' }}>
+            {loading && playlists.length === 0 ? (
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                height: '100%',
+              }}>
+                <div style={{
+                  width: '32px',
+                  height: '32px',
+                  border: `2px solid ${COLORS.border.primary}`,
+                  borderTop: `2px solid ${COLORS.accent}`,
+                  borderRadius: '50%',
+                  animation: 'spin 1s linear infinite',
+                }} />
+              </div>
+            ) : playlists.length === 0 ? (
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                height: '100%',
+                color: COLORS.text.secondary,
+              }}>
+                <Music size={64} style={{ marginBottom: '16px', opacity: 0.3 }} />
+                <p style={{ margin: '0 0 8px 0', fontSize: '16px', fontWeight: 500 }}>No playlists yet</p>
+                <p style={{ margin: 0, fontSize: '14px' }}>Create one or import .xspf file</p>
+              </div>
+            ) : displayMode === 'list' ? (
+              <div style={{ height: '100%' }} data-debug-id="5.1.4" data-debug-name="PlaylistList" data-debug-type="list">
+                <AutoSizer>
+                  {({ height, width }) => (
+                    <List
+                      key={`list-${displayMode}`}
+                      height={height}
+                      width={width}
+                      itemCount={sortedPlaylists.length}
+                      itemSize={playlistListItemSize}
+                      overscanCount={5}
+                      itemData={playlistListRowData}
+                    >
+                      {PlaylistListItemRow}
+                    </List>
+                  )}
+                </AutoSizer>
+              </div>
+            ) : (
+              <div style={{ height: '100%' }} data-debug-id="5.1.3" data-debug-name="PlaylistGrid" data-debug-type="grid">
+              <PlaylistGrid
+                key={`grid-${displayMode}`}
+                playlists={sortedPlaylists}
+                onSelect={playlistDeleteMode ? (p) => togglePlaylistSelect(p.id) : handleSelectPlaylist}
+                onDelete={handleDeletePlaylist}
+                hasMore={false}
+                fetchingMore={loading}
+                onLoadMore={handleRefresh}
+                sortBy={null}
+                sortOrder="asc"
+                groupByFolder={false}
+                selectedPlaylistIds={playlistDeleteMode ? selectedPlaylistIds : null}
+              />
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Detail View */}
+      {selectedPlaylist && (
+    <div data-debug-id="5.1" data-debug-name="PlaylistView" data-debug-type="panel" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+          {/* Detail Header */}
+          <div data-debug-id="5.2.1" data-debug-name="PlaylistDetailHeader" data-debug-type="other">
+          <PlaylistDetailHeader
+            playlistName={selectedPlaylist?.title || ''}
+            trackCount={sortedTracks.length}
+            availableCount={sortedTracks.filter(t => t.exists && t.file_id).length}
+            selectionMode={deleteMode}
+            selectedCount={bulkSelectedCount}
+            displayMode={displayMode}
+            onEnterSelectMode={() => setDeleteMode(true)}
+            onSelectAll={() => {
+              setSelectAllForDelete(true);
+              setSelectedForDelete(new Set());
+            }}
+            onDeleteSelected={handleBulkDelete}
+            onCancelSelect={handleCancelDeleteMode}
+            onAdd={() => setShowAddMusicPanel(true)}
+            onBack={handleBackToList}
+            onToggleView={() => setDisplayMode(d => d === 'grid' ? 'list' : 'grid')}
+            sortBy={trackSort.by}
+            sortOrder={trackSort.order}
+            filterType={trackFilterType}
+            onOpenFilters={handleOpenTrackFilters}
+            onToggleOrder={handleTrackOrderToggle}
+          />
+          </div>
+
+          {/* Content */}
+          <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
+            {loadingTracks ? (
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                height: '100%',
+              }}>
+                <div style={{
+                  width: '32px',
+                  height: '32px',
+                  border: `2px solid ${COLORS.border.primary}`,
+                  borderTop: `2px solid ${COLORS.accent}`,
+                  borderRadius: '50%',
+                  animation: 'spin 1s linear infinite',
+                }} />
+              </div>
+            ) : sortedTracks.length === 0 ? (
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                height: '100%',
+                color: COLORS.text.secondary,
+              }}>
+                <Music size={48} style={{ marginBottom: '12px', opacity: 0.3 }} />
+                <p style={{ margin: 0, fontSize: '14px' }}>No tracks in this playlist</p>
+              </div>
+            ) : displayMode === 'list' ? (
+              <div style={{ height: '100%' }} data-debug-id="5.2.2" data-debug-name="TrackListView" data-debug-type="list">
+                <AutoSizer>
+                  {({ height, width }) => (
+                    <List
+                      key={`track-list-${displayMode}`}
+                      height={height}
+                      width={width}
+                      itemCount={sortedTracks.length}
+                      itemSize={listItemSize}
+                      overscanCount={5}
+                      itemData={listRowData}
+                    >
+                      {PlaylistListRow}
+                    </List>
+                  )}
+                </AutoSizer>
+              </div>
+            ) : (
+              <div style={{ height: '100%' }} data-debug-id="5.2.3" data-debug-name="TrackGridView" data-debug-type="grid">
+                <AutoSizer>
+                  {({ height, width }) => (
+                    <PlaylistTrackGridInner
+                      height={height}
+                      width={width}
+                      gridItems={gridItems}
+                      onSelect={handleTrackGridSelect}
+                      selectedForDelete={selectedForDelete}
+                      deletingTrackIds={deletingTrackIds}
+                    />
+                  )}
+                </AutoSizer>
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '12px 16px',
+            borderTop: `1px solid ${COLORS.border.primary}`,
+            background: `${COLORS.bg.secondary}80`,
+            fontSize: '12px',
+            color: COLORS.text.secondary,
+          }}>
+            <span>{sortedTracks.filter(t => t.exists && t.file_id).length} / {sortedTracks.length} tracks available</span>
+            {selectedPlaylist?.total_size > 0 && <span>{formatSize(selectedPlaylist.total_size)}</span>}
+          </div>
+        </div>
+      )}
+
+      {/* Filter Panel */}
+      <FilterPanel
+        open={showFilterPanel}
+        onClose={() => setShowFilterPanel(false)}
+        title="Filters"
+        filterTypeOptions={filterPanelType === 'track' ? TRACK_FILTER_OPTIONS : null}
+        filterType={trackFilterType}
+        onFilterTypeChange={handleTrackFilterTypeChange}
+        sortOptions={filterPanelType === 'playlist' ? PLAYLIST_SORT_OPTIONS : TRACK_SORT_OPTIONS}
+        sortBy={filterPanelType === 'playlist' ? playlistSort.by : trackSort.by}
+        sortOrder={filterPanelType === 'playlist' ? playlistSort.order : trackSort.order}
+        onApply={handleFilterApply}
+      />
+
+      {/* Side panel - Add Music (slide from right) */}
+      <AddMusicPanel
+        isOpen={showAddMusicPanel}
+        onClose={() => setShowAddMusicPanel(false)}
+        playlistId={selectedPlaylist?.id}
+        playlistTitle={selectedPlaylist?.title}
+        existingTrackIds={sortedTracks.map(t => t.file_id).filter(Boolean)}
+        onTracksAdded={(allTracks) => {
+          if (!selectedPlaylist) return;
+          if (Array.isArray(allTracks) && allTracks.length > 0) {
+            cachedTracksRef.current = allTracks;
+            setPlaylistTracks(allTracks);
+            setCurrentPlaylistTracks(allTracks);
+            setPlaylists(prev => prev.map(p => p.id === selectedPlaylist.id ? { ...p, track_count: allTracks.length } : p));
+          } else {
+            loadPlaylist(selectedPlaylist.id).then((data) => {
+              const tracks = data.tracks || [];
+              cachedTracksRef.current = tracks;
+              setPlaylistTracks(tracks);
+              setCurrentPlaylistTracks(tracks);
+              setPlaylists(prev => prev.map(p => p.id === selectedPlaylist.id ? { ...p, track_count: data.track_count, total_duration: data.total_duration, available_tracks: data.available_tracks } : p));
+            }).catch(() => {});
+          }
+        }}
+      />
+
+      {/* Modals */}
+      {createModal}
+      {deleteConfirmModal}
+
+      <style>{`
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
+    </div>
+  );
+}
