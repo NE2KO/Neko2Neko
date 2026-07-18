@@ -20,7 +20,7 @@
 | **Media Processing** | FFmpeg | - | Thumbnail, HLS, transcode, remux |
 | **Codec Probing** | FFprobe | - | Metadata & codec detection |
 | **Messaging - WhatsApp** | whatsapp-web.js | ^1.34.7 | WhatsApp Web API |
-| **Messaging - Telegram** | node-telegram-bot-api | ^1.1.0 | Telegram bot |
+| **Messaging - Telegram** | node-telegram-bot-api | ^1.1.0 | Telegram send + bot downloader |
 | **Downloader - Video** | yt-dlp | - | YouTube, Instagram download |
 | **Downloader - Images** | gallery-dl | - | TikTok, Twitter/X, Instagram galleries |
 | **Downloader - Torrent** | aria2c | - | Torrent & parallel download |
@@ -68,8 +68,8 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 | Monitoring | Real-time CPU/RAM/GPU/Disk/Network via WebSocket + SSE |
 | Downloader | YouTube, TikTok, Instagram, Twitter/X, torrent |
 | ADB Transfer | Push/pull files to Android with concurrent workers |
-| WhatsApp Bridge | Integrated bot with keyword/hashtag triggers |
-| Telegram Send | Optional — active when `TELEGRAM_BOT_TOKEN` is configured |
+| WhatsApp Bridge | Schedule status + send to channel with keyword/hashtag |
+| Telegram Send | Optional — send media, can act as downloader when receiving links |
 
 ---
 
@@ -87,9 +87,8 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 | express | ^4.21.0 | HTTP framework |
 | fast-xml-parser | ^5.8.0 | XSPF parsing |
 | mime-types | ^2.1.35 | Content-type |
-| mpd2 | ^1.0.7 | MPD control |
 | node-pty | ^1.1.0 | PTY shell |
-| node-telegram-bot-api | ^1.1.0 | Telegram bot |
+| node-telegram-bot-api | ^1.1.0 | Telegram send + bot downloader |
 | qrcode | ^1.5.4 | QR generation |
 | uuid | ^10.0.0 | ID generation |
 | ws | ^8.21.0 | WebSocket server |
