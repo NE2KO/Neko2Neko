@@ -81,6 +81,8 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 | Send Queue | Optional | Queue monitoring for WA/Telegram; dedicated WA status queue sends full-size uncompressed videos to maintain active WhatsApp feed | Tick-based precision, SSE, WA/Telegram APIs |
 | Git Integration | Optional | Web-based Git operations | Simple Git wrapper |
 
+> **Note:** Send Queue WA status feature sends full-size uncompressed videos to keep your WhatsApp feed always active.
+
 > **Note:** All menus are still actively worked on and under development. New menus may be added in the future.
 
 ---
