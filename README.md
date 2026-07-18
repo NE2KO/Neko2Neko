@@ -56,12 +56,12 @@ Media Vault is a self-hosted media server born from the need to access media fil
 
 **Origin of Each Menu:**
 - **Media Vault**: Created to avoid opening the laptop just to browse video, audio, and image files — access them directly from phone anywhere
-- **Music Player**: Born from frustration with music players that drift out of sync; features dual modes (cover/video) with high-precision synchronization
+- **Music Player**: Born from frustration with existing music players where previous navigation doesn't work properly (Strawberry player issue: when playing 1→5 then going back goes 5→1, but opening random track makes previous act as history, not list position — regardless of shuffle state)
 - **Monitoring**: To control laptop from phone — fan speed via nbfc and clock via ryzenadj (still Linux-only, AMD-focused, under development)
-- **Downloader**: Eliminates the hassle of downloading on phone then transferring to laptop with larger storage; Telegram bot auto-downloads links
+- **Downloader**: Shortens download workflow by sending links to Telegram bot that downloads directly to laptop storage instead of downloading on phone then transferring
 - **ADB Transfer**: Makes file transfer easier without slow file managers or memorizing terminal commands (under development)
 - **Scrcpy Monitor**: Simple remote phone screen viewing (under development)
-- **Send Queue**: Dedicated WA status queue keeps WhatsApp feed active with full-size uncompressed videos (optional)
+- **Send Queue**: Monitors sent/failed/cancelled files to Telegram and WA; tick-based queue system is dedicated for WA status
 - **Git Integration**: Web-based Git operations without opening terminal
 
 **Technology Stack:** Node.js, Express, SQLite, React, FFmpeg, HLS streaming, waveform visualization.
@@ -77,11 +77,11 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | Playlists | Optional | XSPF import, full CRUD, drag-reorder | XSPF parser, folder-based playlists |
 | Metadata Editing | Optional | Read/write audio tags, cover art, lyrics | FFprobe, MusicBrainz, LRCLIB |
 | Monitoring | Optional | System stats, fan/clock control (Linux only, AMD-focused, under development) | dockerode, nbfc, ryzenadj |
-| Downloader | Optional | YouTube, TikTok, Instagram, Twitter/X, torrent | yt-dlp, gallery-dl, aria2c, Telegram bot |
+| Downloader | Optional | Shortens download workflow — send links to Telegram bot instead of downloading on phone then transferring to laptop | yt-dlp, gallery-dl, aria2c, Telegram bot |
 | ADB Transfer | Optional | Push/pull files Android <-> laptop | ADB, concurrent workers |
 | Scrcpy Monitor | Optional | Remote phone screen viewing | node-pty, WebRTC |
-| Music Player | Optional | Dual modes (cover mode or video mode with independently synchronized components), high-precision timing to prevent drift/interruptions, includes metadata editor, MusicBrainz covers, LRCLIB lyrics with synced LRC support | waveform, synced LRC, hls.js, precision sync engine |
-| Send Queue | Optional | Queue monitoring for WA/Telegram; dedicated WA status queue sends full-size uncompressed videos to maintain active WhatsApp feed | Tick-based precision, SSE, WA/Telegram APIs |
+| Music Player | Optional | Dual modes with proper previous/next navigation (fixes Strawberry player issue where previous acts as history, not list position); includes metadata editor, MusicBrainz covers, LRCLIB lyrics | waveform, synced LRC, hls.js, precision sync engine |
+| Send Queue | Optional | Monitors sent/failed/cancelled files to Telegram and WA; tick-based queue dedicated for WA status | Tick-based precision, SSE, WA/Telegram APIs |
 | Git Integration | Optional | Web-based Git operations | Simple Git wrapper |
 
 > **Note:** All menus are still actively worked on and under development. New menus may be added in the future.
