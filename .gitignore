@@ -58,6 +58,9 @@ whatsapp-bot/media/processed/*
 whatsapp-bot/logs/*
 !whatsapp-bot/logs/.gitkeep
 
+# Docker WhatsApp sessions
+Docker/waha-data/
+
 # Python
 *.pyc
 __pycache__/
