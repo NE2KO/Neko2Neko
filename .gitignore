@@ -16,6 +16,7 @@ cache/
 # Environment & Secrets
 .env
 .env.*
+!.env.example
 backend/.env
 backend/.env.*
 gtw.txt
@@ -44,10 +45,14 @@ data/
 backend/media.db
 backup/
 
+# Metadata Cache
+backend/metadata_cache/
+
 # WhatsApp Web
 .wwebjs_auth/
 .wwebjs_cache/
 whatsapp-bot/.sessions
+whatsapp-bot/sessions/
 whatsapp-bot/media/raw/*
 whatsapp-bot/media/processed/*
 whatsapp-bot/logs/*
@@ -68,12 +73,15 @@ Thumbs.db
 cookies.txt
 cookies.txt.*
 
+# Backup files
+*.bak
+*.backup
+*.orig
+*.old
+*.backup*
+
 # Temporary files
 *.tmp
-*.bak
-*.orig
-*.backup
-*.old
 *.pid
 *.seed
 *.tgz
@@ -111,3 +119,9 @@ backend/cache/
 backend/hls/
 backend/transcode/
 backend/thumbnails/
+
+# SSL/TLS Certificates (use certs/README.md to generate your own)
+backend/certs/*.pem
+backend/certs/*.key
+frontend/certs/*.pem
+frontend/certs/*.key
