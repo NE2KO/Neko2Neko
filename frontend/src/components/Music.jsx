@@ -16,7 +16,6 @@ import { cancelSendQueueItem, retrySendQueueItem, removeSendQueueItem } from '..
 
 export default function MusicPlayer({
   file,
-  external = false,
   onChangeStatus,
   folderFiles = [],
   currentSortBy,
@@ -304,7 +303,7 @@ useEffect(() => {
 
   // Load file when changed — shared audio, skip reload if same track
   useEffect(() => {
-    if (external || !audioReady) return;
+    if (!audioReady) return;
     const audio = audioRef?.current;
     if (!audio) return;
 
@@ -377,16 +376,16 @@ useEffect(() => {
       audio.removeEventListener('pause', onPause);
       audio.removeEventListener('error', onError);
     };
-  }, [activeFile?.id, activeFile?.file_id, external, audioReady, audioRef, play, pause]);
+  }, [activeFile?.id, activeFile?.file_id, audioReady, audioRef, play, pause]);
 
   // Audio timeupdate → PlaybackStore (source of truth)
   useEffect(() => {
     const audio = audioRef?.current;
-    if (!audio || external) return;
+    if (!audio) return;
     const sync = () => setStorePosition(audio.currentTime);
     audio.addEventListener('timeupdate', sync);
     return () => audio.removeEventListener('timeupdate', sync);
-  }, [audioRef, external, setStorePosition]);
+  }, [audioRef, setStorePosition]);
 
   // Fetch metadata + lyrics when track changes
   useEffect(() => {
@@ -461,87 +460,6 @@ useEffect(() => {
       setAutoPlayPending(false);
     }
   }, [autoPlayPending, userInteracted, audioRef]);
-
-  // Handle external player (Strawberry/MPD)
-  useEffect(() => {
-    if (!external || !audioRef?.current) return;
-    const audio = audioRef.current;
-
-    const send = async (endpoint, body = {}) => {
-      try {
-        await fetch('/api/strawberry' + endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-      } catch {}
-    };
-
-    const patch = () => {
-      const paused = !isPlaying;
-      const dur = duration;
-      const pos = position;
-      const vol = volume / 100;
-
-      Object.defineProperty(audio, 'paused', { get: () => paused, configurable: true });
-      Object.defineProperty(audio, 'currentTime', {
-        get: () => pos,
-        set: (v) => send('/player/seek', { position: v }),
-        configurable: true,
-      });
-      Object.defineProperty(audio, 'duration', { get: () => dur, configurable: true });
-      Object.defineProperty(audio, 'volume', {
-        get: () => vol,
-        set: (v) => send('/player/volume', { volume: Math.round(v * 100) }),
-        configurable: true,
-      });
-      Object.defineProperty(audio, 'muted', {
-        get: () => volume === 0,
-        set: (v) => send('/player/volume', { muted: v }),
-        configurable: true,
-      });
-      Object.defineProperty(audio, 'loop', {
-        get: () => false,
-        set: () => {},
-        configurable: true,
-      });
-
-      audio.play = async () => { await send('/player/play'); };
-      audio.pause = () => { send('/player/pause'); };
-    };
-
-    patch();
-
-    return () => {
-      audio.play = async () => {};
-      audio.pause = () => {};
-    };
-  }, [external, isPlaying, duration, position, volume]);
-
-  // External player status polling
-  useEffect(() => {
-    if (!external) return;
-    const t = setInterval(async () => {
-      try {
-        const res = await fetch('/api/strawberry/player/status');
-        if (!res.ok) return;
-        const data = await res.json();
-        onChangeStatus?.(data);
-        setPosition(data.position || 0);
-        setDuration(data.duration || 0);
-        setVolume(data.volume ?? 50);
-        if (data.playing) {
-          play();
-        } else {
-          pause();
-        }
-        setIsLoading(false);
-      } catch {
-        setIsLoading(false);
-      }
-    }, 1000);
-    return () => clearInterval(t);
-  }, [external, onChangeStatus]);
 
 // Drift correction: keep the video synced to the live audio position, but
 // THROTTLED (~1s interval, not a per-frame requestAnimationFrame loop).
@@ -748,9 +666,7 @@ const handleVideoEnded = useCallback(() => {
 
 
 useEffect(() => {
-  if (external) return;   // Strawberry/MPD path: audio element is faked, skip video sync
-
-  const onWaiting = () => {
+    const onWaiting = () => {
     // The SONG audio is buffering (or seeking at a loop). Do NOT pause the MV
     // here — pausing the <video> paints a black frame. Keep the video playing
     // its own buffer; the rate-based watchdog re-aligns it when audio resumes.
@@ -918,7 +834,7 @@ useEffect(() => {
       audio.removeEventListener('pause', onPause);
     }
   };
-  }, [external, audioRef]);
+  }, [audioRef]);
 
 // Fix E: per-frame drift sampler. The 250ms watchdog above keeps small drift in
 // check via playbackRate (smooth, no replay). This rAF loop samples EVERY frame
@@ -930,7 +846,7 @@ useEffect(() => {
 // It never fights an in-flight seek, a scrub, or a stalled audio/video, and a
 // ~200ms minimum interval cap prevents thrash on a weak GPU. Mounted on video mode.
 useEffect(() => {
-  if (!isVideoMode || external) return;
+   if (!isVideoMode) return;
   let raf = 0;
   let lastSeek = 0;
   const tick = () => {
@@ -963,7 +879,7 @@ useEffect(() => {
   };
   raf = requestAnimationFrame(tick);
   return () => { if (raf) cancelAnimationFrame(raf); };
-}, [isVideoMode, external, audioRef, anchorVideoToAudio]);
+}, [isVideoMode, audioRef, anchorVideoToAudio]);
 
 // Re-anchor the video whenever the AUDIO seeks (skip ±5s, progress-bar drag,
 // loop restart). The drift watchdog only corrects via playbackRate during
@@ -1077,9 +993,7 @@ useEffect(() => {
     ? activeFile.display_name || activeFile.name
     : 'Memutar Audio...';
 
-  const displayTitle = external
-    ? (activeFile?.title || activeFile?.name || displayName)
-    : displayName;
+  const displayTitle = displayName;
 
   const handleQueueCancel = useCallback(() => {
     if (queueItem?.qid) cancelSendQueueItem(queueItem.qid).then(() => onQueueChanged && onQueueChanged());
@@ -1143,7 +1057,7 @@ useEffect(() => {
           <ListMusic className="w-5 h-5" />
         </button>
       )}
-      {!external && <SpeakerOutputButton audioRef={audioRef} />}
+      <SpeakerOutputButton audioRef={audioRef} />
       {onMinimize && (
         <button
           onClick={onMinimize}

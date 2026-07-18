@@ -137,7 +137,7 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 | `data/` | `media.db`, download tasks, thumbnails |
 | `cache/` | HLS, remux, transcode cache |
 | `logs/` | Rotating logs |
-| `credentials/` | `.env`, auth files (gitignored) |
+| `credentials/` | `.env`, auth files |
 
 ### Optional Components
 
@@ -266,7 +266,7 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 | `whatsapp-bot/src/` | 6 | ~900 |
 | **Total** | **228** | **~22,000** |
 
-> Note: Lines of code approximate. Does not include `node_modules` or gitignored directories (`cache/`, `logs/`, `data/`).
+> Note: Lines of code approximate. Does not include `node_modules`, `cache/`, `logs/`, or `data/`.
 
 ---
 

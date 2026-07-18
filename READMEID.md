@@ -83,7 +83,6 @@ Repositori ini **bukan** sebuah monorepo: tidak ada workspace dan tidak ada skri
 |  express                |  ^4.21.0  |  Framework HTTP                     |
 |  fast-xml-parser        |  ^5.8.0   |  Pemrosesan daftar putar XSPF        |
 |  mime-types             |  ^2.1.35  |  Resolusi tipe konten               |
-|  mpd2                   |  ^1.0.7   |  Kontrol pemutar MPD/Strawberry      |
 |  node-pty               |  ^1.1.0   |  Pseudo-terminal untuk scrcpy/shell  |
 |  node-telegram-bot-api  |  ^1.1.0   |  Klien bot Telegram                 |
 |  qrcode                 |  ^1.5.4   |  Pembuatan QR (pairing / bagikan)   |
@@ -212,7 +211,6 @@ homelab-media-server/
 │   │   │   ├── jobs.js         Background job status
 │   │   │   ├── metadata.js     Audio metadata, cover art, lyrics
 │   │   │   ├── monitoring.js   Stats, history, alerts, processes
-│   │   │   ├── mpd.js          MPD/Strawberry player control
 │   │   │   ├── playback.js     Playback cache, LRU, health, config
 │   │   │   ├── scrcpy.js       Scrcpy control endpoint
 │   │   │   ├── send.js         Mounted at /api/send (Telegram / broadcast)
@@ -519,7 +517,7 @@ homelab-media-server/
 │   │   └── webjs/
 │   └── litellm-config.yaml       ORPHANED — not mounted, no litellm service
 │
-├── credentials/                    Sensitive files (gitignored)
+├── credentials/                    Sensitive files
 │   ├── .env                      Environment variables (secrets)
 │   ├── .wwebjs_auth/             WhatsApp authentication
 │   ├── cookies.txt               WhatsApp session cookies
@@ -532,7 +530,7 @@ homelab-media-server/
 ├── scripts/
 │   └── README.md
 │
-├── docs/                           Documentation (gitignored)
+├── docs/                           Documentation
 │   └── archive/
 │       └── ideas/
 │           └── IDEAS.md
@@ -1028,47 +1026,6 @@ Direkonstruksi dari penangan rute di `backend/src/routes/`. Setiap router dipasa
 |  GET     |  `/api/playback/config`   |  `router.get('/config')`     |  Direktori cache, batas, timeout probe              |
 |  GET     |  `/api/playback/health`   |  `router.get('/health')`     |  Probe ffmpeg/ffprobe/sqlite/disk + status          |
 |  POST    |  `/api/playback/cleanup`  |  `router.post('/cleanup')`   |  Usir entri cache lama/kebesaran                    |
-
-### 7.13 MPD / Strawberry (`/api/strawberry`)
-
-|  Metode  |  Jalur                                      |  Penangan                                    |  Tujuan                    |
-|--------|------------------------------------------|-------------------------------------------|---------------------------|
-|  GET     |  `/api/strawberry/player/status`           |  `router.get('/player/status')`             |  Status MPD + lagu saat ini |
-|  POST    |  `/api/strawberry/player/play`             |  `router.post('/player/play')`              |  Putar                     |
-|  POST    |  `/api/strawberry/player/pause`            |  `router.post('/player/pause')`             |  Jeda                      |
-|  POST    |  `/api/strawberry/player/playPause`        |  `router.post('/player/playPause')`         |  Alih putar/jeda           |
-|  POST    |  `/api/strawberry/player/stop`             |  `router.post('/player/stop')`              |  Henti                     |
-|  POST    |  `/api/strawberry/player/next`             |  `router.post('/player/next')`              |  Trek berikutnya           |
-|  POST    |  `/api/strawberry/player/previous`         |  `router.post('/player/previous')`          |  Trek sebelumnya           |
-|  POST    |  `/api/strawberry/player/seek`             |  `router.post('/player/seek')`              |  Seek relatif              |
-|  POST    |  `/api/strawberry/player/position`         |  `router.post('/player/position')`          |  Seek absolut              |
-|  POST    |  `/api/strawberry/player/volume`           |  `router.post('/player/volume')`            |  Atur volume 0-100         |
-|  POST    |  `/api/strawberry/player/shuffle`          |  `router.post('/player/shuffle')`           |  Alih acak                 |
-|  POST    |  `/api/strawberry/player/loop`             |  `router.post('/player/loop')`             |  Atur loop off/one/all     |
-|  GET     |  `/api/strawberry/playlists`               |  `router.get('/playlists')`                 |  Daftar daftar putar MPD   |
-|  POST    |  `/api/strawberry/playlists/activate`      |  `router.post('/playlists/activate')`       |  Muat + putar daftar putar |
-|  POST    |  `/api/strawberry/playlists/create`        |  `router.post('/playlists/create')`         |  Simpan antrean saat ini   |
-|  POST    |  `/api/strawberry/playlists/rename`        |  `router.post('/playlists/rename')`         |  Ganti nama daftar putar   |
-|  POST    |  `/api/strawberry/playlists/delete`        |  `router.post('/playlists/delete')`         |  Hapus daftar putar        |
-|  GET     |  `/api/strawberry/playlists/:name/tracks`  |  `router.get('/playlists/:name/tracks')`    |  Trek dalam daftar putar   |
-|  POST    |  `/api/strawberry/playlists/:name/add`     |  `router.post('/playlists/:name/add')`      |  Tambah URI ke daftar putar |
-|  POST    |  `/api/strawberry/playlists/:name/remove`  |  `router.post('/playlists/:name/remove')`   |  Hapus pos dari daftar putar |
-|  GET     |  `/api/strawberry/queue`                   |  `router.get('/queue')`                     |  Antrean saat ini           |
-|  POST    |  `/api/strawberry/queue/add`               |  `router.post('/queue/add')`                |  Tambah URI ke antrean      |
-|  POST    |  `/api/strawberry/queue/remove`            |  `router.post('/queue/remove')`             |  Hapus pos                  |
-|  POST    |  `/api/strawberry/queue/move`              |  `router.post('/queue/move')`              |  Pindah pos                 |
-|  POST    |  `/api/strawberry/queue/clear`             |  `router.post('/queue/clear')`             |  Bersihkan antrean          |
-|  POST    |  `/api/strawberry/queue/shuffle`           |  `router.post('/queue/shuffle')`            |  Acak antrean              |
-|  GET     |  `/api/strawberry/library/browse`          |  `router.get('/library/browse')`            |  Jelajahi jalur pustaka MPD |
-|  GET     |  `/api/strawberry/library/search`          |  `router.get('/library/search')`            |  Cari pustaka               |
-|  GET     |  `/api/strawberry/library/songs`           |  `router.get('/library/songs')`             |  Daftar lagu terfilter      |
-|  GET     |  `/api/strawberry/library/all`             |  `router.get('/library/all')`               |  Semua lagu                 |
-|  POST    |  `/api/strawberry/library/update`          |  `router.post('/library/update')`           |  Pindai ulang pustaka MPD   |
-|  GET     |  `/api/strawberry/library/artists`         |  `router.get('/library/artists')`           |  Daftar artis               |
-|  GET     |  `/api/strawberry/library/albums`          |  `router.get('/library/albums')`            |  Daftar album               |
-|  GET     |  `/api/strawberry/library/genres`          |  `router.get('/library/genres')`            |  Daftar genre               |
-|  GET     |  `/api/strawberry/library/years`           |  `router.get('/library/years')`             |  Daftar tahun               |
-|  GET     |  `/api/strawberry/cover`                   |  `router.get('/cover')`                     |  Byte cover art tertanam    |
 
 ### 7.14 WhatsApp (`/api/whatsapp`)
 
@@ -1778,56 +1735,11 @@ export class AdbWorkerPool {
 
 Unggah multipart Busboy. State: `MEDIA_ROOTS`, Map `activeUploads`, `uploadIdCounter`, `UPLOAD_TEMP`. Setelan runtime: `upload.maxSizeGB` (100), `upload.concurrent` (4), `upload.duplicateStrategy` (rename), `upload.autoScan` (true), `upload.verifyIntegrity` (true), `upload.autoThumbnail` (true). `sanitizeFilename()` menghapus `..`, `/`, `\`, `\0`, maks 255 karakter.
 
-### 8.6 MPD / Strawberry (`routes/mpd.js`)
-
-Mengontrol pemutar Strawberry MPD via `mpd2` di `localhost:6600`. Endpoint pemain, daftar putar, dan antrean. Pemetaan mode loop: `one` = repeat 1 + single 1; `all` = repeat 1 + single 0; `off` = repeat 0 + single 0.
-
-#### 8.6.1 Kode MPD (verbatim)
-
-Kutipan dari `backend/src/routes/mpd.js`.
-
-**`mpdSend`** (`mpd.js:20-23`) — pembungkus koneksi malas di sekitar `sendCommand` milik `mpd2`. Koneksi di-cache dan di-reset saat `close`.
-
-```javascript
-// backend/src/routes/mpd.js:20
-async function mpdSend(cmd) {
-  const c = await getClient();
-  return c.sendCommand(cmd);
-}
-```
-
-> **Apa kerjanya:** Mengirim perintah MPD ke klien yang sudah terhubung via `getClient()` lalu `c.sendCommand(cmd)`.
-> **Dampak:** Semua endpoint pemain/daftar putar/antrean memanggil `mpdSend`, sehingga kontrol Strawberry terpusat di satu pembungkus.
-> **Alternatif serupa:** Dapat memanggil `client.sendCommand` langsung di setiap handler, tetapi pembungkus ini menambahkan koneksi malas dan reset-on-close.
-> **Kalau tidak pakai ini:** Setiap handler harus mengelola koneksinya sendiri, yang rawan duplikasi dan putus-tidak-ditangani.
-<!-- annot:mpd_send -->
-**Pemetaan mode loop** (`mpd.js:250-258`). Mode UI one/all/off dipetakan ke flag `repeat` + `single` milik MPD.
-
-```javascript
-// backend/src/routes/mpd.js:250
-router.post('/player/loop', async (req, res) => {
-  try {
-    const mode = String(req.body?.mode || 'off').toLowerCase();
-    if (mode === 'one') { await mpdSend('repeat 1'); await mpdSend('single 1'); }
-    else if (mode === 'all') { await mpdSend('repeat 1'); await mpdSend('single 0'); }
-    else { await mpdSend('repeat 0'); await mpdSend('single 0'); }
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-```
-
-> **Apa kerjanya:** Memetakan mode loop UI one/all/off ke flag `repeat` dan `single` MPD (one = repeat 1 + single 1, all = repeat 1 + single 0, off = keduanya 0).
-> **Dampak:** Frontend hanya perlu mengirim satu `mode` dan backend menerjemahkannya ke dua perintah MPD.
-> **Alternatif serupa:** Satu perintah `repeat` dapat digunakan, tetapi MPD membedakan repeat vs. single untuk mode one.
-> **Kalau tidak pakai ini:** Mode loop satu-trek tidak dapat diekspresikan karena MPD memisahkan flag repeat dan single.
-<!-- annot:mpd_loop -->
-> Decode status→loopMode berada di `GET /player/status` (`mpd.js:148-150`): `repeat && single → 'one'`, `repeat → 'all'`, else `'off'`.
-
-### 8.7 Pemantauan (`monitor/*`)
+### 8.6 Pemantauan (`monitor/*`)
 
 Interval poll engine adalah **3000ms** (`pollIntervalMs = 3000` di `engine.js`); throttle siaran WebSocket **3000ms** (`BROADCAST_THROTTLE_MS`); snapshot historis setiap **30 dtk**. Setelan dasbor `monitor.refreshInterval` default **1000ms** dan merupakan interval **fallback polling frontend** — tidak mengubah poll engine backend. Backend menggunakan `monitor/monitoringCache.js` yang di-fork → `src/sensors-worker.mjs` untuk pembacaan sensor; pengumpulan GPU dapat dilewati via `MONITOR_DISABLE_GPU`.
 
-#### 8.7.1 Kode pemantauan (verbatim)
+#### 8.6.1 Kode pemantauan (verbatim)
 
 **Loop poll `collectAll()`** (`engine.js:32-97`). Keenam collector berjalan konkuren dengan `Promise.race` timeout 3 dtk per collector; hasil disiarkan (throttled) dan di-snapshot setiap 30 dtk. `pollIntervalMs = 3000` adalah konstanta di `engine.js:20`.
 
@@ -2645,7 +2557,7 @@ Getter `SETTINGS` dengan default nyata:
 |  `TARGET_CHAT_JID`       |  `<whatsapp_chat_jid_anda>`  |  whatsapp-bot/config.js                                   |  Chat target WhatsApp                              |
 |  `ALLOWED_GROUPS`        |  (tidak disetel)             |  whatsapp-bot/config.js                                   |  Grup yang diizinkan dipisahkan koma               |
 
-> **Catatan:** Berkas `.env` ada di root repo (gitignored, berisi rahasia — jangan pernah commit itu). Backend menggunakan `--env-file-if-exists=.env` (opsional). Default `MEDIA_ROOT` adalah jalur tunggal; bila beberapa diberikan, mereka dipisahkan pada `:`.
+> **Catatan:** Berkas `.env` ada di root repo (berisi rahasia — jangan pernah commit). Backend menggunakan `--env-file-if-exists=.env` (opsional). Default `MEDIA_ROOT` adalah jalur tunggal; bila beberapa diberikan, mereka dipisahkan pada `:`.
 
 ---
 
@@ -2794,11 +2706,9 @@ nginx-nvidia:
 
 > **Catatan:** `litellm-config.yaml` ada di `Docker/` tetapi **tidak** di-mount dan tidak ada layanan litellm — anggap tidak digunakan.
 
-### 16.3 Jalur Diabaikan / Dapat Di-commit (`.gitignore`)
+### 16.3 Jalur Diabaikan / Dapat Di-commit
 
-Diabaikan: `.aider*`, `*.log`, `whatsapp-bot/.sessions`, `whatsapp-bot/media/raw/*`, `whatsapp-bot/media/processed/*`, `whatsapp-bot/logs/*`, `cache/`, `logs/`.
-
-**Tidak** diabaikan (flag untuk kewaspadaan): `data/` (menampung `media.db` + `thumbnails/`) dan `Docker/waha-data/` dapat di-commit — DB/thumbnail bisa di-commit secara tidak sengaja.
+Berikut adalah jalur yang tidak di-commit (cache, logs, sesi) dan jalur yang harus di-waspadai (data, Docker/waha-data):
 
 ### 16.4 Daftar Periksa Produksi
 

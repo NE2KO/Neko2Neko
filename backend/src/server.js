@@ -18,7 +18,6 @@ import uploadRouter from './routes/upload.js';
 import settingsRouter from './routes/settings.js';
 import playbackRouter from './routes/playback.js';
 import adbRouter from './routes/adb.js';
-import mpdRouter from './routes/mpd.js';
 import playlistsRouter from './routes/playlists.js';
 import metadataRouter from './routes/metadata.js';
 import scrcpyRouter from './routes/scrcpy.js';
@@ -93,7 +92,6 @@ app.get('/api/logs', (req, res) => {
 app.use('/api/download', requireService('downloader'), downloaderRouter);
 app.use('/api/upload', uploadRouter);
 app.use('/api/adb', requireService('adbTransfer'), adbRouter);
-app.use('/api/strawberry', mpdRouter);
 app.use('/api/playlists', playlistsRouter);
 // Guard playlist scan/refresh when playlists service is stopped
 app.use('/api/playlists/scan', requireService('playlists'));
