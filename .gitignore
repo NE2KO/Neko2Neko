@@ -125,3 +125,9 @@ backend/certs/*.pem
 backend/certs/*.key
 frontend/certs/*.pem
 frontend/certs/*.key
+
+# Documentation archives
+docs/
+
+# Shell scripts
+*.sh
