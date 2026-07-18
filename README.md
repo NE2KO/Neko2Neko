@@ -55,12 +55,12 @@
 Media Vault is a self-hosted media server for browsing, streaming, downloading, and managing personal media libraries. The platform provides the following menus accessible from mobile devices:
 
 - **Media Vault**: Browse and stream video, audio, and image files from phone without opening laptop
-- **Monitoring**: Monitor laptop from phone, control fan speed via nbfc and clock via ryzenadj (hardware-locked, not universal)
+- **Monitoring**: Monitor laptop from phone, control fan speed via nbfc and clock via ryzenadj (Linux only, AMD-focused, under development)
 - **Downloader**: Download directly to laptop storage via Telegram bot that auto-downloads links with configurable parameters
 - **ADB Transfer**: Transfer files between phone and laptop without file manager or terminal commands (under development)
 - **Scrcpy Monitor**: View phone screen remotely (under development)
 - **Music Player**: Two playback modes (cover mode or video mode with separate audio/video components, high-precision sync)
-- **Send Queue**: Monitor sent/failed/cancelled items to WA/Telegram with tick-based precision queue (WA status dedicated, single-send or batch options)
+- **Send Queue**: Monitor sent/failed/cancelled items to WA/Telegram with tick-based precision queue (WA status dedicated — full-size video status without compression, keeps WhatsApp feed active, optional feature)
 - **Git Integration**: Use Git/GitHub without opening terminal
 
 ---
@@ -69,16 +69,16 @@ Media Vault is a self-hosted media server for browsing, streaming, downloading, 
 
 | Menu | Status | Description | Technology Used |
 |------|--------|-------------|---------------|
-| Media Vault | Optional | Browse, stream, and download media files | hls.js, FFmpeg thumbnails, FTS search |
+| Media Vault | Optional | Browse and stream media files from phone — overkill implementation with HLS adaptive streaming, waveform visualization, synced lyrics (LRC), multi-track audio extraction, and precision synchronization | hls.js, FFmpeg, better-sqlite3 FTS, waveform, LRCLIB synced LRC |
 | Library Management | Optional | Auto-scan, full-text search, thumbnail generation | better-sqlite3 WAL, incremental scanning |
 | Playlists | Optional | XSPF import, full CRUD, drag-reorder | XSPF parser, folder-based playlists |
 | Metadata Editing | Optional | Read/write audio tags, cover art, lyrics | FFprobe, MusicBrainz, LRCLIB |
-| Monitoring | Optional | System stats, fan/clock control | dockerode, nbfc, ryzenadj |
+| Monitoring | Optional | System stats, fan/clock control (Linux only, AMD-focused, under development) | dockerode, nbfc, ryzenadj |
 | Downloader | Optional | YouTube, TikTok, Instagram, Twitter/X, torrent | yt-dlp, gallery-dl, aria2c, Telegram bot |
 | ADB Transfer | Optional | Push/pull files Android <-> laptop | ADB, concurrent workers |
 | Scrcpy Monitor | Optional | Remote phone screen viewing | node-pty, WebRTC |
-| Music Player | Optional | High-precision audio synchronization | waveform, synced LRC, hls.js |
-| Send Queue | Optional | Queue monitoring for WA/Telegram | Tick-based precision, SSE |
+| Music Player | Optional | Overkill audio player with dual modes: cover mode and video mode with independently synchronized audio/video components, high-precision timing | waveform, synced LRC, hls.js, precision sync engine |
+| Send Queue | Optional | Queue monitoring for WA/Telegram; dedicated WA status queue sends full-size uncompressed videos to maintain active WhatsApp feed | Tick-based precision, SSE, WA/Telegram APIs |
 | Git Integration | Optional | Web-based Git operations | Simple Git wrapper |
 
 > **Note:** All menus are still actively worked on and under development. New menus may be added in the future.
