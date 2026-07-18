@@ -140,39 +140,22 @@ The repository is **not** a monorepo: there are no workspaces and no root script
 
 ### 3.1 High-Level Component Diagram
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Browser (React SPA)                           │
-│                   (served static via Express)                         │
-└───────────────────────┬─────────────────────────────────────────────┘
-                         │
-         ┌───────────────┼───────────────────────────────────────────┐
-         │ HTTP           WS              SSE                        │
-         ▼                ▼                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Backend — Express :3001                            │
-│                                                                     │
-│  server.js → routes/* → utils/* → db.js (SQLite)                   │
-│      │                                                                │
-│      ├── fileScanner.js    Incremental scan, mtime comparison        │
-│      ├── thumbnailQueue.js Concurrency-limited thumbnail generation  │
-│      ├── watcher.js        fs.watch debounce → SSE broadcast         │
-│      ├── playbackEngine.js Remux/transcode/HLS, LRU cache            │
-│      ├── hlsGenerator.js   FFmpeg HLS segment pipeline               │
-│      ├── downloader/manager.js yt-dlp/gallery-dl/aria2c             │
-│      ├── monitor/engine.js Poll loop (3000ms), collect→aggregate→WS  │
-│      └── monitor/collectors/* cpu, memory, gpu, disk, network, system│
-└───────────────┬─────────────────────────────────────┬───────────────┘
-                 │                                     │
-                 ▼                                     ▼
-     ┌──────────────────┐                ┌─────────────────────┐
-     │  data/media.db    │                │  cache/             │
-     │  (WAL, 80MB cache)│                │  playback/remux/    │
-     │  FTS5 index       │                │  playback/transcode/│
-     └──────────────────┘                │  hls/               │
-                                         │  downloader/        │
-                                         └─────────────────────┘
-```
+| Component | Description | Protocols |
+|-----------|-------------|-----------|
+| **Browser** | React SPA served static via Express | HTTP, WS, SSE |
+| **Backend** | Express server on port 3001 | - |
+| **Core Modules** | `server.js` -> `routes/*` -> `utils/*` -> `db.js` (SQLite) | - |
+| `fileScanner.js` | Incremental scan, mtime comparison | - |
+| `thumbnailQueue.js` | Concurrency-limited thumbnail generation | - |
+| `watcher.js` | `fs.watch` debounce -> SSE broadcast | SSE |
+| `playbackEngine.js` | Remux/transcode/HLS, LRU cache | - |
+| `hlsGenerator.js` | FFmpeg HLS segment pipeline | - |
+| `downloader/manager.js` | yt-dlp/gallery-dl/aria2c | - |
+| `monitor/engine.js` | Poll loop (3000ms), collect->aggregate->WS | WS |
+| `monitor/collectors/*` | cpu, memory, gpu, disk, network, system | - |
+| **Data Stores** | - | - |
+| `data/media.db` | SQLite (WAL, 80MB cache, FTS5 index) | - |
+| `cache/` | `playback/remux/`, `playback/transcode/`, `hls/`, `downloader/` | - |
 
 ### 3.2 External Dependencies
 
