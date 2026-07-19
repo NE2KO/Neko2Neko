@@ -47,6 +47,8 @@
 | API Endpoints | [6](#6-api-endpoints) |
 | Installation | [7](#7-installation) |
 | Development | [8](#8-development) |
+| Future Ideas | [9](#9-future-ideas) |
+| Contributing | [10](#10-contributing) |
 
 ---
 
@@ -338,6 +340,21 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | **Total** | **228** | **~22,000** |
 
 > Note: Lines of code approximate. Does not include `node_modules`, `cache/`, `logs/`, or `data/`.
+
+---
+
+## 9. Future Ideas
+
+### Authentication System
+- User accounts with login/registration
+- API token management for secure access
+- Role-based permissions for different access levels
+
+### GPU Screen Recording (GSR)
+- Direct frame copying from GPU block encoder
+- Zero-overhead screen capture using hardware encoder
+- Smooth streaming even on low-end iGPU systems (e.g., 2CU)
+- Based on copying encoded frames instead of re-rendering each frame
 
 ---
 
