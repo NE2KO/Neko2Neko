@@ -1,5 +1,7 @@
 # Media Vault
 
+> **Hardware Note:** This platform is specifically designed for AMD-based laptops. The Monitoring menu uses nbfc and ryzenadj which are hardware-specific and do not support Intel or NVIDIA systems. Other menus are hardware-agnostic.
+
 ## Tech Stack Overview
 
 | Layer | Technology | Version | Description |
