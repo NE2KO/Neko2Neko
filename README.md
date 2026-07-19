@@ -44,6 +44,7 @@
 | Tech Stack | [3](#3-tech-stack) |
 | External Tools | [4](#4-external-tools) |
 | Project Structure | [5](#5-project-structure) |
+| Git Ignore | [5.5](#55-git-ignore) |
 | API Endpoints | [6](#6-api-endpoints) |
 | Installation | [7](#7-installation) |
 | Development | [8](#8-development) |
@@ -215,8 +216,18 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | `data/` | `media.db`, download tasks, thumbnails |
 | `cache/` | HLS, remux, transcode cache |
 | `logs/` | Rotating logs |
-| `credentials/` | `.env`, auth files (gitignored) |
+| `credentials/` | `.env`, auth files, WhatsApp sessions |
 | `Docker/` | docker-compose.yml for monitoring (optional) |
+
+### 5.5 Git Ignore
+
+The `.gitignore` excludes sensitive and generated files:
+- `credentials/.env`, cookies.txt, wwebjs_auth/cache - authentication & sessions
+- `logs/`, `cache/`, `backup/` - runtime data
+- Database files (`*.db`, `media.db`)
+- `node_modules/` - dependencies
+- `*.log`, `*.tmp` - logs and temp files
+- `*.local`, `.vscode/` - editor/IDE files
 
 ---
 
