@@ -345,16 +345,9 @@ Media Vault is a self-hosted media server born from the need to access media fil
 
 ## 9. Future Ideas
 
-### Authentication System
-- User accounts with login/registration
-- API token management for secure access
-- Role-based permissions for different access levels
+- **Authentication System**: User accounts with login/registration, API token management, role-based permissions
 
-### GPU Screen Recording (GSR)
-- Direct frame copying from GPU block encoder
-- Zero-overhead screen capture using hardware encoder
-- Smooth streaming even on low-end iGPU systems (e.g., 2CU)
-- Based on copying encoded frames instead of re-rendering each frame
+- **GPU Screen Recording (GSR-inspired)**: Reinspired from GSR app which uses direct frame copying from GPU block encoder. This approach copies encoded frames instead of re-rendering each frame, resulting in zero-overhead screen capture. Ideal for smooth streaming even on low-end iGPU systems (e.g., 2CU).
 
 ---
 
