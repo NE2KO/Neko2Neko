@@ -76,13 +76,13 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | Library Management | Optional | Auto-scan, full-text search, thumbnail generation | better-sqlite3 WAL, incremental scanning |
 | Playlists | Optional | XSPF import, full CRUD, drag-reorder | XSPF parser, folder-based playlists |
 | Metadata Editing | Optional | Read/write audio tags, cover art, lyrics | FFprobe, MusicBrainz, LRCLIB |
-| Monitoring | Optional | System stats, fan/clock control (Linux only, AMD-focused, under development) | dockerode, nbfc, ryzenadj |
+| Monitoring | Optional | System stats, fan/clock control (Linux only, AMD-focused, under development) | dockerode, nbfc, ryzenadj, WebSocket (real-time) |
 | Downloader | Optional | Download from YouTube, TikTok, Instagram, Twitter/X, torrent, gallery-dl; send link to Telegram bot for auto-download with default settings (1080p, h264) or custom parameters | yt-dlp, gallery-dl, aria2c, Telegram bot |
-| ADB Transfer | Optional | Push/pull files Android <-> laptop | ADB, concurrent workers |
-| Scrcpy Monitor | Optional | Remote phone screen viewing | node-pty, WebRTC |
-| Music Player | Optional | Dual modes with proper previous/next navigation (fixes Strawberry player issue where previous acts as history, not list position); includes waveform visualization, synced LRC lyrics | waveform, synced LRC, hls.js, precision sync engine |
-| Send Queue | Optional | Monitors sent/failed/cancelled files to Telegram and WA; tick-based queue dedicated for WA status | Tick-based precision, SSE, WA/Telegram APIs |
-| Git Integration | Optional | Web-based Git operations | Simple Git wrapper |
+| ADB Transfer | Optional | Push/pull files Android <-> laptop (concurrent workers, no overhead from file managers) | ADB, concurrent workers |
+| Scrcpy Monitor | Optional | Remote phone screen viewing via external scrcpy window (zero overhead) | node-pty shell execution |
+| Music Player | Optional | Dual modes: cover mode (audio only) and video mode (separate audio/video with precision sync); fixes Strawberry player navigation bug | waveform, synced LRC, hls.js, precision sync engine |
+| Send Queue | Optional | Monitors sent/failed/cancelled files to Telegram and WA; tick-based queue for WA status (1-6 posts per day in 24h format) | Tick-based precision, SSE, WA/Telegram APIs |
+| Git Integration | Optional | Full Git operations without terminal (status, branches, tags, stash, commit, push, pull, diff, file editor, tree browser) | Simple Git wrapper |
 
 > **Note:** All menus are still actively worked on and under development. New menus may be added in the future.
 
