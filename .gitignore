@@ -56,6 +56,8 @@ backup/
 backend/metadata_cache/
 
 # WhatsApp Web
+cookies.txt
+backend/.wwebjs_cache/
 whatsapp-bot/.wwebjs_auth/
 whatsapp-bot/.sessions
 whatsapp-bot/sessions/
