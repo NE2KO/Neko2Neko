@@ -167,9 +167,13 @@ async function performSend(fileId, target, qid, caption = '') {
     const tgCount = await incrementTelegramCount();
     if (isSeparatorNeeded(tgCount)) await sendDotTelegram();
   }
-  if (wantChannel || wantStatus) {
+  // Separator hanya untuk WA Channel, bukan Status
+  if (wantChannel) {
     const waCount = await incrementWhatsAppCount();
     if (isSeparatorNeeded(waCount)) await sendDotWhatsApp();
+  } else if (wantStatus) {
+    // Status only - update counter tapi tanpa separator
+    await incrementWhatsAppCount();
   }
 
   return { target, results };

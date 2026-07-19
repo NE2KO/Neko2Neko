@@ -88,10 +88,19 @@ export default function SendQueuePlayer({
   // crossfade.
   const type = displayItem?.type || item.type || 'image';
 
-  useEffect(() => {
-    const t = requestAnimationFrame(() => setHydrated(true));
-    return () => cancelAnimationFrame(t);
-  }, []);
+useEffect(() => {
+     const t = requestAnimationFrame(() => setHydrated(true));
+     return () => cancelAnimationFrame(t);
+   }, []);
+
+   // Persist carousel visibility across browser tab switches
+   useEffect(() => {
+     let saved = false;
+     try {
+       saved = localStorage.getItem('sq_carousel_hidden') === '1';
+     } catch {}
+     setManualHidden(saved);
+   }, []);
 
   // Crossfade on media-type change (video <-> audio <-> image), like MediaModal.
   const itemRef = useRef(item);
@@ -103,6 +112,7 @@ export default function SendQueuePlayer({
     if (item?.qid === itemRef.current?.qid && item?.type === itemRef.current?.type) return;
     const prevType = itemRef.current?.type;
     itemRef.current = item;
+    // Skip crossfade for same-type (especially video) - prevents unwanted pause on nav
     if (item?.type === prevType) {
       setPrevItem(null);
       setDisplayItem(item);
@@ -328,24 +338,13 @@ export default function SendQueuePlayer({
           {type === 'audio' && (
             <div className="absolute top-3 right-3 z-50 flex items-center gap-1">
               {displayItem?.status === 'pending' && (
-                <>
-                  <button
-                    onClick={handleQueueCancel}
-                    className="p-2 rounded-full bg-black/50 hover:bg-black/70 text-white/80 hover:text-red-400 transition-colors"
-                    title="Batalkan pengiriman"
-                  >
-                    <Ban size={20} />
-                  </button>
-                  {debugMode && (
-                    <button
-                      onClick={handleDrainDebug}
-                      className="p-2 rounded-full bg-black/50 hover:bg-black/70 text-amber-400/80 hover:text-amber-300 transition-colors"
-                      title="Kirim sekarang (debug)"
-                    >
-                      <Play size={18} />
-                    </button>
-                  )}
-                </>
+                <button
+                  onClick={handleQueueCancel}
+                  className="p-2 rounded-full bg-black/50 hover:bg-black/70 text-white/80 hover:text-red-400 transition-colors"
+                  title="Batalkan pengiriman"
+                >
+                  <Ban size={20} />
+                </button>
               )}
               {displayItem?.status === 'failed' && (
                 <button

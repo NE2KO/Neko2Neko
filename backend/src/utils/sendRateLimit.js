@@ -440,7 +440,7 @@ export function getQueueByStatus(status, cursor = 0, limit = 100, target) {
   const rows = db.prepare(`
     SELECT sq.id AS qid, sq.file_id, sq.target, sq.created_at, sq.status, sq.error,
            sq.hold_until, sq.completed_at, sq.caption, sq.debug, sq.sort_order, sq.scheduled_at,
-           f.name, f.type, f.ext, f.has_thumb
+           f.name, f.type, f.ext, f.has_thumb, f.size, f.duration
     FROM send_queue sq
     LEFT JOIN files f ON f.id = sq.file_id
     WHERE ${statusClause} AND sq.id > ?${condition ? ' AND ' + condition : ''}

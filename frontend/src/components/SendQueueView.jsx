@@ -1,6 +1,28 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Inbox, CheckCircle2, XCircle, Ban, Trash2, Clock, ArrowLeft, X, Settings, Bug, Power, Square, Play, AlertTriangle, Pencil, ChevronUp, ChevronDown, Calendar, RotateCw } from 'lucide-react';
 import { getSendQueueStatuses, getSendQueue, clearSendQueueHistory, getThumbnailUrl, cancelSendQueueItem, retrySendQueueItem, removeSendQueueItem, getSendSettings, setSendSettings, getWhatsAppSendStatus, setQueueCaption, reorderQueueItem, resendQueueItem, rescheduleQueueItem } from '../utils/api';
+import { formatBytesCompact } from '../utils/format.js';
+
+function formatDurationSec(seconds) {
+  if (!seconds || seconds <= 0) return '';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function formatEtaTime(ms) {
+  if (!ms || ms <= 0) return '';
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
 import SendQueuePlayer from './SendQueuePlayer';
 import CaptionEditorModal from './CaptionEditorModal';
 
@@ -144,6 +166,24 @@ function ItemCard({ item, onOpen, onAction, onCaptionChange, now, sendEta, ready
     }
   }
 
+  // Bitrate comfort indicator for status videos: viewers stay comfortable when
+  // the file's size-per-second is low. ≤0.75 MB/s is safe, 0.75–1.0 is a caution
+  // zone, and >1.0 MB/s tends to be risky on WhatsApp status.
+  let rateMBps = null;
+  let rateKind = null;
+  if (item.type === 'video' && item.duration > 0 && item.size > 0) {
+    rateMBps = (item.size / (1024 * 1024)) / item.duration;
+    if (rateMBps <= 0.75) rateKind = 'aman';
+    else if (rateMBps <= 1.0) rateKind = 'waspada';
+    else rateKind = 'rawan';
+  }
+  const RATE_META = {
+    aman:    { label: 'Aman',    text: 'text-emerald-400', dot: '#34d399' },
+    waspada: { label: 'Waspada', text: 'text-amber-400',   dot: '#fbbf24' },
+    rawan:   { label: 'Rawan',   text: 'text-red-400',     dot: '#f87171' },
+  };
+  const rateInfo = rateKind ? RATE_META[rateKind] : null;
+
   const quick = (e, fn) => { e.stopPropagation(); fn(); };
 
   return (
@@ -172,31 +212,53 @@ function ItemCard({ item, onOpen, onAction, onCaptionChange, now, sendEta, ready
             #{index + 1}
           </span>
         )}
-        <span className={`absolute top-1.5 right-1.5 text-[11px] px-1.5 py-0.5 rounded-full ${meta.bg} ${meta.color} border ${meta.border} flex items-center gap-0.5 font-semibold`}>
-          <Icon size={11} />
-          <span>{etaLabel || meta.label}</span>
-        </span>
+<span className={`absolute top-1.5 right-1.5 text-[11px] px-1.5 py-0.5 rounded-full ${meta.bg} ${meta.color} border ${meta.border} flex items-center gap-0.5 font-semibold`}>
+           <Icon size={11} />
+           <span>{etaLabel || meta.label}</span>
+          </span>
       </div>
       {/* Metadata area - fixed height like Media Vault */}
-      <div className="h-[90px] p-2 bg-neutral-900 border-t border-neutral-800/60 flex flex-col justify-center flex-shrink-0 w-full overflow-hidden">
-        <p className="text-[11px] sm:text-[12px] font-medium truncate text-neutral-200 w-full leading-tight">
-          {displayName}
-        </p>
-        {sendTimeLabel ? (
-          <p className="text-[10px] sm:text-[11px] text-neutral-400 mt-0.5 font-mono truncate">
-            {sendTimeLabel}
-          </p>
-        ) : (
-          <p className="text-[10px] sm:text-[11px] text-neutral-500 mt-0.5 font-mono truncate">
-            {displayDate}
-          </p>
-        )}
-        {eta != null && eta > 0 && (
-          <div className="flex items-center gap-1 mt-0.5">
-            <Clock size={10} className="text-amber-400/70 flex-shrink-0" />
-            <span className="text-[10px] sm:text-[11px] tabular-nums text-amber-400/90 font-medium">{remainingCompact(eta)}</span>
+<div className="h-[90px] p-2 bg-neutral-900 border-t border-neutral-800/60 flex flex-col justify-center flex-shrink-0 w-full overflow-hidden">
+         <p className="text-[11px] sm:text-[12px] font-medium truncate text-neutral-200 w-full leading-tight">
+           {displayName}
+         </p>
+         {sendTimeLabel ? (
+           <p className="text-[10px] sm:text-[11px] text-neutral-400 mt-0.5 font-mono truncate">
+             {sendTimeLabel}
+           </p>
+         ) : (
+           <p className="text-[10px] sm:text-[11px] text-neutral-500 mt-0.5 font-mono truncate">
+             {displayDate}
+           </p>
+          )}
+
+        {(eta != null && eta > 0) || item.duration || item.size ? (
+          <div className="flex items-center justify-between gap-2 mt-0.5">
+            {eta != null && eta > 0 ? (
+              <div className="flex items-center gap-1">
+                <Clock size={10} className="text-amber-400/70 flex-shrink-0" />
+                <span className="text-[10px] sm:text-[11px] tabular-nums text-amber-400/90 font-medium">{remainingCompact(eta)}</span>
+              </div>
+            ) : <span />}
+            {(item.duration || item.size) && (
+              <span className="flex items-center justify-end gap-1.5 text-[10px] sm:text-[11px] font-mono whitespace-nowrap">
+                <span className="text-neutral-500">
+                  {[item.duration ? formatDurationSec(item.duration) : null, item.size ? formatBytesCompact(item.size) : null].filter(Boolean).join(' · ')}
+                </span>
+                {rateInfo && (
+                  <span
+                    className={`flex items-center gap-1 flex-shrink-0 ${rateInfo.text}`}
+                    title={`Bitrate ${rateMBps.toFixed(2)} MB/dtk · ${rateInfo.label}`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: rateInfo.dot }} />
+                    {rateMBps.toFixed(2)}
+                  </span>
+                )}
+              </span>
+            )}
           </div>
-        )}
+        ) : null}
+
         <div className="flex items-center gap-1 mt-0.5 group/cap">
           <p
             className={`text-[10px] sm:text-[11px] truncate flex-1 min-w-0 ${captionText ? 'text-neutral-400' : 'text-neutral-600 italic'}`}
@@ -678,10 +740,11 @@ export default function SendQueueView({ onMenuOpen }) {
     : null;
   const [selected, setSelected] = useState(initSelected); // { groupKey, status }
   const [counts, setCounts] = useState({ wa: null, telegram: null });
-  const [items, setItems] = useState([]);
-  const [cursor, setCursor] = useState(0);
-  const [hasMore, setHasMore] = useState(false);
-  const [loading, setLoading] = useState(false);
+const [items, setItems] = useState([]);
+   const [cursor, setCursor] = useState(0);
+   const [hasMore, setHasMore] = useState(false);
+   const [loading, setLoading] = useState(false);
+   const [everLoaded, setEverLoaded] = useState(false);
   const [covers, setCovers] = useState({ wa: {}, telegram: {} });
   const [selectedItem, setSelectedItem] = useState(null);
   const [policy, setPolicy] = useState(null);
@@ -805,30 +868,31 @@ export default function SendQueueView({ onMenuOpen }) {
     } catch {}
   }, []);
 
-  const prevItemsJsonRef = useRef(null);
-  const loadItems = useCallback(async (groupKey, status, reset) => {
-    const g = GROUPS[groupKey];
-    if (!g) return;
-    // Only show loading spinner on initial/fresh loads, not on2s refreshes.
-    // Without this, every 2s tick briefly flashes "Memuat…" over the grid.
-    if (reset && !prevItemsJsonRef.current) setLoading(true);
-    try {
-      const r = await getSendQueue(status, reset ? 0 : cursor, 100, g.target);
-      const list = (r && Array.isArray(r.items)) ? r.items : [];
-      const listJson = JSON.stringify(list);
-      if (listJson !== prevItemsJsonRef.current) {
-        prevItemsJsonRef.current = listJson;
-        setItems(list);
-      }
-      setCursor(r && r.nextCursor ? r.nextCursor : 0);
-      setHasMore(!!(r && r.nextCursor));
-    } catch {
-      setItems((prev) => (reset ? [] : prev));
-      setHasMore(false);
-    } finally {
-      setLoading(false);
-    }
-  }, [cursor]);
+const prevItemsJsonRef = useRef(null);
+   const loadItems = useCallback(async (groupKey, status, reset) => {
+     const g = GROUPS[groupKey];
+     if (!g) return;
+     // Only show loading spinner on initial/fresh loads, not on2s refreshes.
+     // Without this, every 2s tick briefly flashes "Memuat…" over the grid.
+     if (reset && !prevItemsJsonRef.current) setLoading(true);
+     const prevJson = prevItemsJsonRef.current;
+     try {
+       const r = await getSendQueue(status, reset ? 0 : cursor, 100, g.target);
+       const list = (r && Array.isArray(r.items)) ? r.items : [];
+       const listJson = JSON.stringify(list);
+       if (listJson !== prevJson) {
+         prevItemsJsonRef.current = listJson;
+         setItems(list);
+         setEverLoaded(true);
+       }
+       setCursor(r && r.nextCursor ? r.nextCursor : 0);
+       setHasMore(!!(r && r.nextCursor));
+     } catch {
+       // On error, keep existing items instead of clearing - prevents flicker on temp network issue
+     } finally {
+       setLoading(false);
+     }
+   }, [cursor]);
 
   const loadStatuses = useCallback(async () => {
     await loadCounts();
@@ -858,17 +922,29 @@ export default function SendQueueView({ onMenuOpen }) {
 
   // Live-refresh: counts + covers every 2s, and the open folder's items too, so
   // a send made elsewhere shows up without a manual reload.
-  useEffect(() => {
-    const tick = () => {
-      loadCountsRef.current();
-      loadCoversRef.current();
-      const sel = selectedRef.current;
-      if (sel) loadItemsRef.current(sel.groupKey, sel.status, true);
-    };
-    tick();
-    const t = setInterval(tick, 2000);
-    return () => clearInterval(t);
-  }, []);
+useEffect(() => {
+     const tick = () => {
+       loadCountsRef.current();
+       loadCoversRef.current();
+       const sel = selectedRef.current;
+       if (sel) loadItemsRef.current(sel.groupKey, sel.status, true);
+     };
+     tick();
+     const t = setInterval(tick, 2000);
+     const onVisibility = () => {
+       if (document.visibilityState === 'visible' && selectedRef.current) {
+         loadItemsRef.current(selectedRef.current.groupKey, selectedRef.current.status, true);
+       }
+     };
+     const onFocus = () => {
+       if (selectedRef.current) {
+         loadItemsRef.current(selectedRef.current.groupKey, selectedRef.current.status, true);
+       }
+     };
+     document.addEventListener('visibilitychange', onVisibility);
+     window.addEventListener('focus', onFocus);
+     return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVisibility); window.removeEventListener('focus', onFocus); };
+   }, []);
 
   // Load queue behaviour settings (tick / debug) on mount + when modal opens.
   useEffect(() => {
@@ -891,13 +967,14 @@ export default function SendQueueView({ onMenuOpen }) {
     }
   }, [showSettings]);
 
-  useEffect(() => {
-    if (selected) loadItems(selected.groupKey, selected.status, true);
-    else {
-      setItems([]);
-      prevItemsJsonRef.current = null;
-    }
-  }, [selected, loadItems]);
+useEffect(() => {
+     if (selected) loadItems(selected.groupKey, selected.status, true);
+     else {
+       setItems([]);
+       prevItemsJsonRef.current = null;
+       setEverLoaded(false);
+     }
+   }, [selected, loadItems]);
 
   // On reload landing directly on an item URL (#/sendqueue/<g>/<s>/<qid>),
   // re-open the player once the folder's items have loaded.
@@ -921,6 +998,20 @@ export default function SendQueueView({ onMenuOpen }) {
 
   const onAction = async (action, item) => {
     const id = item.qid;
+    // Optimistic UI updates
+    let optimisticPatch = null;
+    let optimisticStatus = null;
+    if (action === 'moveUp' || action === 'moveDown') {
+      const idx = items.findIndex((it) => it.qid === id);
+      if (idx > 0 && action === 'moveUp') {
+        optimisticPatch = { fromIdx: idx, toIdx: idx - 1 };
+      } else if (idx >= 0 && idx < items.length - 1 && action === 'moveDown') {
+        optimisticPatch = { fromIdx: idx, toIdx: idx + 1 };
+      }
+    }
+    if (action === 'resend' || action === 'retry') {
+      optimisticStatus = 'pending';
+    }
     try {
       if (action === 'cancel') await cancelSendQueueItem(id);
       if (action === 'retry') await retrySendQueueItem(id);
@@ -929,11 +1020,21 @@ export default function SendQueueView({ onMenuOpen }) {
       if (action === 'moveDown') { await reorderQueueItem(id, 'down'); }
       if (action === 'resend') { await resendQueueItem(id); }
       if (action === 'reschedule') {
-        // Open inline schedule: default = now (resend immediately via normal path)
-        // For now, re-enqueue via resend. TODO: add date picker modal.
         await resendQueueItem(id);
       }
     } catch {}
+    // Apply optimistic updates before refresh
+    if (optimisticPatch) {
+      setItems((prev) => {
+        const next = [...prev];
+        const [moved] = next.splice(optimisticPatch.fromIdx, 1);
+        next.splice(optimisticPatch.toIdx, 0, moved);
+        return next;
+      });
+    }
+    if (optimisticStatus) {
+      setItems((prev) => prev.map((it) => it.qid === id ? { ...it, status: optimisticStatus } : it));
+    }
     refresh();
   };
 
@@ -1100,11 +1201,11 @@ export default function SendQueueView({ onMenuOpen }) {
               </div>
             ))}
           </div>
-        ) : (
-          <div>
-            {items.length === 0 && !loading ? (
-              <div className="text-center text-neutral-500 py-20">Tidak ada item di status ini.</div>
-            ) : (
+) : (
+           <div>
+             {items.length === 0 && !loading && !everLoaded ? (
+               <div className="text-center text-neutral-500 py-20">Tidak ada item di status ini.</div>
+             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
                 {items.map((it, idx) => {
                   const timelineItem = timeline.find(t => t.id === it.qid);
