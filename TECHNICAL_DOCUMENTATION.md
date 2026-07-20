@@ -85,20 +85,20 @@ flowchart TB
 
     subgraph Server["Media Vault Backend (Node.js :3001)"]
         Express["Express HTTP Server"]
-        WS["WebSocket Server\n(/ws/monitor)"]
-        SSE["SSE Endpoints\n(/api/updates, /api/logs/stream)"]
+        WS["WebSocket Server"]
+        SSE["SSE Endpoints"]
 
         subgraph Subsystems["Core Subsystems"]
-            Scanner["File Scanner\n(incrementalSync)"]
-            Watcher["FS Watcher\n(fs.watch → debouncedRescan)"]
-            Playback["Playback Engine\n(getPlaybackDecision)"]
-            HLS["HLS Generator\n(spawnFfmpeg)"]
-            Thumbs["Thumbnail Queue\n(concurrency-limited)"]
-            Monitor["Monitor Engine\n(3000ms poll)"]
-            Downloader["Downloader Manager\n(yt-dlp/gallery-dl/aria2c)"]
-            ADB["ADB Transfer\n(worker pool)"]
-            WA_Bridge["WhatsApp Bridge\n(embedded)"]
-            Send["Send Queue\n(Telegram + WA)"]
+            Scanner["File Scanner"]
+            Watcher["FS Watcher"]
+            Playback["Playback Engine"]
+            HLS["HLS Generator"]
+            Thumbs["Thumbnail Queue"]
+            Monitor["Monitor Engine"]
+            Downloader["Downloader Manager"]
+            ADB["ADB Transfer"]
+            WA_Bridge["WhatsApp Bridge"]
+            Send["Send Queue"]
         end
 
         subgraph DataLayer["Data Layer"]
@@ -116,12 +116,7 @@ flowchart TB
         ADB_BIN["adb binary"]
         NvidiaSMI["nvidia-smi"]
         Smartctl["smartctl"]
-        WA_Web["whatsapp-web.js\n(puppeteer)"]
-    end
-
-    subgraph Sidecars["Optional Docker Sidecars"]
-        WAHA["waha\n(:3002)"]
-        NginxNV["nginx-nvidia\n(:4000)"]
+        WA_Web["whatsapp-web.js"]
     end
 
     Browser -->|HTTP/WS/SSE| Express
@@ -176,124 +171,24 @@ mindmap
   root((Media Vault))
     backend
       src
-        config
-          paths.js
         routes
-          adb.js
-          downloader.js
-          file.js
-          files.js
-          git.js
-          jobs.js
-          metadata.js
-          monitoring.js
-          playback.js
-          playlists.js
-          scrcpy.js
-          send.js
-          services.js
-          settings.js
-          stream.js
-          thumbnails.js
-          upload.js
-          videoCache.js
-          whatsapp.js
         monitor
-          engine.js
-          websocket.js
-          historical.js
-          alerts.js
-          webStats.js
-          monitoringCache.js
-          platdetect.js
-          processes.js
-          services.js
-          logs.js
-          collectors
-            cpu.js
-            memory.js
-            gpu.js
-            disk.js
-            network.js
-            system.js
         utils
-          fileScanner.js
-          watcher.js
-          playbackEngine.js
-          hlsGenerator.js
-          thumbnailQueue.js
-          thumbnailUtils.js
-          adbManager.js
-          adbTransaction.js
-          adbWorkerPool.js
-          uploadManager.js
-          downloader
-            manager.js
-          ... 30+ more
-        middleware
-          serviceGuard.js
-        services
-          registry.js
         db.js
         server.js
-      package.json
     frontend
       src
-        App.jsx
-        main.jsx
         components
-          VideoPlayer.jsx
-          AudioPlayer.jsx
-          MediaGrid.jsx
-          ... 50+ components
         monitoring
-          pages
-          widgets
-          components
-          layout
-          stores
         store
-          favoritesStore.js
-          playbackStore.js
-          playlistStore.js
-          folderSortStore.js
-          folderMetaSortStore.js
-        hooks
-        utils
-        debug
-      package.json
+        App.jsx
     whatsapp-bot
       src
-        index.js
-        connection.js
-        listener.js
-        sender.js
-        db.js
-        utils.js
-      package.json
     data
-      media.db
-      thumbnails
     cache
-      playback
-      hls
-      downloader
-      metadata
     logs
-      api
-      backend
-      monitoring
-      ...
     Docker
-      docker-compose.yml
-      nginx-nvidia
-      waha-data
     credentials
-    docs
-      archive
-    .env.example
-    README.md
-    ARCHITECTURE.md
 ```
 
 **What this diagram shows:** The complete repository structure as a hierarchical mindmap. Each major directory and key file is represented.
@@ -316,19 +211,15 @@ flowchart LR
 
     subgraph Backend["Backend Modules"]
         DB["db.js"]
-        Routes["routes/*.js (19)"]
-        Utils["utils/*.js (38)"]
-        Monitor["monitor/*.js (17)"]
-        Middleware["middleware/serviceGuard.js"]
-        Services["services/registry.js"]
+        Routes["routes/*.js"]
+        Utils["utils/*.js"]
+        Monitor["monitor/*.js"]
     end
 
     subgraph Frontend["Frontend Modules"]
-        Components["components/*.jsx (50+)"]
-        Monitoring["monitoring/**/*.jsx (39)"]
-        Stores["store/*.js (5)"]
-        Hooks["hooks/*.js (7)"]
-        UtilsFE["utils/*.js (11)"]
+        Components["components/*"]
+        Monitoring["monitoring/**/*"]
+        Stores["store/*.js"]
     end
 
     subgraph ExternalBin["External Binaries"]
@@ -342,8 +233,6 @@ flowchart LR
     Server --> Routes
     Server --> Monitor
     Server --> Utils
-    Server --> Middleware
-    Server --> Services
 
     Routes --> Utils
     Routes --> DB
@@ -356,13 +245,8 @@ flowchart LR
 
     App --> Components
     App --> Stores
-    App --> Hooks
-    App --> UtilsFE
     Components --> Stores
-    Components --> Hooks
-    Components --> UtilsFE
     Monitoring --> Stores
-    Monitoring --> Components
 
     WA_Index -.->|imported by| Server
 ```
@@ -379,34 +263,34 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    subgraph Process["Node.js Single Process (Event Loop)"]
-        HTTP["HTTP Server\n(Express, port 3001)"]
-        WS_Server["WebSocket Server\n(/ws/monitor)"]
-        SSE_Server["SSE Endpoints\n(/api/updates, /api/logs/stream)"]
-        Watcher["FS Watcher\n(fs.watch recursive)"]
-        MonitorEngine["Monitor Engine\n(setInterval 3000ms)"]
-        Maintenance["Maintenance Scheduler\n(cleanup intervals)"]
-        SendScheduler["Send Scheduler\n(tick-based)"]
-        WABridge["WhatsApp Bridge\n(dynamic import at t=10s)"]
-        FTSWorker["FTS Worker\n(forked at t=2s)"]
-        SensorWorker["Sensor Worker\n(forked at t=1.5s)"]
+    subgraph Process["Node.js Single Process"]
+        HTTP["HTTP Server\n(:3001)"]
+        WS_Server["WebSocket Server"]
+        SSE_Server["SSE Endpoints"]
+        MonitorEngine["Monitor Engine\n(3s poll)"]
+        Watcher["FS Watcher"]
+        Maintenance["Maintenance"]
+        SendScheduler["Send Scheduler"]
+        WABridge["WhatsApp Bridge"]
+        FTSWorker["FTS Worker (forked)"]
+        SensorWorker["Sensor Worker (forked)"]
     end
 
     subgraph Background["Background Processing"]
-        ThumbQueue["Thumbnail Queue\n(async, concurrency-limited)"]
-        DownloadTasks["Download Tasks\n(Map, concurrency-limited)"]
-        ADBJobs["ADB Jobs\n(Map, worker pool)"]
-        ActiveJobs["Active Playback Jobs\n(Map, FFmpeg slots)"]
-        LRU["LRU Cache\n(lru.json)"]
+        ThumbQueue["Thumbnail Queue"]
+        DownloadTasks["Download Tasks"]
+        ADBJobs["ADB Jobs"]
+        ActiveJobs["Playback Jobs"]
+        LRU["LRU Cache"]
     end
 
     subgraph SharedState["Shared In-Memory State"]
-        SSE_Clients["SSE Clients\n(Set)"]
-        Stats["currentStats\n(Object)"]
-        Tasks["tasks Map\n(downloader)"]
-        Jobs["jobs Map\n(ADB)"]
-        Uploads["activeUploads Map"]
-        Sessions["sessions Map\n(sessionTracker)"]
+        SSE_Clients["SSE Clients"]
+        Stats["currentStats"]
+        Tasks["tasks Map"]
+        Jobs["jobs Map"]
+        Uploads["activeUploads"]
+        Sessions["sessions"]
     end
 
     HTTP --> WS_Server
@@ -414,7 +298,7 @@ flowchart TB
     HTTP --> Routes["Route Handlers"]
 
     Routes --> DB[("SQLite\n(data/media.db)")]
-    Routes --> Cache["Cache FS\n(cache/)"]
+    Routes --> Cache["Cache FS"]
     Routes --> SharedState
     Routes --> Background
 
@@ -428,8 +312,8 @@ flowchart TB
     FTSWorker --> DB
     SensorWorker --> MonitorEngine
 
-    SendScheduler --> Send["Send Queue\n(DB: send_queue)"]
-    WABridge --> WA_Client["whatsapp-web.js\nClient"]
+    SendScheduler --> Send["Send Queue"]
+    WABridge --> WA_Client["whatsapp-web.js"]
 ```
 
 **What this diagram shows:** The runtime architecture of the single Node.js process. All HTTP, WebSocket, and SSE handling happens in the main event loop. Background work is managed via in-memory Maps and async queues. Two forked child processes (FTS rebuild, sensor reads) isolate potentially-blocking operations.
@@ -1093,54 +977,26 @@ GET /api/monitoring/stats
 ```mermaid
 mindmap
   root((App.jsx))
-    ErrorBoundary
-    Routing["Hash Router\n(parseHash)"]
-      MediaView["Media View\n(#media, #f/{id})"]
-        MediaGrid["MediaGrid.jsx\n(virtualized)"]
-        MediaModal["MediaModal.jsx"]
-        VideoPlayer["VideoPlayer.jsx\n(HLS + direct)"]
-        VaultAudioPlayer["VaultAudioPlayer.jsx"]
-        VaultActionBar["VaultActionBar.jsx"]
-      FolderView["Folder View\n(#f/{folderId})"]
-        MediaLayout["MediaLayout.jsx"]
-        QueuePanel["QueuePanel.jsx"]
-      PlaylistsView["Playlists View\n(#playlists)"]
-        PlaylistGrid["PlaylistGrid.jsx"]
-        PlaylistView["PlaylistView.jsx"]
-      AudioView["Audio View\n(#audio)"]
-        Music["Music.jsx\n(cover/video/lyrics modes)"]
-        LyricsDisplay["LyricsDisplay.jsx"]
-        QueueActionBar["QueueActionBar.jsx"]
-      MonitoringView["Monitoring View\n(#monitoring)"]
-        MonitoringLayout["MonitoringLayout.jsx"]
-        Sidebar["Sidebar.jsx"]
-        TopBar["TopBar.jsx"]
-        Pages["24 Monitoring Pages"]
-          Overview["Overview.jsx"]
-          CpuWidget["CpuWidget.jsx"]
-          MemoryWidget["MemoryWidget.jsx"]
-          DiskWidget["DiskWidget.jsx"]
-          GpuWidget["GpuWidget.jsx"]
-          NetworkWidget["NetworkWidget.jsx"]
-          SystemWidget["SystemWidget.jsx"]
-          ChartsPage["ChartsPage.jsx"]
-          LogsPage["LogsPage.jsx"]
-          DockerPage["DockerPage.jsx"]
-          ProcessesPage["ProcessesPage.jsx"]
-          ServicesPage["ServicesPage.jsx"]
-          AlertsPage["AlertsPage.jsx"]
-          ... 12 more pages
-      DownloaderView["Downloader View\n(#downloader)"]
-      ADBView["ADB View\n(#adb)"]
-        AdbTransfer["AdbTransfer.jsx"]
-      ScrcpyView["Scrcpy View\n(#scrcpy)"]
-      SendQueueView["Send Queue View"]
-        SendQueuePlayer["SendQueuePlayer.jsx"]
-      GitView["Git View\n(GitView.jsx)"]
-      WhatsAppView["WhatsApp View\n(WhatsAppView.jsx)"]
-    DebugProvider["DebugProvider"]
-      DebugOverlay["DebugOverlay.jsx"]
-      Inspectors["9 Debug Inspectors"]
+    MediaView
+      MediaGrid
+      VideoPlayer
+      VaultAudioPlayer
+    AudioView
+      Music
+      LyricsDisplay
+    MonitoringView
+      MonitoringLayout
+      Pages["24 Pages"]
+      Widgets["7 Widgets"]
+    DownloaderView
+    ADBView
+      AdbTransfer
+    ScrcpyView
+    SendQueueView
+    GitView
+    WhatsAppView
+    DebugProvider
+      DebugOverlay
 ```
 
 **What this diagram shows:** The complete frontend component hierarchy rooted at `App.jsx`. Each major view is a top-level hash route; monitoring has its own sub-route tree with 24 pages and 7 widgets.
@@ -1155,18 +1011,17 @@ mindmap
 
 ```mermaid
 flowchart TB
-    subgraph Stores["Zustand Stores (6)"]
-        MS["monitoringStore\n(persist: mediavault-monitoring)"]
-        PS["playbackStore\n(memory)"]
-        PLS["playlistStore\n(persist: localStorage)"]
-        FSS["folderSortStore\n(persist: localStorage)"]
-        FMSS["folderMetaSortStore\n(persist: localStorage)"]
-        DS["useDebugStore\n(memory)"]
+    subgraph Stores["Zustand Stores"]
+        MS["monitoringStore"]
+        PS["playbackStore"]
+        PLS["playlistStore"]
+        FSS["folderSortStore"]
+        FMSS["folderMetaSortStore"]
+        DS["useDebugStore"]
     end
 
     subgraph Components["Component Consumers"]
-        Monitoring["Monitoring Pages\n(24)"]
-        MonitoringWidgets["Monitoring Widgets\n(7)"]
+        Monitoring["Monitoring Pages"]
         VideoPlayer["VideoPlayer.jsx"]
         AudioPlayer["Audio Players"]
         MediaGrid["MediaGrid.jsx"]
@@ -1175,20 +1030,19 @@ flowchart TB
         Debug["Debug Inspectors"]
     end
 
-    subgraph Backend["Backend State\n(In-Memory + DB)"]
-        Stats["currentStats\n(Object)"]
-        ActiveJobs["activeJobs\n(Map)"]
-        LRU["lruMap\n(Map)"]
-        Tasks["tasks\n(Map)"]
-        Jobs["jobs\n(Map)"]
-        Uploads["activeUploads\n(Map)"]
-        Sessions["sessions\n(Map)"]
-        DB_State["SQLite Persistence\n(media.db)"]
-        JSON_State["JSON Files\n(download-tasks.json,\nlru.json)"]
+    subgraph Backend["Backend State"]
+        Stats["currentStats"]
+        ActiveJobs["activeJobs"]
+        LRU["lruMap"]
+        Tasks["tasks"]
+        Jobs["jobs"]
+        Uploads["activeUploads"]
+        Sessions["sessions"]
+        DB[("SQLite")]
+        JSON["JSON Files"]
     end
 
     MS --> Monitoring
-    MS --> MonitoringWidgets
     PS --> VideoPlayer
     PS --> AudioPlayer
     PLS --> PlaylistView
@@ -1203,8 +1057,8 @@ flowchart TB
     PlaylistView -->|REST| Backend
     AdbTransfer -->|REST/SSE| Backend
 
-    Backend --> DB_State
-    Backend --> JSON_State
+    Backend --> DB
+    Backend --> JSON
 ```
 
 **What this diagram shows:** The state management architecture. Frontend state is managed by 6 Zustand stores (2 persisted, 4 in-memory). Backend state is a mix of in-memory Maps and persistent storage (SQLite + JSON files).
@@ -1229,30 +1083,25 @@ flowchart TB
 ```mermaid
 flowchart LR
     subgraph Frontend["Frontend Communication"]
-        API["api.js\n(dedup + 2s cache)"]
-        WS_Hook["useWebSocket.js\n(WS + heartbeat + fallback)"]
-        SSE_Direct["Direct EventSource\n(/api/updates)"]
-        SSE_Download["EventSource\n(/api/download/stream)"]
+        API["api.js"]
+        WS_Hook["useWebSocket.js"]
+        SSE_Direct["EventSource"]
     end
 
     subgraph Backend["Backend Endpoints"]
-        REST_API["REST API\n(/api/*)"]
+        REST_API["REST API"]
         WS_Monitor["/ws/monitor"]
         SSE_Updates["/api/updates"]
-        SSE_Logs["/api/logs/stream"]
         SSE_Download["/api/download/stream"]
     end
 
     API -->|fetch() + cache| REST_API
     WS_Hook -->|WebSocket| WS_Monitor
     SSE_Direct -->|EventSource| SSE_Updates
-    SSE_Download -->|EventSource| SSE_Download
 
     REST_API -->|Response| API
     WS_Monitor -->|broadcast()| WS_Hook
     SSE_Updates -->|folder_updated| SSE_Direct
-    SSE_Logs -->|log lines| SSE_Direct
-    SSE_Download -->|task updates| SSE_Download
 ```
 
 ---
