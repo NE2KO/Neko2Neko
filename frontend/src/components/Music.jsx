@@ -317,7 +317,9 @@ useEffect(() => {
       setIsLoading(false);
       // Sync store isPlaying → audio element (guard against redundant calls)
       if (isPlaying && audio.paused) {
-        audio.play().catch(() => {});
+        // Re-assert the chosen output device before play so a quick pause→play
+        // never emits to the default device first.
+        applySink(audio, getStoredDevice()).then(() => audio.play().catch(() => {}));
       } else if (!isPlaying && !audio.paused) {
         audio.pause();
       }
@@ -334,14 +336,15 @@ useEffect(() => {
     setIsLoading(true);
     setError(null);
 
-    // New track — load and play. Re-apply the chosen output device NOW (during
-    // buffering, before any sound) so setSinkId resolves before 'playing' and
-    // there is no audible blip to the default device.
+    // New track — load and play. Re-apply the chosen output device and AWAIT it
+    // before play() so setSinkId resolves first; otherwise the first sound
+    // briefly blips to the default device.
     audio.currentTime = 0;
     audio.src = `/file/${fileId}`;
     audio.load();
-    applySink(audio, getStoredDevice());
 
+    let sinkReady = false;
+    let canPlayFired = false;
     const tryPlay = () => {
       audio.play().then(() => {
         setIsLoading(false);
@@ -352,12 +355,13 @@ useEffect(() => {
         }
       });
     };
-
-    if (audio.readyState >= 3) {
-      tryPlay();
-    } else {
-      audio.addEventListener('canplay', tryPlay, { once: true });
-    }
+    // Fire play only once BOTH the sink is applied AND the audio can play
+    // (race-free regardless of which event lands last).
+    const maybePlay = () => {
+      if (sinkReady && (canPlayFired || audio.readyState >= 3)) tryPlay();
+    };
+    audio.addEventListener('canplay', () => { canPlayFired = true; maybePlay(); }, { once: true });
+    applySink(audio, getStoredDevice()).then(() => { sinkReady = true; maybePlay(); });
 
     const onPlay = () => play();
     const onPause = () => pause();
@@ -649,11 +653,33 @@ const handleVideoEnded = useCallback(() => {
   anchorVideoToAudio({ play: true, target });
 }, [audioRef, anchorVideoToAudio]);
 
-// Genuine <video> error (e.g. stream hiccup). Self-heal by silently remounting
-// the element — no overlay/text, no permanent black screen.
-  const handleVideoError = useCallback(() => {
-    videoRef.current?.reload?.();
+  // Recover the MV after a source outage (server restart / network loss). Resets
+  // the one-time sync state and remounts the <video> so the freshly-loaded clip
+  // re-anchors to the CURRENT audio position (via anchorVideoToAudio on ready)
+  // instead of restarting from frame 0. Cooldown-guarded so a long outage can't
+  // thrash the backend with remount attempts.
+  const lastRecoveryRef = useRef(0);
+  const recoverVideo = useCallback(() => {
+    const now = Date.now();
+    if (now - lastRecoveryRef.current < 10000) return;
+    lastRecoveryRef.current = now;
+    syncedRef.current = false;
+    syncedOffsetRef.current = null;
+    pendingPlayRef.current = false;
+    readyFiredRef.current = false;
+    lastAnchorTargetRef.current = null;
+    lastAnchorTimeRef.current = 0;
+    setVideoReady(false);
+    setMetadataReady(false);
+    setVideoRemountKey((k) => k + 1);
   }, []);
+
+  // Genuine <video> error (e.g. stream hiccup / source down). Fall back to the
+  // cover (handled in CachedVideoPlayer) and recover once the source returns,
+  // re-anchoring to the live audio position.
+  const handleVideoError = useCallback(() => {
+    recoverVideo();
+  }, [recoverVideo]);
 
   // If the network drops (wifi off) the YouTube MV frame goes blank and won't
   // recover on its own. Remount the player when the connection returns so it
@@ -663,6 +689,23 @@ const handleVideoEnded = useCallback(() => {
     window.addEventListener('online', onOnline);
     return () => window.removeEventListener('online', onOnline);
   }, []);
+
+  // Recovery watchdog: if the <video> stays stalled (server restart / network
+  // loss) past a grace window, remount + re-anchor to the current audio position.
+  // This also catches a plain server restart, where the LAN 'online' event never
+  // fires, so the remount above would never trigger.
+  useEffect(() => {
+    if (!isVideoMode) return undefined;
+    const id = setInterval(() => {
+      if (videoStalledRef.current && stalledSinceRef.current &&
+          Date.now() - stalledSinceRef.current > 8000) {
+        videoStalledRef.current = false;
+        stalledSinceRef.current = 0;
+        recoverVideo();
+      }
+    }, 2000);
+    return () => clearInterval(id);
+  }, [isVideoMode, recoverVideo]);
 
 
 useEffect(() => {
@@ -972,9 +1015,9 @@ useEffect(() => {
   readyFiredRef.current = false;
   lastAnchorTargetRef.current = null;
   lastAnchorTimeRef.current = 0;
-  setVideoReady(false);
-  setMetadataReady(false);
-}, [youtubeId]);
+    setVideoReady(false);
+    setMetadataReady(false);
+  }, [youtubeId, videoRemountKey]);
 
   // Favorite toggle — single source of truth via the global favorites store,
   // so the mini player / carousel / queue list stay in sync.
@@ -1133,7 +1176,7 @@ useEffect(() => {
         }, []);
 
   // Play audio within user gesture context (click handler) to bypass autoplay policy
-  const playFileInGesture = useCallback((fileId) => {
+  const playFileInGesture = useCallback(async (fileId) => {
     const audio = audioRef?.current;
     if (!audio || !fileId) return;
     const newSrc = `/file/${fileId}`;
@@ -1141,9 +1184,11 @@ useEffect(() => {
      if (audio.src !== window.location.origin + newSrc) {
       audio.src = newSrc;
       audio.load();
-      applySink(audio, getStoredDevice());
     }
     prevFileIdRef.current = fileId;
+    // Apply the output device and AWAIT it before play so sound starts on the
+    // chosen device, never the default.
+    await applySink(audio, getStoredDevice());
     audio.play().then(() => {
       play();
       setIsLoading(false);
@@ -1404,6 +1449,7 @@ useEffect(() => {
                 youtubeId={youtubeId}
                 playing={isPlaying}
                 scrubbingRef={scrubbingRef}
+                coverUrl={coverBlobUrl || `/thumbnails/${activeFile?.id}.jpg?v=${coverVersion}`}
                 muted
                 onReady={handleVideoReady}
                 onLoadedMetadata={() => setMetadataReady(true)}
@@ -1428,13 +1474,13 @@ useEffect(() => {
               transition: 'opacity 400ms ease',
             }}
           >
-            <img
+            <div className="absolute inset-0 bg-gradient-to-br from-purple-900 via-neutral-900 to-sky-900" />
+            <NetworkImage
               src={coverBlobUrl || `/thumbnails/${activeFile?.id}.jpg?v=${coverVersion}`}
               alt=""
-              decoding="async"
               className="absolute inset-0 w-full h-full object-cover"
               style={{ filter: 'blur(28px) brightness(0.7) saturate(1.25)', transform: 'scale(1.15)' }}
-              onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }}
+              showRetry={false}
             />
             <div className="absolute inset-0 bg-black/15" />
             <div
@@ -1480,13 +1526,13 @@ useEffect(() => {
               transition: 'opacity 300ms ease',
             }}
           >
-            <img
+            <div className="absolute inset-0 bg-gradient-to-br from-purple-900 via-neutral-900 to-sky-900" />
+            <NetworkImage
               src={coverBlobUrl || `/thumbnails/${activeFile?.id}.jpg?v=${coverVersion}`}
               alt=""
-              decoding="async"
               className="absolute inset-0 w-full h-full object-cover"
               style={{ filter: 'blur(22px) brightness(0.75) saturate(1.2)', transform: 'scale(1.1)' }}
-              onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }}
+              showRetry={false}
             />
             <div className="absolute inset-0 bg-black/15" />
             <div className="relative z-10 w-full h-full">

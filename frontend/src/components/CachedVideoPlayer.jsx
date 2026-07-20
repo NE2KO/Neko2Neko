@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, forwardRef, useImperativeHandle, memo } from 'react';
 
-const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId, playing, onReady, onWaiting, onPlaying, onStalled, onSeeked, onEnded, onError, onLoadedMetadata, scrubbingRef }, ref) {
+const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId, playing, onReady, onWaiting, onPlaying, onStalled, onSeeked, onEnded, onError, onLoadedMetadata, scrubbingRef, coverUrl }, ref) {
   const videoRef = useRef(null);
   const [status, setStatus] = useState('checking');
   const [progress, setProgress] = useState(0);
@@ -173,6 +173,21 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
     return () => clearTimeout(pollTimer);
   }, [youtubeId]);
 
+  // Self-heal: while in the error state (source temporarily unavailable, e.g.
+  // server restart / network loss) keep probing the backend so the video
+  // recovers the moment it comes back — without waiting for the parent's
+  // remount cycle. Idempotent; cheap while the source is still down.
+  useEffect(() => {
+    if (status !== 'error' || !youtubeId) return undefined;
+    const id = setInterval(() => {
+      fetch(`/api/video-cache/download/${youtubeId}`, { method: 'POST' })
+        .then((r) => r.json())
+        .then((data) => { if (data?.status === 'cached') setStatus('cached'); })
+        .catch(() => {});
+    }, 2500);
+    return () => clearInterval(id);
+  }, [status, youtubeId]);
+
   // Remove the background blob hot-swap effect (post-streaming regression that
   // caused the backward-seek double-frame glitch). Playback stays on the
   // range-streamed URL; the <video src> is never reassigned.
@@ -200,7 +215,7 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
       <div className="w-full h-full flex flex-col items-center justify-center bg-black rounded-2xl gap-3">
         <div className="w-10 h-10 border-3 border-white/20 border-t-white rounded-full animate-spin" />
         <p className="text-white/50 text-xs">
-          {status === 'checking' ? 'Checking cache...' : `Downloading video... ${progress}%`}
+          {status === 'checking' ? 'Memeriksa cache…' : `Mengunduh video… ${progress}%`}
         </p>
       </div>
     );
@@ -208,8 +223,14 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
 
   if (status === 'error') {
     return (
-      <div className="w-full h-full flex items-center justify-center bg-black rounded-2xl">
-        <p className="text-red-400 text-xs">Failed to load video</p>
+      <div className="w-full h-full flex items-center justify-center bg-black rounded-2xl overflow-hidden relative">
+        {coverUrl && (
+          <img src={coverUrl} alt="" className="absolute inset-0 w-full h-full object-cover opacity-50" />
+        )}
+        <div className="relative z-10 flex flex-col items-center gap-2 text-white/90">
+          <div className="w-8 h-8 border-2 border-white/25 border-t-white rounded-full animate-spin" />
+          <p className="text-[11px] font-medium">Menyambungkan kembali…</p>
+        </div>
       </div>
     );
   }
@@ -220,6 +241,7 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
     ref={videoRef}
     className="w-full h-full object-contain rounded-2xl"
     src={`/api/video-cache/stream/${youtubeId}`}
+    poster={coverUrl || undefined}
     preload="auto"
     playsInline
     muted
