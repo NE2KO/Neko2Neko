@@ -581,15 +581,7 @@ flowchart TB
         Routes["Route Handlers"]
     end
 
-    subgraph External["External Services"]
-        Telegram["Telegram Bot API\n(optional)"]
-        MB["MusicBrainz CAA\n(cover art)"]
-        LRCLIB["LRCLIB\n(lyrics)"]
-        NVIDIA["NVIDIA API\n(via nginx-nvidia :4000)"]
-        WA_Web["WhatsApp Web\n(whatsapp-web.js)"]
-    end
-
-    React -->|REST (fetch)| Express
+    React -->|REST fetch| Express
     React -->|WebSocket| WS_Server
     React -->|SSE| SSE_Server
 
@@ -597,23 +589,16 @@ flowchart TB
     WS_Server --> Monitor["Monitor Engine"]
     SSE_Server --> Watcher["FS Watcher"]
 
-    Routes --> Telegram
-    Routes --> MB
-    Routes --> LRCLIB
-    Routes --> NVIDIA
-    Routes --> WA_Web
-
     style Frontend fill:#e1f5fe
     style Backend fill:#f3e5f5
-    style External fill:#fff3e0
 ```
 
-**What this diagram shows:** The network communication map between the frontend, backend, and external services. All communication flows through the single Express server on port 3001.
+**What this diagram shows:** The communication map between the frontend and backend. All frontend traffic flows through the single Express server on port 3001. External APIs (Telegram, MusicBrainz, LRCLIB, NVIDIA, WhatsApp) are called server-side from route handlers, not directly from the browser.
 
 **Important findings:**
-- The frontend uses **three communication channels**: REST (primary), WebSocket (monitoring), and SSE (logs/watcher updates).
-- External API calls (MusicBrainz, LRCLIB, Telegram, NVIDIA) are made **server-side** — the frontend never directly calls external APIs.
-- The NVIDIA API is proxied through the optional `nginx-nvidia` sidecar, which rate-limits to **39 req/min per IP**.
+- The frontend uses **three communication channels**: REST (primary), WebSocket (monitoring), and SSE (folder/log/download updates).
+- No frontend code calls external APIs directly — all third-party integration happens in backend route handlers.
+- If `Docker/` is placed inside the web app folder, its containers/services can be monitored through the existing `/api/monitoring` endpoints instead of drawing Docker as a separate network node.
 
 ### 5.2 WebSocket + SSE Fallback Chain
 
@@ -2269,56 +2254,35 @@ bar
 
 ## 24. Graphs & Charts
 
-### 24.1 LOC by Language
-
 ```mermaid
-pie title Lines of Code by Language
+pie title LOC by Language
     "JavaScript" : 49902
     "Python (spawned)" : 300
     "JSON (config)" : 94
 ```
 
-**What this chart shows:** The language distribution across the codebase. JavaScript dominates (99.4%), with a small amount of Python for spawned helper scripts.
-
-### 24.2 LOC by Folder
-
 ```mermaid
-bar
-    title Lines of Code by Top-Level Folder
-    x-axis Backend Frontend whatsapp-bot
-    y-axis LOC 0 10000 20000 30000 40000 50000
-    bar Backend 21409
-    bar Frontend 28093
-    bar whatsapp-bot 794
+pie title LOC by Package
+    "Frontend" : 28093
+    "Backend" : 21409
+    "WhatsApp Bot" : 794
 ```
 
-**What this chart shows:** The LOC distribution across the three main code packages. Frontend is the largest (55.8%), followed by backend (42.6%).
-
-### 24.3 Endpoint Count by Route Module
-
 ```mermaid
-bar
-    title API Endpoints by Route Module
-    x-axis monitoring files downloader adb playlists whatsapp metadata upload video-cache stream send settings playback services others
-    y-axis Endpoints 0 5 10 15 20 25 30
-    bar monitoring 30
-    bar files 12
-    bar downloader 10
-    bar adb 15
-    bar playlists 12
-    bar whatsapp 10
-    bar metadata 7
-    bar upload 7
-    bar video-cache 7
-    bar stream 8
-    bar send 4
-    bar settings 7
-    bar playback 4
-    bar services 4
-    bar others 6
+pie title Endpoints by Route Module
+    "Monitoring" : 30
+    "ADB" : 15
+    "Files/Search" : 12
+    "Playlists" : 12
+    "Downloader" : 10
+    "WhatsApp" : 10
+    "Streaming" : 8
+    "Metadata" : 7
+    "Upload" : 7
+    "Video Cache" : 7
+    "Settings" : 7
+    "Debug/Misc" : 6
 ```
-
-**What this chart shows:** The endpoint distribution across route modules. The monitoring module is the largest (30 endpoints), reflecting the comprehensive system monitoring capabilities.
 
 ---
 
@@ -2329,7 +2293,7 @@ The following visualizations are **recommended as SVG** rather than Mermaid, due
 ### 25.1 Complete Network Topology
 
 **Recommendation:** SVG force-directed graph
-**Nodes:** ~15 (browser, backend subsystems, external tools, Docker sidecars)
+**Nodes:** ~15 (browser, backend subsystems, external tools)
 **Edges:** ~25 (communication paths)
 
 **Why SVG over Mermaid:** Mermaid `flowchart` is suitable for this topology (already provided in §2), but a force-directed SVG would better show the density of connections between the backend and external tools.
