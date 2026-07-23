@@ -119,10 +119,17 @@ return (
  );
 }
 
-function ItemCard({ item, onOpen, onAction, onCaptionChange, now, sendEta, ready, index }) {
+function ItemCard({ item, onOpen, onAction, onCaptionChange, now, sendEta, ready, index, scheduleActive }) {
   const meta = STATUS_META[item.status] || STATUS_META.pending;
   const Icon = meta.icon;
   const [showCaptionModal, setShowCaptionModal] = useState(false);
+const [rollingCounter, setRollingCounter] = useState(0);
+useEffect(() => {
+  if (!scheduleActive) {
+    const id = setInterval(() => setRollingCounter(c => (c + 1) % 1000), 1000);
+    return () => clearInterval(id);
+  }
+}, [scheduleActive]);
   
   const formatDateTime = (ts) => {
     if (!ts) return '';
@@ -237,7 +244,7 @@ function ItemCard({ item, onOpen, onAction, onCaptionChange, now, sendEta, ready
             {eta != null && eta > 0 ? (
               <div className="flex items-center gap-1">
                 <Clock size={10} className="text-amber-400/70 flex-shrink-0" />
-                <span className="text-[10px] sm:text-[11px] tabular-nums text-amber-400/90 font-medium">{remainingCompact(eta)}</span>
+                {scheduleActive ? <span className="text-[10px] sm:text-[11px] tabular-nums text-amber-400/90 font-medium">{remainingCompact(eta)}</span> : <Odometer value={rollingCounter} digits={3} />}
               </div>
             ) : <span />}
             {(item.duration || item.size) && (
@@ -1219,7 +1226,7 @@ useEffect(() => {
                       onCaptionChange={handleCaptionChange}
                       now={now} 
                       sendEta={timelineItem?.eta}
-                      ready={timelineItem?.ready}
+                      ready={timelineItem?.ready} scheduleActive={settings?.tickEnabled && !settings?.debugMode}
                     />
                   );
                 })}

@@ -43,6 +43,7 @@ const MIN_INTERVAL_MS = MIN_INTERVAL_HOURS * 60 * 60 * 1000;
 // cooldown; when unlimited (0) we still guard against accidental rapid re-sends of
 // the SAME file+target with a fixed window.
 const DEDUP_WINDOW_MS = MIN_INTERVAL_MS > 0 ? MIN_INTERVAL_MS : 5 * 60 * 1000;
+const TICK_GRACE_MS = 5 * 60 * 1000; // Grace period for delayed tick
 
 function todayStr() {
   const d = new Date();
@@ -168,7 +169,7 @@ export function buildQueueTimeline({ now, pendingItems, perDay, rateState }) {
   if (slots.length === 0) return [];
   
   const slotsUsed = rateState?.count || 0;
-  const lastSendAt = rateState?.last_send_at || 0;
+  const lastSendAt = rateState?.lastSendAt || 0;
   
   // Calculate elapsed slots from midnight
   const elapsedSlots = Math.floor((now - today) / intervalMs);
@@ -185,6 +186,15 @@ export function buildQueueTimeline({ now, pendingItems, perDay, rateState }) {
   } else {
     // All today's slots used: items wait for tomorrow
     nextSlotIdx = perDay;
+  }
+
+  // Apply grace period: if the tick runs >= TICK_GRACE_MS after the next slot's start,
+  // treat that slot as missed and move to the following slot.
+  if (nextSlotIdx < perDay) {
+    const slotStart = slots[nextSlotIdx];
+    if (now >= slotStart + TICK_GRACE_MS) {
+      nextSlotIdx += 1;
+    }
   }
   
   // If all today's slots are used, items go to tomorrow
