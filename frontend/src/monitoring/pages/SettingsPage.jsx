@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import GlassCard from '../shared/GlassCard';
 import LogTerminal from '../components/LogTerminal';
+import AISettings from '../../components/AISettings';
 import {
   Save, Settings, RefreshCw, Clock, RotateCcw, History, Search, X, Check, AlertTriangle,
   Monitor, Cpu, Gauge, Activity, Bell, Database, Wifi, HardDrive, Upload, Eye,
   Bot, Scan, Server, Globe, Layout, Shield, Zap, ChevronDown, ChevronUp, ArrowDown, ArrowUp,
-  Trash2, Play, Wrench, BarChart3,
+  Trash2, Play, Wrench, BarChart3, Sparkles,
 } from 'lucide-react';
 
 const CATEGORY_META = {
@@ -19,6 +20,7 @@ const CATEGORY_META = {
   whatsapp:   { label: 'WhatsApp Bot',      icon: Bot,        color: 'text-emerald-400',   bg: 'bg-emerald-500/10', border: 'border-emerald-500/20' },
   scanner:    { label: 'Scan Settings',     icon: Scan,       color: 'text-blue-400',      bg: 'bg-blue-500/10',    border: 'border-blue-500/20' },
   database:   { label: 'Database',          icon: Database,   color: 'text-amber-400',     bg: 'bg-amber-500/10',   border: 'border-amber-500/20' },
+  ai:         { label: 'AI / Chatbot',      icon: Sparkles,   color: 'text-violet-400',    bg: 'bg-violet-500/10',  border: 'border-violet-500/20' },
   api:        { label: 'API',               icon: Globe,      color: 'text-teal-400',      bg: 'bg-teal-500/10',    border: 'border-teal-500/20' },
   serve:      { label: 'Serve & Delivery',  icon: HardDrive,  color: 'text-indigo-400',    bg: 'bg-indigo-500/10',  border: 'border-indigo-500/20' },
   render:     { label: 'Render Engine',     icon: Eye,        color: 'text-pink-400',      bg: 'bg-pink-500/10',    border: 'border-pink-500/20' },
@@ -28,7 +30,7 @@ const CATEGORY_META = {
 
 const CATEGORY_ORDER = [
   'general', 'dashboard', 'performance', 'monitoring', 'alerts', 'retention',
-  'system', 'whatsapp', 'scanner', 'database', 'api', 'serve', 'render', 'network', 'upload',
+  'system', 'whatsapp', 'scanner', 'ai', 'database', 'api', 'serve', 'render', 'network', 'upload',
 ];
 
 const RETENTION_OPTIONS = [
@@ -268,7 +270,11 @@ export default function SettingsPage() {
   const [showHistory, setShowHistory] = useState(false);
   const [rollbacking, setRollbacking] = useState(null);
   const [search, setSearch] = useState('');
-  const [activeTab, setActiveTab] = useState('general');
+  const [activeTab, setActiveTab] = useState(() => {
+    const saved = sessionStorage.getItem('monitoringSettingsTab');
+    if (saved) { sessionStorage.removeItem('monitoringSettingsTab'); return saved; }
+    return 'general';
+  });
   const [collapsed, setCollapsed] = useState({});
   const tabRefs = useRef({});
 
@@ -627,13 +633,16 @@ export default function SettingsPage() {
                   </GlassCard>
                 );
               })
-            ) : (
-              // Active tab only
-              (() => {
-                const settings = data.settings?.[activeTab];
-                if (!settings || settings.length === 0) return (
-                  <div className="text-center py-12 text-neutral-600 text-xs">No settings in this category</div>
-                );
+               ) : (
+                 // Active tab only
+                 (() => {
+                   if (activeTab === 'ai') {
+                     return <AISettings />;
+                   }
+                   const settings = data.settings?.[activeTab];
+                   if (!settings || settings.length === 0) return (
+                     <div className="text-center py-12 text-neutral-600 text-xs">No settings in this category</div>
+                   );
                 const meta = CATEGORY_META[activeTab];
                 const Icon = meta.icon;
                 return (

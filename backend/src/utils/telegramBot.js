@@ -17,6 +17,19 @@ function createBot() {
   if (bot) return bot;
   if (!BOT_TOKEN) return null;
   bot = new TelegramBotApi(BOT_TOKEN, { polling: true });
+  bot.on('polling_error', (err) => {
+    console.error('[tg polling]', err.message);
+    const msg = (err && err.message) || String(err);
+    const shouldRestart = /EFATAL|ECONNRESET|409 Conflict|ETELEGRAM: 409/i.test(msg);
+    if (shouldRestart) {
+      bot.stopPolling().then(() => {
+        setTimeout(() => {
+          bot = null;
+          createBot();
+        }, 5000);
+      }).catch(() => {});
+    }
+  });
   return bot;
 }
 

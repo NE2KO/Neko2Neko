@@ -10,7 +10,6 @@ import NetworkImage from './NetworkImage';
 import SpeakerOutputButton from './SpeakerOutputButton';
 import usePlaybackStore from '../store/playbackStore';
 import { useIsFavorite } from '../store/favoritesStore';
-import { getCached, fetchBlob } from '../utils/thumbCache';
 import { applySink, getStoredDevice } from '../utils/audioOutput';
 import { cancelSendQueueItem, retrySendQueueItem, removeSendQueueItem } from '../utils/api';
 
@@ -20,6 +19,7 @@ export default function MusicPlayer({
   folderFiles = [],
   currentSortBy,
   currentSortOrder,
+  favoriteOnly = false,
   onClose,
   onMinimize,
   onAudioChange,
@@ -70,35 +70,177 @@ export default function MusicPlayer({
   const hasLyrics = !!(lyricsSynced || trackMetadata?.lyrics);
   const [coverVersion, setCoverVersion] = useState(0);
   const videoRef = useRef(null);
-  const videoSeekRef = useRef(0);
-  const [videoOffset, setVideoOffset] = useState(0);
-  const syncedRef = useRef(false);
-  // The videoOffset that the one-time sync last applied. Lets the sync re-run
-  // when a late/changed offset arrives (fixes the frame-0 race).
-  const syncedOffsetRef = useRef(null);
-  const readyFiredRef = useRef(false);
-  const storedPositionRef = useRef(storedPosition);
-  storedPositionRef.current = storedPosition;
+  const bgVideoRef = useRef(null);
+  const bgPendingTargetRef = useRef(null);
+  const bgSeekInProgressRef = useRef(false);
+  const bgPendingForceSeekRef = useRef(null);
+  const lastAppliedSinkIdRef = useRef(null);
+  const lastResumeTargetRef = useRef(null);
+  const lastResumeTimeRef = useRef(0);
+  const [useBgEngine, setUseBgEngine] = useState(() => {
+    try { return localStorage.getItem('mv_bg_engine') === '1'; } catch { return false; }
+  });
 
-  const containerRef = useRef(null);
+  const syncLogRef = useRef({
+    enabled: false,
+    sessionId: null,
+    startTime: 0,
+    seekStartTime: null,
+    buffer: [],
+    maxBuffer: 20000,
+    summary: null,
+  });
+
+  const syncLog = (kind, engine, data = {}) => {
+    const log = syncLogRef.current;
+    if (!log.enabled) return;
+    const event = {
+      t: performance.now() - log.startTime,
+      kind,
+      engine,
+      ...data,
+    };
+    log.buffer.push(event);
+    if (log.buffer.length > log.maxBuffer) {
+      log.buffer.splice(0, log.buffer.length - log.maxBuffer);
+    }
+    if (['hard_seek', 'soft_seek', 'stall', 'large_drift', 'error'].includes(kind)) {
+      console.log(`[SYNC ${event.t.toFixed(0)}ms] ${kind}`, engine, data);
+    }
+  };
+
+  function computeSummary(events) {
+    const ticks = events.filter(e => e.kind === 'tick');
+    const seeks = events.filter(e => ['seek', 'hard_seek', 'soft_seek', 'anchor'].includes(e.kind));
+    const stalls = events.filter(e => e.kind === 'stall');
+    const modeChanges = events.filter(e => e.kind === 'mode_change');
+    const seekLatencies = events.filter(e => e.kind === 'seek_latency');
+
+    // Per-engine drift stats
+    const mvTicks = ticks.filter(e => e.engine === 'mv');
+    const bgTicks = ticks.filter(e => e.engine === 'bg');
+    const mvDrifts = mvTicks.map(e => e.drift).filter(v => typeof v === 'number');
+    const bgDrifts = bgTicks.map(e => e.drift).filter(v => typeof v === 'number');
+
+    const driftStats = (drifts) => {
+      if (!drifts.length) return { avg: 0, max: 0, p95: 0, count: 0 };
+      const sorted = [...drifts].sort((a, b) => Math.abs(a) - Math.abs(b));
+      const absSorted = sorted.map(Math.abs);
+      return {
+        avg: Math.round(drifts.reduce((a, b) => a + b, 0) / drifts.length),
+        max: Math.round(Math.max(...absSorted)),
+        p95: Math.round(absSorted[Math.floor(absSorted.length * 0.95)] || 0),
+        count: drifts.length,
+      };
+    };
+
+    return {
+      eventCount: events.length,
+      tickCount: ticks.length,
+      seekCount: seeks.length,
+      hardSeekCount: events.filter(e => e.kind === 'hard_seek').length,
+      anchorReplaceCount: events.filter(e => e.kind === 'anchor_replace').length,
+      stallCount: stalls.length,
+      modeChanges: modeChanges.map(e => ({ t: e.t, from: e.from, to: e.to })),
+      seekLatency: seekLatencies.length ? {
+        avgMs: Math.round(seekLatencies.reduce((a, e) => a + e.latencyMs, 0) / seekLatencies.length),
+        maxMs: Math.round(Math.max(...seekLatencies.map(e => e.latencyMs))),
+        count: seekLatencies.length,
+      } : null,
+      mv: driftStats(mvDrifts),
+      bg: driftStats(bgDrifts),
+    };
+  }
+
+  const [videoOffset, setVideoOffset] = useState(0);
+  const [availSize, setAvailSize] = useState({ width: 384, height: 384 });
   const mediaAreaRef = useRef(null);
   const controlsRef = useRef(null);
-  const titleRef = useRef(null);
+  const containerRef = useRef(null);
+  const syncedRef = useRef(false);
+  const syncedOffsetRef = useRef(null);
+  const readyFiredRef = useRef(false);
+  const prevModeRef = useRef(false);
   const [videoReady, setVideoReady] = useState(false);
-  const [availSize, setAvailSize] = useState({ width: 0, height: 0 });
-  // True once the <video> reports loadedmetadata — lets the one-time sync run
-  // the offset seek before the first frame paints (so frame 0 is never shown).
   const [metadataReady, setMetadataReady] = useState(false);
+  const isVideoMode = useMemo(() => playerMode === 'video' || playerMode === 'video-split' || playerMode === 'video-cover', [playerMode]);
 
-   const isVideoMode = playerMode === "video" || playerMode === "video-split" || playerMode === "video-cover";
-   const lastSeekTimeRef = useRef(0); // Cooldown for drift correction seeks
-   // Watchdog sync state — kept in refs so an explicit re-anchor (user seek)
-   // can reset it, preventing the rate controller from fighting the jump.
-   const rateRef = useRef(1);
-   const integralRef = useRef(0);
-   const lastVideoSyncRef = useRef(0);
+  // Expose unified sync telemetry toggles from console:
+  //   window.__SYNC__(true)  — start session
+  //   window.__SYNC_EXPORT__() — dump JSON
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.__SYNC__ = (on) => {
+      const log = syncLogRef.current;
+      log.enabled = !!on;
+      if (typeof window !== 'undefined') {
+        window.__SYNC_ENABLED__ = !!on;
+      }
+      if (log.enabled) {
+        log.sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        log.startTime = performance.now();
+        log.buffer = [];
+        log.summary = null;
+        console.log(`[Music] SYNC ${log.sessionId} ON`);
+      } else {
+        console.log(`[Music] SYNC ${log.sessionId || '?'} OFF`);
+      }
+    };
+    window.__SYNC_EXPORT__ = () => {
+      const log = syncLogRef.current;
+      if (!log.enabled || !log.sessionId) {
+        console.error('[Music] Session belum aktif! Jalankan: window.__SYNC__(true)');
+        return;
+      }
+      const data = {
+        sessionId: log.sessionId,
+        startTime: log.startTime,
+        events: log.buffer,
+        summary: log.summary || computeSummary(log.buffer),
+      };
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `sync-${log.sessionId || 'session'}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      console.log(`[Music] SYNC exported ${log.buffer.length} events`);
+    };
+    window.__SYNC_SUMMARY__ = () => {
+      const log = syncLogRef.current;
+      if (!log.enabled || !log.sessionId) {
+        console.error('[Music] Session belum aktif! Jalankan: window.__SYNC__(true)');
+        return;
+      }
+      const s = computeSummary(log.buffer);
+      const durationSec = log.buffer.length > 0
+        ? Math.round((log.buffer[log.buffer.length - 1].t) / 1000)
+        : 0;
 
-  // Volume gesture refs
+      const modeLines = s.modeChanges.length > 0
+        ? s.modeChanges.slice(-5).map(m => `${m.from}→${m.to}@${Math.round(m.t)}ms`).join(' ')
+        : '(none)';
+
+      const lines = [
+        `[SYNC SUMMARY] session:${log.sessionId} | ${durationSec}s | ${s.tickCount} ticks | ${s.eventCount} events`,
+        `  MV: avg=${s.mv.avg}ms max=${s.mv.max}ms p95=${s.mv.p95}ms (${s.mv.count} samples)`,
+        `  BG: avg=${s.bg.avg}ms max=${s.bg.max}ms p95=${s.bg.p95}ms (${s.bg.count} samples)`,
+        `  Seeks: ${s.seekCount}x (hard:${s.hardSeekCount} anchor_replace:${s.anchorReplaceCount})${s.seekLatency ? ` | latency avg=${s.seekLatency.avgMs}ms max=${s.seekLatency.maxMs}ms` : ''}`,
+        `  Modes: ${modeLines}`,
+        `  Stalls: ${s.stallCount}`,
+      ];
+      console.log(lines.join('\n'));
+      return s;
+    };
+    // Also expose with single trailing underscore for convenience
+    window.__SYNC_SUMMARY = window.__SYNC_SUMMARY__;
+    window.__SYNC_EXPORT = window.__SYNC_EXPORT__;
+  }, []);
+
+  // Expose a console toggle so you can A/B test without rebuilding:
   const touchStartYRef = useRef(0);
   const isGestureActiveRef = useRef(false);
   const [volumeGesture, setVolumeGesture] = useState({ deltaY: 0, showIndicator: false });
@@ -121,10 +263,9 @@ useEffect(() => {
   if (!parent) return;
 
   const computeSize = () => {
-    const titleH = titleRef.current ? titleRef.current.offsetHeight : 0;
     const controlsH = controlsRef.current ? controlsRef.current.offsetHeight : 0;
     const width = Math.max(0, parent.clientWidth - 48);
-    const height = Math.max(0, parent.clientHeight - titleH - controlsH - 220);
+    const height = Math.max(0, parent.clientHeight - controlsH - 220);
     setAvailSize({ width, height });
   };
 
@@ -132,7 +273,6 @@ useEffect(() => {
 
   const ro = new ResizeObserver(computeSize);
   ro.observe(parent);
-  if (titleRef.current) ro.observe(titleRef.current);
   if (controlsRef.current) ro.observe(controlsRef.current);
 
   return () => { ro.disconnect(); };
@@ -188,7 +328,13 @@ useEffect(() => {
   }, [playlistQueue]);
 
   const hasPlaylist = playlistFiles.length > 0;
-  const carouselFiles = hasPlaylist ? playlistFiles : folderFiles;
+  const carouselFiles = useMemo(() => {
+    const base = hasPlaylist ? playlistFiles : folderFiles;
+    if (!hasPlaylist && favoriteOnly) {
+      return base.filter(f => f.is_favorite === 1);
+    }
+    return base;
+  }, [hasPlaylist, playlistFiles, folderFiles, favoriteOnly]);
   const activeFile = hasPlaylist
     ? (playlistFiles[storeCurrentTrackIndex] || playlistFiles[0])
     : file;
@@ -315,13 +461,17 @@ useEffect(() => {
 
     if (isSameTrack) {
       setIsLoading(false);
-      // Sync store isPlaying → audio element (guard against redundant calls)
-      if (isPlaying && audio.paused) {
-        // Re-assert the chosen output device before play so a quick pause→play
-        // never emits to the default device first.
-        applySink(audio, getStoredDevice()).then(() => audio.play().catch(() => {}));
-      } else if (!isPlaying && !audio.paused) {
-        audio.pause();
+      const device = getStoredDevice();
+      const deviceId = device && device.deviceId ? device.deviceId : '';
+      if (deviceId !== lastAppliedSinkIdRef.current) {
+        lastAppliedSinkIdRef.current = deviceId;
+        applySink(audio, device).then(() => {
+          if (isPlaying && audio.paused) audio.play().catch(() => {});
+        }).catch(() => {
+          lastAppliedSinkIdRef.current = null;
+        });
+      } else if (isPlaying && audio.paused) {
+        audio.play().catch(() => {});
       }
       const onPlay = () => play();
       const onPause = () => pause();
@@ -435,26 +585,14 @@ useEffect(() => {
   // exists. A manual switch into video mode for the current track is NOT
   // overridden (prevYoutubeIdRef guard) — the user still sees the download
   // spinner rather than being bounced to cover.
-  const prevYoutubeIdRef = useRef(null);
   useEffect(() => {
-    const prev = prevYoutubeIdRef.current;
-    prevYoutubeIdRef.current = youtubeId;
-    if (prev === youtubeId) return;            // only act on TRACK change, not manual mode switch
     const videoMode =
       playerMode === 'video' || playerMode === 'video-split' || playerMode === 'video-cover';
-    if (!videoMode) return;
-    if (!youtubeId) { setPlayerMode('cover'); return; }   // no video at all
-    let cancelled = false;
-    fetch(`/api/video-cache/progress/${youtubeId}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (cancelled) return;
-        // 'cached' here means the file exists on disk (see backend note).
-        if (data?.status !== 'cached') setPlayerMode('cover');
-        // if cached -> leave in current video mode (MV follows the skip)
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
+    // Switch to cover only when the new track has no video at all.
+    // CachedVideoPlayer handles its own download/cache UI when a yt_id exists
+    // but the file is not yet cached (or is still downloading), so we no
+    // longer force-fallback to cover on cache miss.
+    if (!youtubeId && videoMode) { setPlayerMode('cover'); return; }
   }, [youtubeId, playerMode, setPlayerMode]);
 
   // Retry autoplay after user gesture
@@ -476,551 +614,904 @@ videoOffsetRef.current = videoOffset;
 
 // Tracks whether the <video> is currently stalled/buffering so we know a
 // resume must be re-anchored. Set by native <video> event callbacks below.
-const videoStalledRef = useRef(false);
-// Timestamp (ms) of when the current stall began; used as a safety net to clear
-// a stale stall flag if `playing` never fires (genuinely broken stream).
-const stalledSinceRef = useRef(0);
-// Tracks whether the AUDIO element itself is buffering (audio `waiting`). The
-// store's `isPlaying` stays true during audio buffering, so the watchdog must
-// use this flag to avoid replaying/seeking the video ahead while audio stalls.
 const audioStalledRef = useRef(false);
-// True while a video seek is in flight. Prevents the drift watchdog from
-// re-issuing forceSeek (or rate-fighting) on top of an unfinished seek, which
-// would make the <video> flash between the old and new frame (flicker).
-const videoSeekPendingRef = useRef(false);
-// The target of the in-flight seek (set by anchorVideoToAudio). Used to make
-// anchorVideoToAudio idempotent: a redundant re-anchor to the SAME target while
-// a seek is still landing must NOT re-issue playVideo() — that was the cause of
-// a single timeline jump replaying the same frame ~3x (handleSeekSync + audio
-// `seeked` + audio `timeupdate` jump-detector each re-anchored and played).
-const lastAnchorTargetRef = useRef(null);
-// Timestamp (ms) of the last issued re-anchor. Combined with lastAnchorTargetRef
-// this lets anchorVideoToAudio dedupe a burst of re-anchors to the SAME target
-// (e.g. handleSeekSync + audio `seeked` + audio `timeupdate` jump-detector all
-// firing for one timeline jump) even when the underlying seek completes so fast
-// that videoSeekPendingRef has already been cleared by the time the later events
-// arrive. That dedup is what stops the video replaying the same frame several
-// times on a single jump.
-const lastAnchorTimeRef = useRef(0);
-// While a seek has JUST settled, the video is normally a bit behind the still
-// advancing audio (seek latency). The rate-based watchdog absorbs this smoothly;
-// a hard re-seek on it replays the slice. rafGraceUntilRef marks a short window
-// after each settle during which the rAF sampler must NOT hard re-seek.
-const rafGraceUntilRef = useRef(0);
-// Armed when we issue an offset seek whose settle (`seeked`) should START video
-// playback. This is how "prepare-then-play" keeps frame 0 from ever painting:
-// we seek to the offset first, and only call playVideo() once it lands.
-const pendingPlayRef = useRef(false);
-// True while the user is dragging the progress bar. While scrubbing we pause the
-// video and soft-seek it frame-by-frame; the watchdog + jump-detector are gated
-// off so the audio (the only master clock) and the paused video never run as two
-// parallel timelines, and a stale watchdog re-anchor can't yank the video.
 const scrubbingRef = useRef(false);
+const userSeekPendingRef = useRef(false);
 
-// Single source of truth for where the video SHOULD be for the live audio clock.
-const getVideoTarget = () => {
-  const audioEl = audioRef?.current;
-  const base = audioEl ? audioEl.currentTime : storedPositionRef.current;
-  return base + (videoOffsetRef.current || 0);
-};
+// === GENERIC VIDEO SYNC ENGINE ===
+// Single-source-of-truth controller for any <video> that must track the audio
+// master clock. Works for both the main MV (non-looping, CachedVideoPlayer)
+// and the blurred background video (looping, native <video>).
+function createVideoSyncEngine({
+    getCurrentTime,
+    getDuration,
+    getPaused,
+    getSeeking = () => false,
+    getReadyState = () => 4,
+    seek,
+    play: playFn,
+    pause: pauseFn,
+    setRate,
+    getIsPlaying,
+    looping = false,
+    hardSeekThreshold = 0.3,
+    jumpSeekThreshold = 1.0,
+    seekCooldown = 500,
+    stallTimeout = 2000,
+    gracePeriod = 10,
+    pauseIfFarFromTarget = false,
+    farThreshold = 0.5,
+    rateMin = 0.003,
+    pauseOnStall = true,
+  }) {
+    function circularDiff(a, b, duration) {
+        if (!duration || !isFinite(duration) || duration <= 0) return a - b;
+        let diff = a - b;
+        diff = diff % duration;
+        if (diff > duration / 2) diff -= duration;
+        if (diff < -duration / 2) diff += duration;
+        return diff;
+    }
 
-// TEMP DIAGNOSTIC: unified audio+video timeline.
-const dbg = (tag) => {
-  try {
-    const a = audioRef?.current;
-    const v = videoRef.current;
-    const at = a ? a.currentTime.toFixed(2) : '-';
-    const vt = v?.getCurrentTime ? v.getCurrentTime().toFixed(2) : '-';
-    const pl = usePlaybackStore.getState().isPlaying;
-    console.log(`[OFS ${(performance.now()/1000).toFixed(2)}] ${tag} audio=${at} video=${vt} off=${videoOffsetRef.current||0} play=${pl} seekPend=${videoSeekPendingRef.current} pendPlay=${pendingPlayRef.current}`);
-  } catch {}
-};
+    const state = {
+        seekPending: false,
+        softSeekPendingSince: 0,
+        lastAnchorTarget: null,
+        lastAnchorTime: 0,
+        pendingAnchorTarget: null,
+        pendingPlay: false,
+        playRetryPending: false,
+        rate: 1,
+        lastSync: 0,
+        lastSeekTime: 0,
+        graceUntil: 0,
+        stalled: false,
+        stalledSince: 0,
+        stallPausedRef: null,
+        mode: 'IDLE',
+    };
 
-// SINGLE source of truth for re-anchoring the <video> to the live audio clock.
-// Every discontinuity (start, seek, scrub-end, loop, offset-change, tab-refocus,
-// video-ended wrap) routes through this so the video never runs as a second,
-// independent timeline. It snaps the video to `audio + offset` (or an explicit
-// `target`) and always defers playback to the seek settle (handleVideoResumed)
-// via `pendingPlayRef` — that guarantee is what keeps frame 0 from ever painting
-// on offset tracks. When the video is already at the target (no-op seek) it plays
-// immediately. Watchdog smoothing state is reset so the rate controller can't
-// fight the jump. `play = true` means "resume playback once it lands".
-const anchorVideoToAudio = useCallback(({ play = false, target } = {}) => {
-  const player = videoRef.current;
-  if (!player?.forceSeek) return;            // no video mounted
-  const { isPlaying: playing } = usePlaybackStore.getState();
-  const t = (target != null) ? target : getVideoTarget();
-  // Dedupe a burst of re-anchors to the SAME target within a short window. A
-  // single timeline jump fires anchorVideoToAudio from several places at once
-  // (handleSeekSync, audio `seeked`, audio `timeupdate` jump-detector, the rAF
-  // sampler). Each redundant re-anchor would clear videoSeekPendingRef and fire
-  // playVideo() early, replaying the same frame several times. We must NOT key
-  // this purely on videoSeekPendingRef — for a fast (cached) seek the `seeked`
-  // event can clear that flag before the later events arrive. So dedup on
-  // (target, recent-timestamp) instead and just preserve the play intent.
-  if (lastAnchorTargetRef.current != null &&
-      Math.abs(lastAnchorTargetRef.current - t) < 0.25 &&
-      Date.now() - lastAnchorTimeRef.current < 400) {
-    if (play) pendingPlayRef.current = true;
-    dbg(`anchor SKIP (dedup) t=${t.toFixed(2)} play=${play}`);
-    return;
-  }
-  player.setRate?.(1);
-  videoSeekPendingRef.current = true;
-  lastAnchorTargetRef.current = t;
-  lastAnchorTimeRef.current = Date.now();
-  const didSeek = player.forceSeek(t);
-  dbg(`anchor t=${t.toFixed(2)} didSeek=${didSeek} play=${play}`);
-  if (didSeek) {
-    // Play (if requested) is deferred to `seeked` so the first painted frame is
-    // the offset frame. handleVideoResumed only actually plays when audio is
-    // playing, so a paused anchor stays paused.
-    pendingPlayRef.current = true;
-  } else {
-    videoSeekPendingRef.current = false;
-    if (play && playing) player.playVideo?.();
-  }
-  // Reset watchdog smoothing so it doesn't rate-fight this jump.
-  rateRef.current = 1;
-  integralRef.current = 0;
-  lastVideoSyncRef.current = 0;
-  lastSeekTimeRef.current = Date.now();
-}, [audioRef]);
+    function resolveTarget(raw) {
+        const dur = getDuration();
+        if (looping && isFinite(dur) && dur > 0) {
+            return ((raw % dur) + dur) % dur;
+        }
+        return raw;
+    }
 
-// Native <video> events — these fire for VIDEO-side stalls that the audio
-// element never reports (the root cause of the intermittent desync).
-// CRITICAL: never seek/pause/play the video WHILE it is buffering — that is
-// what caused the patah-patah (stutter) regression. During waiting/stalled we
-// ONLY flag the stall; the single clean re-anchor happens once, when the stall
-// ends (handleVideoResumed on `playing`/`seeked`).
-const handleVideoWaiting = useCallback(() => {
-  videoStalledRef.current = true;
-  stalledSinceRef.current = Date.now();
-}, []);
+    function getDrift(current, target) {
+        const dur = getDuration();
+        return looping ? circularDiff(current, target, dur) : current - target;
+    }
 
-const handleVideoStalled = useCallback(() => {
-  videoStalledRef.current = true;
-  stalledSinceRef.current = Date.now();
-}, []);
+    function maybeSetRate(rate) {
+      if (Math.abs(rate - 1) < rateMin) rate = 1;
+      if (state.rate !== rate) {
+        const prevRate = state.rate;
+        state.rate = rate;
+        setRate(rate);
+        syncLog('rate_change', looping ? 'bg' : 'mv', { from: prevRate, to: rate });
+      }
+    }
 
-const handleVideoResumed = useCallback(() => {
-  // A video `seeked`/`playing` means any in-flight seek has settled — let the
-  // drift watchdog resume (and stop it from re-seeking on top of this one).
-  videoSeekPendingRef.current = false;
-  // Open a short grace window: the video is normally a bit behind the still
-  // advancing audio right after a seek lands. The rate watchdog absorbs that
-  // residual smoothly; tell the rAF sampler not to hard re-seek it (which would
-  // replay the slice — the leftover "frame repeats 1x" on a jump).
-  rafGraceUntilRef.current = Date.now() + 1500;
-  dbg('videoResumed(seeked/playing)');
-  // Prepare-then-play: the offset seek has landed → START playback now so the
-  // first painted frame is the offset frame, not frame 0.
-  if (pendingPlayRef.current) {
-    pendingPlayRef.current = false;
-    const player = videoRef.current;
-    player?.setRate?.(1);
-    if (usePlaybackStore.getState().isPlaying) player?.playVideo?.();
-  }
-  if (videoStalledRef.current) {
-    videoStalledRef.current = false;
-    stalledSinceRef.current = 0;
-    // Resume the video WITHOUT seeking. Seeking a video that just recovered from
-    // a stall makes it re-buffer, which fires `waiting` again → another `playing`
-    // → another seek: a death-spiral that looks like severe stutter. Drift after
-    // a stall is corrected smoothly by the rate-based watchdog instead.
-    const player = videoRef.current;
-    player?.setRate?.(1);
-    player?.playVideo?.();
-  }
-}, []);
+    return {
+        state,
+
+        reset() {
+            Object.assign(state, {
+                seekPending: false,
+                softSeekPendingSince: 0,
+                lastAnchorTarget: null,
+                lastAnchorTime: 0,
+                pendingAnchorTarget: null,
+                pendingPlay: false,
+                playRetryPending: false,
+                rate: 1,
+                lastSync: 0,
+                lastSeekTime: 0,
+                graceUntil: 0,
+                stalled: false,
+                stalledSince: 0,
+                stallPausedRef: null,
+                mode: 'IDLE',
+            });
+        },
+
+        anchor({ play = false, target: rawTarget } = {}) {
+            const current = getCurrentTime();
+            const dur = getDuration();
+            const playing = getIsPlaying();
+            const t = resolveTarget(rawTarget);
+            syncLog('anchor', looping ? 'bg' : 'mv', { play, target: t.toFixed(3), current: current.toFixed(3), duration: dur.toFixed(3), didSeek: Math.abs(current - t) >= 0.05 });
+
+            if (state.seekPending && state.lastAnchorTarget != null) {
+                const pending = state.lastAnchorTarget;
+                const delta = Math.abs(pending - t);
+                if (delta < 0.5) {
+                    // Small change: coalesce — just update target, keep current seek in flight.
+                    if (play) state.pendingPlay = true;
+                    state.lastAnchorTarget = t;
+                    state.lastAnchorTime = Date.now();
+                    return;
+                }
+                // Large change (e.g. rapid skip/seek): force new seek immediately
+                // instead of queuing. Abandon the in-flight seek and re-anchor.
+                syncLog('anchor_replace', looping ? 'bg' : 'mv', {
+                    oldTarget: pending.toFixed(3),
+                    newTarget: t.toFixed(3),
+                    delta: delta.toFixed(3),
+                });
+                state.seekPending = false;
+                state.softSeekPendingSince = 0;
+                state.pendingAnchorTarget = null;
+                // Fall through to seek below
+            }
+
+            const diff = getDrift(current, t);
+            const didSeek = Math.abs(diff) >= 0.05;
+
+            if (didSeek) {
+                if (!syncLogRef.current.seekStartTime) syncLogRef.current.seekStartTime = {};
+                syncLogRef.current.seekStartTime[looping ? 'bg' : 'mv'] = performance.now();
+                seek(t);
+                if (!getSeeking() && Math.abs(getCurrentTime() - current) < 0.05) {
+                    state.seekPending = false;
+                    state.softSeekPendingSince = 0;
+                    if (play) {
+                        state.pendingPlay = false;
+                        playFn().catch(() => {});
+                        syncLog('play', looping ? 'bg' : 'mv', { kind: 'noopSeek' });
+                    }
+                } else {
+                    state.seekPending = true;
+                    state.softSeekPendingSince = 0;
+                    state.lastAnchorTarget = t;
+                    state.lastAnchorTime = Date.now();
+                    state.pendingAnchorTarget = null;
+                    if (play) {
+                        state.pendingPlay = true;
+                        syncLog('play', looping ? 'bg' : 'mv', { kind: 'deferred' });
+                    }
+                }
+            } else {
+                state.seekPending = false;
+                state.softSeekPendingSince = 0;
+                if (play && playing) {
+                    playFn().catch(() => {});
+                    syncLog('play', looping ? 'bg' : 'mv', { kind: 'noseek' });
+                }
+            }
+
+            state.rate = 1;
+            state.lastSync = 0;
+            state.lastSeekTime = Date.now();
+            state.graceUntil = Date.now() + gracePeriod;
+            state.mode = 'RECOVERY';
+            try { setRate(1); } catch (_) {}
+        },
+
+        tick(audioTarget) {
+            const now = Date.now();
+            const playing = getIsPlaying();
+
+            if (!playing) {
+                pauseFn();
+                state.pendingPlay = false;
+                state.playRetryPending = false;
+                state.seekPending = false;
+                state.softSeekPendingSince = 0;
+                state.rate = 1;
+                state.lastSync = 0;
+                state.graceUntil = now + gracePeriod;
+                state.mode = 'IDLE';
+                return;
+            }
+            if (getPaused()) {
+                if (!state.seekPending) {
+                    playFn().catch(() => {});
+                }
+                // Mark as stalled so engine doesn't silently skip ticks
+                if (!state.stalled) {
+                    state.stalled = true;
+                    state.stalledSince = Date.now();
+                }
+                return;
+            }
+            if (getSeeking()) {
+                return;
+            }
+            if (getReadyState() < 3) {
+                // Video metadata not loaded yet — keep trying to play
+                if (!state.seekPending) {
+                    playFn().catch(() => {});
+                }
+                return;
+            }
+
+            // Watchdog: if a seek is stuck for >2 s (no seeked/onPlaying),
+            // clear it so the engine can resume normal sync instead of
+            // freezing the video mid-track.
+            if (state.seekPending && now - state.lastAnchorTime > 2000) {
+                state.seekPending = false;
+                state.softSeekPendingSince = 0;
+                state.pendingAnchorTarget = null;
+                state.pendingPlay = false;
+                playFn().catch(() => {});
+            }
+
+            // Soft-seek safety: if seekPending was set by a soft seek (not
+            // anchor) and seeked hasn't fired within 100 ms, clear it so
+            // the engine doesn't skip ticks indefinitely.
+            if (state.seekPending && state.softSeekPendingSince > 0 &&
+                now - state.softSeekPendingSince > 100) {
+                state.seekPending = false;
+                state.softSeekPendingSince = 0;
+                state.graceUntil = now + 60;
+            }
+
+            if (state.seekPending) {
+                return;
+            }
+            if (now < state.graceUntil && state.mode !== 'RECOVERY') {
+                return;
+            }
+
+            if (state.stalled && now - state.stalledSince > stallTimeout) {
+                state.stalled = false;
+                state.stalledSince = 0;
+            }
+            if (state.stalled) {
+                // When pauseOnStall is false (BG engine), don't skip ticks —
+                // the video is still playing so we must keep correcting drift
+                // even during a stall. Only skip ticks for engines that were
+                // actually paused on stall (MV).
+                if (pauseOnStall) return;
+            }
+
+            const target = resolveTarget(audioTarget);
+            const current = getCurrentTime();
+            const drift = getDrift(current, target);
+            const adrift = Math.abs(drift);
+            const dur = getDuration();
+
+            // === STATE MACHINE: soft-seek based ===
+            // Instead of PID (which depends on playbackRate — unreliable during
+            // buffering), directly set video.currentTime for small drifts.
+            // Soft seek = instant correction in 1 tick (30ms), no oscillation.
+            if (state.mode === 'IDLE' || state.mode === 'LOCKED' || state.mode === 'GRACE' || state.mode === 'RECOVERY') {
+                // Hard seek for large drift / track boundary jump (anchor = pause + seek + play).
+                if (adrift > hardSeekThreshold && now - state.lastSeekTime > seekCooldown) {
+                    syncLog('hard_seek', looping ? 'bg' : 'mv', {
+                      drift: Math.round(adrift * 1000),
+                      target: Math.round(target * 1000),
+                      current: Math.round(current * 1000),
+                    });
+                    this.anchor({ play: true, target: audioTarget });
+                    state.mode = 'RECOVERY';
+                    state.lastSync = now;
+                    return;
+                }
+                // Hard seek for massive drift regardless of cooldown.
+                if (adrift > jumpSeekThreshold) {
+                    syncLog('hard_seek', looping ? 'bg' : 'mv', {
+                      drift: Math.round(adrift * 1000),
+                      target: Math.round(target * 1000),
+                      current: Math.round(current * 1000),
+                    });
+                    this.anchor({ play: true, target: audioTarget });
+                    state.mode = 'RECOVERY';
+                    state.lastSync = now;
+                    return;
+                }
+                // Soft seek for drift 30ms–300ms: set currentTime directly.
+                // Drift < 30ms is imperceptible (≤1 frame @30fps) and cannot
+                // be corrected by soft-seek because browser seek latency
+                // (~20ms) means the video is always chasing a moving target.
+                // After setting currentTime, mark seekPending so subsequent
+                // ticks are skipped until the browser fires `seeked` (or a
+                // 100 ms safety timeout clears it). Grace period is set to
+                // 60 ms (2 ticks) to avoid re-firing during seek processing.
+                if (adrift > 0.030) {
+                    if (adrift > 0.050) {
+                      syncLog('soft_seek', looping ? 'bg' : 'mv', {
+                        drift: Math.round(drift * 1000),
+                        target: Math.round(target * 1000),
+                        current: Math.round(current * 1000),
+                      });
+                    }
+                    seek(target);
+                    state.mode = 'LOCKED';
+                    state.rate = 1;
+                    state.seekPending = true;
+                    state.softSeekPendingSince = now;
+                    state.lastAnchorTime = now;
+                    state.graceUntil = now + 60;
+                    state.lastSync = now;
+                    return;
+                }
+                // Drift < 3ms: locked, no correction needed.
+                state.mode = 'LOCKED';
+                state.rate = 1;
+            }
+        },
+
+        // Backward-compatible alias
+        syncTick(audioTarget) {
+            return this.tick(audioTarget);
+        },
+
+        onSeeked() {
+            // Guard: if the other video is still mid-seek, leave seekPending alone
+            // so we don't prematurely clear MV state while BG is wrapping.
+            if (state.seekPending && getSeeking()) {
+                syncLog('seeked', looping ? 'bg' : 'mv', { kind: 'skip', seeking: getSeeking() });
+                return;
+            }
+
+            state.seekPending = false;
+            state.softSeekPendingSince = 0;
+            state.graceUntil = Date.now() + gracePeriod;
+            state.playRetryPending = false;
+
+            if (state.pendingAnchorTarget != null) {
+                const t = state.pendingAnchorTarget;
+                state.pendingAnchorTarget = null;
+                const shouldPlay = state.pendingPlay;
+                state.pendingPlay = false;
+                syncLog('seeked', looping ? 'bg' : 'mv', { kind: 'reanchor', target: t.toFixed(3), shouldPlay });
+                this.anchor({ play: shouldPlay, target: t });
+                return;
+            }
+
+            if (state.pendingPlay) {
+                state.pendingPlay = false;
+                state.playRetryPending = true;
+                syncLog('seeked', looping ? 'bg' : 'mv', { kind: 'play' });
+                playFn().catch(() => {});
+            }
+
+            if (state.stalled) {
+                state.stalled = false;
+                state.stalledSince = 0;
+                playFn().catch(() => {});
+            }
+        },
+
+        onPlaying() {
+            const current = getCurrentTime();
+            const dur = getDuration();
+
+            // Guard: if the other video is still mid-seek, leave seekPending alone
+            // so we don't prematurely clear MV state while BG is wrapping.
+            if (state.seekPending && getSeeking()) {
+                syncLog('playing', looping ? 'bg' : 'mv', { kind: 'skip', seeking: getSeeking() });
+                return;
+            }
+
+            // MV recovered from a stall — resume BG if it was paused alongside MV.
+            if (state.stallPausedRef && !state.seekPending) {
+                state.stallPausedRef = null;
+                playFn().catch(() => {});
+            }
+
+            if (state.seekPending && state.lastAnchorTarget != null && pauseIfFarFromTarget) {
+                const diff = looping ? Math.abs(circularDiff(current, state.lastAnchorTarget, dur)) : Math.abs(current - state.lastAnchorTarget);
+                if (diff > farThreshold) {
+                    pauseFn();
+                    return;
+                }
+            }
+
+            state.seekPending = false;
+            state.softSeekPendingSince = 0;
+            state.stalledSince = 0;
+            state.stalled = false;
+            state.playRetryPending = false;
+
+            if (state.pendingAnchorTarget != null) {
+                const t = state.pendingAnchorTarget;
+                state.pendingAnchorTarget = null;
+                const shouldPlay = state.pendingPlay;
+                state.pendingPlay = false;
+                this.anchor({ play: shouldPlay, target: t });
+                return;
+            }
+
+            if (state.pendingPlay) {
+                state.pendingPlay = false;
+                state.playRetryPending = true;
+                syncLog('playing', looping ? 'bg' : 'mv', { kind: 'play' });
+                playFn().catch(() => {});
+            }
+        },
+
+        onCanPlay() {
+            if (state.playRetryPending || state.pendingPlay) {
+                state.playRetryPending = false;
+                state.pendingPlay = false;
+                playFn().catch(() => {});
+            }
+        },
+
+        onWaiting() {
+            state.stalled = true;
+            state.stalledSince = Date.now();
+            if (pauseOnStall) {
+                state.stallPausedRef = true;
+                pauseFn();
+            }
+            maybeSetRate(1);
+        },
+
+        onStalled() {
+            state.stalled = true;
+            state.stalledSince = Date.now();
+            if (pauseOnStall) {
+                state.stallPausedRef = true;
+                pauseFn();
+            }
+        },
+
+        pause() {
+            pauseFn();
+            state.stallPausedRef = null;
+            state.pendingPlay = false;
+            state.seekPending = false;
+            state.softSeekPendingSince = 0;
+            state.playRetryPending = false;
+            state.mode = 'IDLE';
+        },
+
+        resume(target) {
+            const playing = getIsPlaying();
+            if (playing) {
+                maybeSetRate(1);
+                if (target != null) {
+                    this.anchor({ play: true, target });
+                } else {
+                    this.anchor({ play: true });
+                }
+            }
+        },
+
+        getPaused() {
+            return getPaused();
+        },
+    };
+}
+
+// === ENGINE INSTANCES ===
+// MV master PID sync engine (non-looping). Controls only the main MV.
+const mvEngine = useMemo(() => createVideoSyncEngine({
+    getCurrentTime: () => videoRef.current?.getCurrentTime?.() ?? 0,
+    getDuration: () => videoRef.current?.getDuration?.() ?? Infinity,
+    getPaused: () => videoRef.current?.getPaused?.() ?? false,
+    getSeeking: () => videoRef.current?.getSeeking?.() ?? false,
+    getReadyState: () => videoRef.current?.getReadyState?.() ?? 4,
+    seek: (t) => { videoRef.current?.forceSeek?.(t); },
+    play: () => Promise.resolve(videoRef.current?.playVideo?.()),
+    pause: () => { videoRef.current?.pauseVideo?.(); return Promise.resolve(); },
+    setRate: (r) => { videoRef.current?.setRate?.(r); },
+    getIsPlaying: () => usePlaybackStore.getState().isPlaying,
+    looping: false,
+    hardSeekThreshold: 0.3,
+    jumpSeekThreshold: 1.0,
+    rateMin: 0.003,
+    seekCooldown: 500,
+    stallTimeout: 2000,
+    gracePeriod: 10,
+    pauseIfFarFromTarget: false,
+    farThreshold: 0.5,
+}), []);
+
+// Independent BG PID sync engine (looping). Controls only the blurred BG,
+// target = live audio time wrapped to BG duration. Decoupled from MV so BG
+// buffering/stalls never fight MV corrections.
+const bgEngine = useMemo(() => createVideoSyncEngine({
+    getCurrentTime: () => bgVideoRef.current?.currentTime ?? 0,
+    getDuration: () => bgVideoRef.current?.duration ?? Infinity,
+    getPaused: () => bgVideoRef.current?.paused ?? false,
+    getSeeking: () => bgVideoRef.current?.seeking ?? false,
+    getReadyState: () => bgVideoRef.current?.readyState ?? 0,
+    seek: (t) => {
+        const bg = bgVideoRef.current;
+        if (!bg) return;
+        const dur = bg.duration;
+        if (!isFinite(dur) || dur <= 0) return;
+        const target = ((t % dur) + dur) % dur;
+        const cur = bg.currentTime || 0;
+        const gap = Math.abs(cur - target);
+        // No-op if already at target (avoid flash from redundant seek).
+        // Threshold lowered from 50ms to 1ms so soft-seek corrections
+        // (drift 3–50ms) are not silently dropped.
+        if (gap < 0.001) {
+            bgSeekInProgressRef.current = false;
+            return;
+        }
+        // Coalesce rapid seeks: if a seek is already in flight, just
+        // update the pending target so the latest target wins.
+        if (bgSeekInProgressRef.current) {
+            bgPendingForceSeekRef.current = target;
+            return;
+        }
+        // Small seek (<300ms): set currentTime directly, no pause.
+        // The frame jump is ≤300ms (≤9 frames @30fps) — imperceptible.
+        // Skipping pause eliminates the ~200ms pause→play cycle delay.
+        if (gap < 0.3) {
+            bg.currentTime = target;
+            bgSeekInProgressRef.current = true;
+            return;
+        }
+        // Large seek (≥300ms): pause first to prevent browser from
+        // stacking or cancelling seek operations mid-flight.
+        if (!bg.paused) bg.pause();
+        bg.currentTime = target;
+        bgSeekInProgressRef.current = true;
+    },
+    play: () => Promise.resolve(bgVideoRef.current?.play?.()),
+    pause: () => { bgVideoRef.current?.pause?.(); return Promise.resolve(); },
+    setRate: (r) => {
+        if (bgVideoRef.current) bgVideoRef.current.playbackRate = r;
+    },
+    getIsPlaying: () => usePlaybackStore.getState().isPlaying,
+    looping: true,
+    hardSeekThreshold: 0.3,
+    jumpSeekThreshold: 1.0,
+    rateMin: 0.003,
+    seekCooldown: 500,
+    stallTimeout: 1000,
+    gracePeriod: 10,
+    pauseIfFarFromTarget: false,
+    farThreshold: 0.5,
+    pauseOnStall: false,
+}), []);
+
+// === SYNC EFFECTS ===
+// Audio lifecycle → MV and BG engine state machine
+useEffect(() => {
+    if (!audioReady) return;
+
+    const onWaiting = () => {
+        audioStalledRef.current = true;
+        syncLog('waiting', 'audio', { currentTime: Math.round(audioRef.current?.currentTime * 1000) });
+    };
+    const onResume = () => {
+        const wasStalled = audioStalledRef.current;
+        audioStalledRef.current = false;
+        const target = audioRef.current?.currentTime + (videoOffsetRef.current || 0);
+        syncLog('playing', 'audio', { currentTime: Math.round(audioRef.current?.currentTime * 1000) });
+        
+        // Always anchor both engines on resume — eliminates startup delay.
+        // Previous de-duplication logic could skip the anchor if the target
+        // was "close enough" to the last resume, but this causes MV/BG to
+        // remain frozen at their old position while audio advances.
+        mvEngine.anchor({ play: true, target });
+        if (youtubeId) {
+            try { bgEngine.anchor({ play: true, target }); } catch (_) {}
+        }
+    };
+    const onPause = () => {
+        audioStalledRef.current = false;
+        const target = audioRef.current?.currentTime + (videoOffsetRef.current || 0);
+        syncLog('pause', 'audio', { currentTime: Math.round(audioRef.current?.currentTime * 1000) });
+        mvEngine.pause();
+        bgEngine.pause();
+        bgSeekInProgressRef.current = false;
+        bgPendingForceSeekRef.current = null;
+    };
+
+    const audio = audioRef?.current;
+    if (!audio) return;
+
+    audio.addEventListener('waiting', onWaiting);
+    audio.addEventListener('playing', onResume);
+    audio.addEventListener('pause', onPause);
+
+    return () => {
+        audio.removeEventListener('waiting', onWaiting);
+        audio.removeEventListener('playing', onResume);
+        audio.removeEventListener('pause', onPause);
+    };
+}, [audioReady, audioRef, mvEngine, bgEngine, youtubeId]);
+
+// Tab refocus → re-anchor MV and mirror BG
+useEffect(() => {
+    const onVisibility = () => {
+        if (!document.hidden && usePlaybackStore.getState().isPlaying) {
+            const target = audioRef.current?.currentTime + (videoOffsetRef.current || 0);
+            mvEngine.anchor({ play: true, target });
+            try { bgEngine.anchor({ play: true, target }); } catch (_) {}
+        }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+}, [mvEngine, bgEngine]);
+
+// Periodic drift correction for MV and BG (30 ms)
+useEffect(() => {
+    if (!audioReady) return;
+    const audio = audioRef.current;
+    if (!audio) return;
+    const lastAudioPosRef = { current: audio.currentTime };
+    const lastTickLogRef = { current: 0 };
+    const id = setInterval(() => {
+        const prevPos = lastAudioPosRef.current;
+        const audioTarget = audio.currentTime + (videoOffsetRef.current || 0);
+
+         mvEngine.tick(audioTarget);
+         try { bgEngine.tick(audioTarget); } catch (_) {}
+
+        // Loop boundary jump: audio wrapped from near-duration → near-0 (track repeat).
+        // Without this, PID slowly chases the 0-target and the gap can spike to ~100 ms.
+        // Detect only large backward jumps that exceed half of any known video duration.
+        try {
+            const bgDur = bgVideoRef.current?.duration;
+            const mvDur = videoRef.current?.getDuration?.();
+            const knownDur = (isFinite(mvDur) && mvDur > 0 ? mvDur : (isFinite(bgDur) && bgDur > 0 ? bgDur : Infinity));
+            const backwardJump = prevPos - audio.currentTime;
+            if (usePlaybackStore.getState().isPlaying &&
+                backwardJump > knownDur * 0.4 &&
+                !mvEngine.state.seekPending) {
+                mvEngine.anchor({ play: true, target: videoOffsetRef.current || 0 });
+                if (youtubeId) {
+                    try { bgEngine.anchor({ play: true, target: videoOffsetRef.current || 0 }); } catch (_) {}
+                }
+            }
+        } catch (_) { /* ignore diag errors */ }
+        lastAudioPosRef.current = audio.currentTime;
+
+        if (syncLogRef.current.enabled) {
+          const aCurrent = audio.currentTime;
+          const vOff = videoOffsetRef.current || 0;
+
+          // Throttle tick logs to every 500ms to reduce buffer/console spam
+          const now = performance.now();
+          if (now - lastTickLogRef.current < 500) { /* skip */ } else {
+          lastTickLogRef.current = now;
+          const mvCurrent = videoRef.current?.getCurrentTime?.();
+          const bgCurrent = bgVideoRef.current?.currentTime;
+
+          syncLog('tick', 'mv', {
+            drift: Math.round(((mvCurrent || 0) - (aCurrent + vOff)) * 1000),
+            current: Math.round((mvCurrent || 0) * 1000),
+            target: Math.round((aCurrent + vOff) * 1000),
+            mode: mvEngine.state.mode,
+            seekPending: mvEngine.state.seekPending,
+            stalled: mvEngine.state.stalled,
+          });
+
+          if (bgCurrent != null) {
+            const bgDur = bgVideoRef.current?.duration;
+            const bgDriftRaw = bgCurrent - (aCurrent + vOff);
+            const bgDrift = (bgEngine.state.looping && isFinite(bgDur) && bgDur > 0)
+              ? circularDiff(bgCurrent, aCurrent + vOff, bgDur)
+              : bgDriftRaw;
+            syncLog('tick', 'bg', {
+              drift: Math.round(bgDrift * 1000),
+              current: Math.round(bgCurrent * 1000),
+              target: Math.round((aCurrent + vOff) * 1000),
+              mode: bgEngine.state.mode,
+              seekPending: bgEngine.state.seekPending,
+              stalled: bgEngine.state.stalled,
+            });
+          }
+          } // end throttle
+
+          const newMvDrift = Math.abs(((videoRef.current?.getCurrentTime?.() || 0) - (aCurrent + vOff)));
+          if (newMvDrift > 0.2) {
+            syncLog('large_drift', 'mv', { driftMs: Math.round(newMvDrift * 1000) });
+          }
+
+          if (bgVideoRef.current?.currentTime != null) {
+            const bgDur2 = bgVideoRef.current?.duration;
+            const bgCur = bgVideoRef.current.currentTime;
+            const newBgDrift = Math.abs(
+              (bgEngine.state.looping && isFinite(bgDur2) && bgDur2 > 0)
+                ? circularDiff(bgCur, aCurrent + vOff, bgDur2)
+                : bgCur - (aCurrent + vOff)
+            );
+            if (newBgDrift > 0.2) {
+              syncLog('large_drift', 'bg', { driftMs: Math.round(newBgDrift * 1000) });
+            }
+          }
+        }
+    }, 30);
+    return () => clearInterval(id);
+}, [audioReady, audioRef, mvEngine, bgEngine]);
+
+
+// Audio seeked event — single source of truth for seek-driven re-anchor.
+// `audio.timeupdate` no longer drives anchor here to avoid double-anchor;
+// the 30 ms PID tick handles small post-seek drift.
+useEffect(() => {
+    const audio = audioRef?.current;
+    if (!audio) return;
+
+    const onSeeked = () => {
+        const now = audio.currentTime;
+        syncLog('seeked', 'audio', { currentTime: Math.round(now * 1000) });
+
+        // If this seek was triggered by user interaction (progress bar / skip),
+        // handleSeekSync already anchored both engines. But always ensure BG
+        // is at the correct position — BG seek can silently fail if
+        // bgSeekInProgressRef is stale or bg duration isn't loaded.
+        if (userSeekPendingRef.current) {
+            userSeekPendingRef.current = false;
+            if (youtubeId) {
+                try { bgEngine.anchor({ play: true, target: now + (videoOffsetRef.current || 0) }); } catch (_) {}
+            }
+            return;
+        }
+
+        const target = now + (videoOffsetRef.current || 0);
+        mvEngine.anchor({ play: true, target });
+        if (youtubeId) {
+            try { bgEngine.anchor({ play: true, target }); } catch (_) {}
+        }
+        syncedRef.current = false;
+    };
+
+    audio.addEventListener('seeked', onSeeked);
+    return () => {
+        audio.removeEventListener('seeked', onSeeked);
+    };
+}, [audioRef, mvEngine, bgEngine, youtubeId]);
+
+// On mode switch TO video mode, force a fresh anchor from the live audio position
+// so BG follows the current offset and MV does not stay stuck on its old/anchorless position / poster.
+useEffect(() => {
+    const justEnteredVideo = isVideoMode && !prevModeRef.current;
+    prevModeRef.current = isVideoMode;
+
+    if (justEnteredVideo) {
+        const target = audioRef.current?.currentTime + (videoOffsetRef.current || 0);
+        const playing = usePlaybackStore.getState().isPlaying;
+        mvEngine.anchor({ play: playing, target });
+
+        // Ensure BG is also positioned and playing when entering video mode.
+        // The BG <video> is rendered as long as youtubeId exists, but it can be
+        // left paused/stale from cover mode; explicitly seek+play it here.
+        const bg = bgVideoRef.current;
+        if (bg && youtubeId) {
+            const dur = bg.duration;
+            const bgTarget = (isFinite(dur) && dur > 0)
+                ? ((target % dur) + dur) % dur
+                : target;
+            bg.currentTime = bgTarget;
+            if (playing) {
+                bg.play().catch(() => {});
+            }
+            bgEngine.reset();
+        }
+    }
+}, [isVideoMode, mvEngine, bgEngine, youtubeId]);
+
+// One-time sync: position the video at the offset target as soon as it becomes
+// ready. This runs again if videoOffset arrives/changes AFTER the first pass.
+useEffect(() => {
+    if (!(videoReady || metadataReady)) return;
+    if (syncedRef.current && syncedOffsetRef.current === videoOffset) return;
+    const seekTarget = audioRef.current?.currentTime + (videoOffsetRef.current || 0);
+    if (usePlaybackStore.getState().isPlaying) {
+        syncLog('anchor', 'mv', { target: seekTarget });
+        mvEngine.anchor({ play: true, target: seekTarget });
+        if (youtubeId) {
+            try { bgEngine.anchor({ play: true, target: seekTarget }); } catch (_) {}
+        }
+    } else {
+        const videoTime = videoRef.current?.getCurrentTime?.() ?? 0;
+        if (Math.abs(seekTarget - videoTime) >= 0.1) mvEngine.anchor({ play: false, target: seekTarget });
+        if (youtubeId) {
+            try { bgEngine.anchor({ play: false, target: seekTarget }); } catch (_) {}
+        }
+    }
+    syncedRef.current = true;
+    syncedOffsetRef.current = videoOffset;
+}, [videoReady, metadataReady, videoOffset, mvEngine, bgEngine, youtubeId]);
+
+// Reset all sync state when track/video changes
+useEffect(() => {
+    mvEngine.reset();
+    bgEngine.reset();
+    syncedRef.current = false;
+    syncedOffsetRef.current = null;
+    readyFiredRef.current = false;
+    lastResumeTargetRef.current = null;
+    lastResumeTimeRef.current = 0;
+    setVideoReady(false);
+    setMetadataReady(false);
+    bgPendingTargetRef.current = null;
+    bgSeekInProgressRef.current = false;
+    bgPendingForceSeekRef.current = null;
+}, [youtubeId, videoRemountKey, mvEngine, bgEngine]);
 
 // The MV ended (shorter than the song, or reached its own end). Wrap it
 // seamlessly to the live audio position (mod MV duration) and keep playing —
 // never show a black frame at the end of the clip.
 const handleVideoEnded = useCallback(() => {
-  const player = videoRef.current;
-  if (!player?.forceSeek) return;
-  const { isPlaying: playing } = usePlaybackStore.getState();
-  if (!playing) return;
-  const audioEl = audioRef?.current;
-  if (!audioEl) return;
-  const mvDur = player.getDuration?.() || 0;
-  const target = mvDur > 0
-    ? ((audioEl.currentTime + (videoOffsetRef.current || 0)) % mvDur)
-    : (videoOffsetRef.current || 0);
-  // Wrap seamlessly to the live audio position (mod MV duration) and keep
-  // playing — never show a black frame at the end of the clip.
-  anchorVideoToAudio({ play: true, target });
-}, [audioRef, anchorVideoToAudio]);
+    if (!usePlaybackStore.getState().isPlaying) return;
+    const audioEl = audioRef?.current;
+    if (!audioEl) return;
+    const player = videoRef.current;
+    if (!player?.forceSeek) return;
+    const mvDur = player.getDuration?.() || 0;
+    const target = mvDur > 0
+        ? ((audioEl.currentTime + (videoOffsetRef.current || 0)) % mvDur)
+        : (videoOffsetRef.current || 0);
+    mvEngine.anchor({ play: true, target });
+}, [audioRef, mvEngine]);
 
-  // Recover the MV after a source outage (server restart / network loss). Resets
-  // the one-time sync state and remounts the <video> so the freshly-loaded clip
-  // re-anchors to the CURRENT audio position (via anchorVideoToAudio on ready)
-  // instead of restarting from frame 0. Cooldown-guarded so a long outage can't
-  // thrash the backend with remount attempts.
-  const lastRecoveryRef = useRef(0);
-  const recoverVideo = useCallback(() => {
+// Recover the MV after a source outage (server restart / network loss).
+const lastRecoveryRef = useRef(0);
+const recoverVideo = useCallback(() => {
     const now = Date.now();
     if (now - lastRecoveryRef.current < 10000) return;
     lastRecoveryRef.current = now;
+    mvEngine.reset();
     syncedRef.current = false;
     syncedOffsetRef.current = null;
-    pendingPlayRef.current = false;
     readyFiredRef.current = false;
-    lastAnchorTargetRef.current = null;
-    lastAnchorTimeRef.current = 0;
     setVideoReady(false);
     setMetadataReady(false);
     setVideoRemountKey((k) => k + 1);
-  }, []);
+}, [mvEngine]);
 
-  // Genuine <video> error (e.g. stream hiccup / source down). Fall back to the
-  // cover (handled in CachedVideoPlayer) and recover once the source returns,
-  // re-anchoring to the live audio position.
-  const handleVideoError = useCallback(() => {
+// Genuine <video> error (e.g. stream hiccup / source down).
+const handleVideoError = useCallback(() => {
     recoverVideo();
-  }, [recoverVideo]);
+}, [recoverVideo]);
 
-  // If the network drops (wifi off) the YouTube MV frame goes blank and won't
-  // recover on its own. Remount the player when the connection returns so it
-  // re-fetches the iframe.
-  useEffect(() => {
+// If the network drops (wifi off) the YouTube MV frame goes blank and won't
+// recover on its own. Remount the player when the connection returns so it
+// re-fetches the iframe.
+useEffect(() => {
     const onOnline = () => setVideoRemountKey((k) => k + 1);
     window.addEventListener('online', onOnline);
     return () => window.removeEventListener('online', onOnline);
-  }, []);
+}, []);
 
-  // Recovery watchdog: if the <video> stays stalled (server restart / network
-  // loss) past a grace window, remount + re-anchor to the current audio position.
-  // This also catches a plain server restart, where the LAN 'online' event never
-  // fires, so the remount above would never trigger.
-  useEffect(() => {
+// Recovery watchdog: if the <video> stays stalled (server restart / network
+// loss) past a grace window, remount + re-anchor to the current audio position.
+useEffect(() => {
     if (!isVideoMode) return undefined;
     const id = setInterval(() => {
-      if (videoStalledRef.current && stalledSinceRef.current &&
-          Date.now() - stalledSinceRef.current > 8000) {
-        videoStalledRef.current = false;
-        stalledSinceRef.current = 0;
-        recoverVideo();
-      }
+        if (mvEngine.state.stalled && Date.now() - mvEngine.state.stalledSince > 8000) {
+            recoverVideo();
+        }
     }, 2000);
     return () => clearInterval(id);
-  }, [isVideoMode, recoverVideo]);
+}, [isVideoMode, recoverVideo, mvEngine]);
 
+// Scrub start: pause the video so it can't run as a second, parallel timeline
+// while the audio clock jumps around. The video is re-anchored on scrub-end.
+const handleScrubStart = useCallback(() => {
+    scrubbingRef.current = true;
+    mvEngine.pause();
+}, [mvEngine]);
 
-useEffect(() => {
-    const onWaiting = () => {
-    // The SONG audio is buffering (or seeking at a loop). Do NOT pause the MV
-    // here — pausing the <video> paints a black frame. Keep the video playing
-    // its own buffer; the rate-based watchdog re-aligns it when audio resumes.
-    audioStalledRef.current = true;
-    dbg('AUDIO waiting');
-    // Reset rate so resume starts clean (no leftover speed nudge).
-    videoRef.current?.setRate?.(1);
-  };
-  const onResume = () => {
-    audioStalledRef.current = false;
-    dbg('AUDIO playing(resume)');
-    // Resume the video alongside the audio. Do NOT forceSeek here — seeking on
-    // resume can re-buffer the video and stutter. The rate-based watchdog keeps
-    // drift in check smoothly.
-    const player = videoRef.current;
-    if (!player?.forceSeek) return;            // no video mounted
-    if (usePlaybackStore.getState().isPlaying) {
-      player.setRate?.(1);   // back to normal speed after any pause/seek
-      // CRITICAL: never start playback from frame 0 at a fresh start. The
-      // one-time sync (anchorVideoToAudio) seeks to the offset FIRST and defers
-      // play to `seeked` via pendingPlayRef. If the video is still at ~0 (not
-      // yet anchored) we must NOT playVideo here — that would run the MV from
-      // the beginning for the first seconds before the anchor yanks it to the
-      // offset. Only resume an ALREADY-anchored video (positioned past 0.05).
-      if ((player.getCurrentTime?.() ?? 0) > 0.05) player.playVideo?.();
+// Scrub move: soft/coalesced seek so the paused video frame tracks the drag
+// in real time (preview), without jank or a parallel playback clock.
+// Routed through mvEngine so seekPending/lastAnchorTarget stay accurate.
+const handleScrubChange = useCallback((val) => {
+    const rawTarget = val + (videoOffsetRef.current || 0);
+    mvEngine.anchor({ play: false, target: rawTarget });
+}, [mvEngine]);
+
+// Seek synchronization from progress bar – fires for ALL video modes. On
+// release we clear the scrub flag and re-anchor the video to the live audio
+// position through the single consolidated path (resuming clean sync).
+const handleSeekSync = useCallback((seconds) => {
+    userSeekPendingRef.current = true;
+    scrubbingRef.current = false;
+    setStorePosition(seconds);
+    const target = seconds + (videoOffsetRef.current || 0);
+    syncLog('seek', 'mv', { target });
+    mvEngine.anchor({ play: true, target });
+    if (youtubeId) {
+        try { bgEngine.anchor({ play: true, target }); } catch (_) {}
     }
-  };
+}, [mvEngine, bgEngine, setStorePosition]);
 
-  const onPause = () => {
-    // Keep the video locked to the audio: pausing the song must also pause
-    // the video. Otherwise it keeps playing and drifts; on resume `onResume`
-    // would then hard-forceSeek (a visible hitch) — that is what made play/pause
-    // feel delayed / not instant.
-    videoRef.current?.pauseVideo?.();
-  };
-
-  const audio = audioRef?.current;
-  if (audio) {
-    audio.addEventListener('waiting', onWaiting);
-    audio.addEventListener('playing', onResume);
-    audio.addEventListener('pause', onPause);
-  }
-
-  // Background-tab throttling can let the video drift far from audio; re-anchor
-  // the instant the tab becomes visible again.
-  const onVisibility = () => {
-    if (!document.hidden && usePlaybackStore.getState().isPlaying) {
-      anchorVideoToAudio({ play: true });
-    }
-  };
-  document.addEventListener('visibilitychange', onVisibility);
-
-  // Continuous, HITCH-FREE sync: keep the video locked to the audio clock using
-  // ONLY playbackRate (no seeking during playback — seeks on a streaming video
-  // cause re-buffering and stutter). Speed-up is fps-safe & inaudible (muted);
-  // slowdown is tightly capped so 24/30fps sources never look laggy.
-  const KP = 0.35;             // proportional gain
-  const KI = 0.05;             // integral gain (steady offset)
-  const RATE_BEHIND_MAX = 0.30;// up to +30% to catch up after a stall (muted)
-  const RATE_AHEAD_MAX = 0.03; // cap slowdown at -3% (fps-safe on 24/30fps)
-  const TOL = 0.02;            // within this, lock rate to exactly 1
-  const STALL_TIMEOUT = 3000;  // ms a stall may persist before we clear the flag
-  const HARD_SEEK = 3.0;       // drift (s) above which we snap the video
-  const SEEK_COOLDOWN = 1500;  // ms to settle after a hard seek (no rate fight)
-  const JUMP_SEEK = 5.0;       // drift (s) treated as a position JUMP → re-anchor now (ignore cooldown)
-
-  const sync = () => {
-    // While the user is scrubbing we pause the video and soft-seek it; the audio
-    // is the only clock in motion. Don't let the watchdog re-anchor/yank it.
-    if (scrubbingRef.current) return;
-    const player = videoRef.current;
-    if (!player?.forceSeek) return;            // no video mounted
-    const { isPlaying: playing } = usePlaybackStore.getState();
-    if (!playing) return;
-    const audioEl = audioRef?.current;
-    if (!audioEl) return;
-
-    // While the AUDIO is buffering, `isPlaying` stays true but the audio clock
-    // is frozen — don't touch the video (it would drift / get yanked later).
-    if (audioStalledRef.current) return;
-
-    // While the VIDEO is buffering, NEVER seek/adjust it (that caused stutter).
-    // Safety net: if a stall lasts too long (stream broken), clear the flag.
-    if (videoStalledRef.current) {
-      if (stalledSinceRef.current && Date.now() - stalledSinceRef.current > STALL_TIMEOUT) {
-        videoStalledRef.current = false;
-        stalledSinceRef.current = 0;
-      } else {
-        return;
-      }
-    }
-
-    // While a video seek is in flight, don't re-anchor or fight the rate — that
-    // would pile a new seek on top of the unfinished one and make the <video>
-    // flash between the old and new frame (flicker). Resume once it settles.
-    if (videoSeekPendingRef.current) return;
-
-    const now = Date.now();
-
-    // Hard re-anchor on LARGE drift (after a user seek / big desync). Driven by
-    // the audio clock + cooldown, so it can't spiral. Resets smoothing state.
-    const audioPos = audioEl.currentTime + (videoOffsetRef.current || 0);
-    const videoTime = player.getCurrentTime?.() ?? 0;
-    const drift = audioPos - videoTime;        // + => video behind audio
-    const adrift = Math.abs(drift);
-
-    if (adrift > HARD_SEEK && now - lastSeekTimeRef.current > SEEK_COOLDOWN) {
-      dbg(`watchdog HARD-SEEK drift=${drift.toFixed(2)}`);
-      anchorVideoToAudio({ play: true });
-      return;
-    }
-    // JUMP re-anchor: a very large drift means the audio POSITION jumped (user
-    // seek / loop / replay), not gradual drift. Re-anchor immediately, IGNORING
-    // SEEK_COOLDOWN — the cooldown only exists to stop rate-fighting on small
-    // drift, and honoring it here left the video on the OLD position for up to
-    // ~1.5s after a scrub. Backstop for the timeupdate jump detector above.
-    if (adrift > JUMP_SEEK) {
-      dbg(`watchdog JUMP-SEEK drift=${drift.toFixed(2)}`);
-      anchorVideoToAudio({ play: true });
-      return;
-    }
-    // Settle after a hard seek: hold rate at 1, don't fight the jump.
-    if (now - lastSeekTimeRef.current < SEEK_COOLDOWN) {
-      player.setRate?.(1);
-      return;
-    }
-
-    const elapsed = now - lastVideoSyncRef.current;
-    if (elapsed < 250) return;                 // measure ~4x/sec
-    const dt = lastVideoSyncRef.current === 0 ? 0.25 : elapsed / 1000;
-    lastVideoSyncRef.current = now;
-
-    integralRef.current += drift * dt;
-    integralRef.current = Math.max(-2, Math.min(2, integralRef.current));   // anti-windup
-
-    // Within tolerance: lock rate to exactly 1 (no leftover speed bias).
-    if (adrift < TOL) {
-      rateRef.current += (1 - rateRef.current) * 0.3;
-      if (Math.abs(rateRef.current - 1) < 0.004) rateRef.current = 1;
-      player.setRate?.(rateRef.current);
-      return;
-    }
-
-    // Target rate: speed up to catch (fps-safe), slow down capped so low-fps
-    // sources never look laggy. Asymmetric & fps-safe.
-    const raw = KP * drift + KI * integralRef.current;
-    const target = drift >= 0
-      ? 1 + Math.max(0, Math.min(RATE_BEHIND_MAX, raw))
-      : 1 + Math.max(-RATE_AHEAD_MAX, Math.min(0, raw));
-
-    // Low-pass the rate so it never jitters frame-to-frame (smooth, no stutter).
-    rateRef.current += (target - rateRef.current) * 0.3;
-    if (Math.abs(rateRef.current - 1) < 0.004) rateRef.current = 1;
-    player.setRate?.(rateRef.current);
-  };
-
-  const id = setInterval(sync, 250);
-
-  return () => {
-    clearInterval(id);
-    document.removeEventListener('visibilitychange', onVisibility);
-    if (audio) {
-      audio.removeEventListener('waiting', onWaiting);
-      audio.removeEventListener('playing', onResume);
-      audio.removeEventListener('pause', onPause);
-    }
-  };
-  }, [audioRef]);
-
-// Fix E: per-frame drift sampler. The 250ms watchdog above keeps small drift in
-// check via playbackRate (smooth, no replay). This rAF loop samples EVERY frame
-// and re-anchors (hard seek) ONLY when drift exceeds a LARGE threshold (~1s),
-// i.e. genuine desync such as after a stall/refocus. It must NOT hard-seek on
-// small drift: right after a jump-seek the video settles ~seekDuration behind the
-// still-advancing audio, and a hard re-seek on that small gap REPLAYS the slice
-// (the "frame plays Nx on a jump" bug). Small drift is left to the rate watchdog.
-// It never fights an in-flight seek, a scrub, or a stalled audio/video, and a
-// ~200ms minimum interval cap prevents thrash on a weak GPU. Mounted on video mode.
-useEffect(() => {
-   if (!isVideoMode) return;
-  let raf = 0;
-  let lastSeek = 0;
-  const tick = () => {
-    raf = requestAnimationFrame(tick);
-    const player = videoRef.current;
-    if (!player?.forceSeek) return;                 // no video mounted
-    // Never yank the video while it is mid-seek, scrubbing, or stalled — that is
-    // what causes the flicker / double-frame.
-    if (videoSeekPendingRef.current) return;
-    if (scrubbingRef.current) return;
-    if (audioStalledRef.current || videoStalledRef.current) return;
-    const { isPlaying: playing } = usePlaybackStore.getState();
-    if (!playing) return;
-    const audioEl = audioRef?.current;
-    if (!audioEl) return;
-    const target = audioEl.currentTime + (videoOffsetRef.current || 0);
-    const vtime = player.getCurrentTime?.() ?? 0;
-    // Just after a seek settled the video is normally a bit behind the still
-    // advancing audio (seek latency). Re-seeking on that small residual replays
-    // the slice, so defer hard re-seeks to the rate watchdog during the grace
-    // window opened in handleVideoResumed.
-    if (Date.now() < rafGraceUntilRef.current) return;
-    if (Math.abs(vtime - target) > 1.0) {
-      const now = Date.now();
-      if (now - lastSeek < 200) return;             // min-interval cap
-      lastSeek = now;
-      dbg(`rAF re-anchor drift=${(vtime - target).toFixed(2)}`);
-      anchorVideoToAudio({ play: true });
-    }
-  };
-  raf = requestAnimationFrame(tick);
-  return () => { if (raf) cancelAnimationFrame(raf); };
-}, [isVideoMode, audioRef, anchorVideoToAudio]);
-
-// Re-anchor the video whenever the AUDIO seeks (skip ±5s, progress-bar drag,
-// loop restart). The drift watchdog only corrects via playbackRate during
-// normal playback (to avoid stutter), so an explicit seek would otherwise
-// leave the MV slowly drifting back instead of jumping with the audio.
-useEffect(() => {
-  const audio = audioRef?.current;
-  if (!audio) return;
-  let lastPos = audio.currentTime;
-  const onTimeUpdate = () => {
-    const now = audio.currentTime;
-    // While scrubbing, MediaControls sets audio.currentTime directly; don't
-    // treat that as a jump (the scrub-end re-anchor handles it cleanly).
-    if (scrubbingRef.current) { lastPos = now; return; }
-    // Detect an explicit audio position JUMP (progress-bar scrub release via
-    // programmatic seek, loop restart, replay) and re-anchor the video
-    // IMMEDIATELY. `timeupdate` fires reliably (~4x/s) on the audio element,
-    // unlike the `seeked` event in this setup, and this path does NOT wait for
-    // the drift watchdog's SEEK_COOLDOWN — that cooldown was making the video
-    // show the OLD position for ~1.5s after a seek.
-    if (!videoSeekPendingRef.current && Math.abs(now - lastPos) > 0.75) {
-      dbg(`AUDIO jump ${lastPos.toFixed(2)}->${now.toFixed(2)}`);
-      anchorVideoToAudio({ play: true });
-      syncedRef.current = false;
-    }
-    lastPos = now;
-  };
-    const onSeeked = () => {
-      const now = audio.currentTime;
-      dbg('AUDIO seeked');
-      // Instant re-anchor on an explicit seek. anchorVideoToAudio resets the
-      // watchdog's smoothing state and defers playback until the seek settles,
-      // so the pre-seek frame is never shown.
-      anchorVideoToAudio({ play: true });
-      syncedRef.current = false;
-      lastPos = now;
-    };
-  audio.addEventListener('timeupdate', onTimeUpdate);
-  audio.addEventListener('seeked', onSeeked);
-  return () => {
-    audio.removeEventListener('timeupdate', onTimeUpdate);
-    audio.removeEventListener('seeked', onSeeked);
-  };
-}, [audioRef]);
-
-// Resume video playback when switching into video mode
-useEffect(() => {
-  if (isVideoMode && isPlaying) {
-    const player = videoRef.current;
-    // Only resume an ALREADY-anchored video. At a fresh start the video is still
-    // at ~0; the one-time sync (anchorVideoToAudio) seeks to the offset and
-    // defers play to `seeked` via pendingPlayRef. Playing here unconditionally
-    // would run the MV from frame 0 for the first seconds before the anchor
-    // yanks it to the offset — the exact "first 3s broken" start symptom.
-    if (player && (player.getCurrentTime?.() ?? 0) > 0.05) {
-      player.playVideo();
-    }
-  }
-}, [isVideoMode]);
-
-// One-time sync: position the video at the offset target as soon as it becomes
-// ready. This runs again if `videoOffset` arrives/changes AFTER the first pass
-// (see syncedOffsetRef) — that late offset was the race that made the video play
-// frame 0 (offset still 0 on first run → seek skipped → syncedRef locked true).
-// When audio is playing we prepare-then-play (seek, then play on `seeked`) so the
-// first painted frame is the offset frame; when paused we just position the frame.
-useEffect(() => {
-  if (!(videoReady || metadataReady)) return;
-  if (syncedRef.current && syncedOffsetRef.current === videoOffset) return;
-  dbg(`one-time sync (ready=${videoReady}/${metadataReady})`);
-  // Same single re-anchor path as every other discontinuity. When playing we
-  // prepare-then-play (seek, then play on `seeked`) so the first painted frame
-  // is the offset frame; when paused we just position the frame.
-  if (usePlaybackStore.getState().isPlaying) {
-    anchorVideoToAudio({ play: true });
-  } else {
-    const target = getVideoTarget();
-    const videoTime = videoRef.current?.getCurrentTime?.() ?? 0;
-    if (Math.abs(target - videoTime) >= 0.1) anchorVideoToAudio({ play: false, target });
-  }
-  syncedRef.current = true;
-  syncedOffsetRef.current = videoOffset;
-}, [videoReady, metadataReady, videoOffset, isVideoMode, anchorVideoToAudio]);
-
-// Reset the one-time sync when the track/video changes so a new clip syncs again.
-useEffect(() => {
-  syncedRef.current = false;
-  syncedOffsetRef.current = null;
-  pendingPlayRef.current = false;
-  readyFiredRef.current = false;
-  lastAnchorTargetRef.current = null;
-  lastAnchorTimeRef.current = 0;
-    setVideoReady(false);
-    setMetadataReady(false);
-  }, [youtubeId, videoRemountKey]);
-
-  // Favorite toggle — single source of truth via the global favorites store,
-  // so the mini player / carousel / queue list stay in sync.
   const [favLoading, setFavLoading] = useState(false);
   const isFav = useIsFavorite(activeFile?.file_id || activeFile?.id, activeFile?.is_favorite ? 1 : 0);
   const handleToggleFavorite = useCallback(async () => {
@@ -1052,67 +1543,72 @@ useEffect(() => {
     }
   }, [queueItem?.qid, onQueueChanged, onClose]);
 
-  const headerNode = useMemo(() => (
-    <>
-      <button
-        onClick={onClose}
-        className="p-2 rounded-full hover:bg-white/20 transition-colors"
-        title="Close player"
-      >
-        <ChevronLeft className="w-5 h-5 text-white" />
-      </button>
-      <div className="absolute left-1/2 -translate-x-1/2 text-center pointer-events-none">
-        <span className="text-[10px] font-bold text-purple-400 uppercase tracking-[0.2em]">Now Playing</span>
-      </div>
-      <div className="ml-auto flex items-center gap-1">
-      {queueMode ? (
-        <>
-          {queueItem?.status === 'pending' && (
-            <button onClick={handleQueueCancel} className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/20 hover:text-red-400" title="Batalkan pengiriman">
-              <Ban size={20} />
-            </button>
-          )}
-          {queueItem?.status === 'failed' && (
-            <button onClick={handleQueueRetry} className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/20 hover:text-emerald-400" title="Ulangi pengiriman">
-              <RotateCw size={20} />
-            </button>
-          )}
-          <button onClick={handleQueueRemove} className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/20 hover:text-red-400" title="Hapus dari riwayat">
-            <Trash2 size={20} />
+  const headerNode = useMemo(() => {
+    return (
+      <>
+        <div className="relative flex items-center justify-between w-full">
+          <button
+            onClick={onClose}
+            className="p-2 rounded-full hover:bg-white/20 transition-colors"
+            title="Close player"
+          >
+            <ChevronLeft className="w-5 h-5 text-white" />
           </button>
-        </>
-      ) : (
-      <button
-        onClick={handleToggleFavorite}
-        disabled={favLoading}
-        className={`p-2 rounded-full transition-colors ${isFav ? 'text-red-500 hover:bg-white/20' : 'text-white/70 hover:bg-white/20 hover:text-white'}`}
-        title={isFav ? 'Remove from favorites' : 'Add to favorites'}
-      >
-        <Heart size={20} className={isFav ? 'fill-red-500' : ''} />
-      </button>
-      )}
-      {hasPlaylist && (
-        <button
-          onClick={() => setShowQueuePanel(p => !p)}
-          className={`p-2 rounded-full transition-colors ${showQueuePanel ? 'bg-white/20 text-white' : 'hover:bg-white/20 text-white/60'}`}
-          title="Queue"
-        >
-          <ListMusic className="w-5 h-5" />
-        </button>
-      )}
-      <SpeakerOutputButton audioRef={audioRef} />
-      {onMinimize && (
-        <button
-          onClick={onMinimize}
-          className="p-2 rounded-full hover:bg-white/20 transition-colors"
-          title="Mini player"
-        >
-          <Minimize2 className="w-5 h-5 text-white" />
-        </button>
-      )}
-      </div>
-    </>
-  ), [onClose, onMinimize, hasPlaylist, showQueuePanel, isFav, favLoading, handleToggleFavorite]);
+          <div className="absolute left-1/2 -translate-x-1/2 text-center pointer-events-none px-2 max-w-[70%]">
+            <span className="text-[10px] font-bold text-purple-400 uppercase tracking-[0.2em]">Now Playing</span>
+            <div className="text-base font-semibold text-white truncate">{displayTitle}</div>
+          </div>
+          <div className="ml-auto flex items-center gap-1">
+          {queueMode ? (
+            <>
+              {queueItem?.status === 'pending' && (
+                <button onClick={handleQueueCancel} className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/20 hover:text-red-400" title="Batalkan pengiriman">
+                  <Ban size={20} />
+                </button>
+              )}
+              {queueItem?.status === 'failed' && (
+                <button onClick={handleQueueRetry} className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/20 hover:text-emerald-400" title="Ulangi pengiriman">
+                  <RotateCw size={20} />
+                </button>
+              )}
+              <button onClick={handleQueueRemove} className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/20 hover:text-red-400" title="Hapus dari riwayat">
+                <Trash2 size={20} />
+              </button>
+            </>
+          ) : (
+          <button
+            onClick={handleToggleFavorite}
+            disabled={favLoading}
+            className={`p-2 rounded-full transition-colors ${isFav ? 'text-red-500 hover:bg-white/20' : 'text-white/70 hover:bg-white/20 hover:text-white'}`}
+            title={isFav ? 'Remove from favorites' : 'Add to favorites'}
+          >
+            <Heart size={20} className={isFav ? 'fill-red-500' : ''} />
+          </button>
+          )}
+          {hasPlaylist && (
+            <button
+              onClick={() => setShowQueuePanel(p => !p)}
+              className={`p-2 rounded-full transition-colors ${showQueuePanel ? 'bg-white/20 text-white' : 'hover:bg-white/20 text-white/60'}`}
+              title="Queue"
+            >
+              <ListMusic className="w-5 h-5" />
+            </button>
+          )}
+          <SpeakerOutputButton audioRef={audioRef} />
+          {onMinimize && (
+            <button
+              onClick={onMinimize}
+              className="p-2 rounded-full hover:bg-white/20 transition-colors"
+              title="Mini player"
+            >
+              <Minimize2 className="w-5 h-5 text-white" />
+            </button>
+          )}
+          </div>
+        </div>
+      </>
+    );
+  }, [onClose, onMinimize, hasPlaylist, showQueuePanel, isFav, favLoading, handleToggleFavorite, displayTitle]);
         const handleClick = useCallback((e) => {
           if (e.button !== 0 && e.button !== 1) return;   // left / middle only
           e.preventDefault();
@@ -1167,13 +1663,48 @@ useEffect(() => {
         }, [youtubeId, playerMode, hasLyrics, isVideoMode, setPlayerMode]);
 
         const handleVideoReady = useCallback(() => {
-          // Fire once per load only. The <video> re-fires `canplay` after
-          // every seek/buffer; without this guard it would re-set videoReady and
-          // re-trigger the one-time sync in a loop, freezing playback.
           if (readyFiredRef.current) return;
           readyFiredRef.current = true;
           setVideoReady(true);
+          mvEngine.onCanPlay?.();
+          syncLog('ready', 'mv', {});
+        }, [mvEngine]);
+
+        const onVideoLoadedMetadata = useCallback(() => {
+          syncLog('loadedmetadata', 'mv', {});
         }, []);
+        const onVideoWaiting = useCallback(() => {
+          syncLog('waiting', 'mv', {});
+          mvEngine.onWaiting();
+        }, [mvEngine]);
+        const onVideoStalled = useCallback(() => {
+          syncLog('stalled', 'mv', {});
+          mvEngine.onStalled();
+        }, [mvEngine]);
+        const onVideoPlaying = useCallback(() => {
+          syncLog('playing', 'mv', {});
+          mvEngine.onPlaying();
+        }, [mvEngine]);
+        const onVideoSeeked = useCallback(() => {
+          const latency = syncLogRef.current.seekStartTime?.mv;
+          if (latency) {
+            syncLog('seek_latency', 'mv', {
+              latencyMs: Math.round(performance.now() - latency),
+            });
+            delete syncLogRef.current.seekStartTime.mv;
+          }
+          syncLog('seeked', 'mv', {});
+          mvEngine.onSeeked();
+        }, [mvEngine]);
+
+        const onVideoPause = useCallback(() => {
+          // If the MV video was paused by forceSeek but the engine says we should
+          // be playing, resume immediately so the video doesn't stay frozen.
+          if (usePlaybackStore.getState().isPlaying && !mvEngine.state.seekPending) {
+            syncLog('video_paused_resume', 'mv', {});
+            videoRef.current?.playVideo?.();
+          }
+        }, [mvEngine]);
 
   // Play audio within user gesture context (click handler) to bypass autoplay policy
   const playFileInGesture = useCallback(async (fileId) => {
@@ -1211,30 +1742,6 @@ useEffect(() => {
 
   // Scrub start: pause the video so it can't run as a second, parallel timeline
   // while the audio clock jumps around. The video is re-anchored on scrub-end.
-  const handleScrubStart = useCallback(() => {
-    scrubbingRef.current = true;
-    videoRef.current?.pauseVideo?.();
-  }, []);
-
-  // Scrub move: soft/coalesced seek so the paused video frame tracks the drag
-  // in real time (preview), without jank or a parallel playback clock.
-  const handleScrubChange = useCallback((val) => {
-    const player = videoRef.current;
-    if (!player?.seekTo) return;
-    player.seekTo(val + (videoOffsetRef.current || 0));
-  }, []);
-
-  // Seek synchronization from progress bar – fires for ALL video modes. On
-  // release we clear the scrub flag and re-anchor the video to the live audio
-  // position through the single consolidated path (resuming clean sync).
-  const handleSeekSync = useCallback((seconds) => {
-    scrubbingRef.current = false;
-    setStorePosition(seconds);
-    if (isVideoMode && videoRef.current?.forceSeek) {
-      anchorVideoToAudio({ play: true });
-    }
-  }, [audioRef, isVideoMode, anchorVideoToAudio, setStorePosition]);
-
   const handleNext = useCallback(() => {
     const prev = usePlaybackStore.getState();
     if (prev.queue.length === 0) return;
@@ -1315,13 +1822,14 @@ useEffect(() => {
 
     const containerTransition = 'width 400ms ease, height 400ms ease, opacity 400ms ease';
 
-    const containerStyle = {
-      width: aW + 'px',
-      height: aH + 'px',
-      maxWidth: '100%',
-      transition: containerTransition,
-      opacity: isPlaying ? 1 : 0.5,
-    };
+       const containerH = aH + 8;
+      const containerStyle = {
+        width: aW + 'px',
+        height: containerH + 'px',
+        maxWidth: '100%',
+        transition: containerTransition,
+        opacity: isPlaying ? 1 : 0.5,
+      };
 
     let regionLeft, regionTop, regionW, regionH;
     if (isVideo) {
@@ -1369,16 +1877,16 @@ useEffect(() => {
 
     return (
       <div className="flex flex-col items-center w-full">
-      <div
-        ref={containerRef}
-        className="relative w-full cursor-pointer overflow-visible rounded-2xl mb-4"
-        style={containerStyle}
-        onClick={handleClick}
-        onContextMenu={handleContextMenu}
-      >
-        {/* SINGLE MORPHING STAGE: cover / video / lyrics (1:1 <-> 16:9).
-            Satu kontainer rounded yang ukuran/posisinya morph; anak-anak isi penuh
-            (inset:0) dan di-crossfade opacity sehingga transisi cover<->video tanpa peek. */}
+        <div
+          ref={containerRef}
+          className="relative w-full cursor-pointer overflow-hidden rounded-2xl"
+          style={containerStyle}
+          onClick={handleClick}
+          onContextMenu={handleContextMenu}
+        >
+          {/* SINGLE MORPHING STAGE: cover / video / lyrics (1:1 <-> 16:9).
+              Satu kontainer rounded yang ukuran/posisinya morph; anak-anak isi penuh
+              (inset:0) dan di-crossfade opacity sehingga transisi cover<->video tanpa peek. */}
         <div
           data-area={isVideo ? 'video' : (playerMode === 'lyrics' ? 'lyrics' : 'cover')}
           className="absolute"
@@ -1440,26 +1948,27 @@ useEffect(() => {
               style={{
                 opacity: isVideo ? 1 : 0,
                 pointerEvents: isVideo ? 'auto' : 'none',
-                transition: 'opacity 400ms ease',
+                transition: 'opacity 400ms ease, transform 400ms ease',
+                transform: isVideo ? (isPlaying ? 'scale(1.01)' : 'scale(0.99)') : 'scale(1)',
+                transformOrigin: 'center center',
               }}
             >
-              <CachedVideoPlayer
-                key={videoRemountKey}
-                ref={videoRef}
-                youtubeId={youtubeId}
-                playing={isPlaying}
-                scrubbingRef={scrubbingRef}
-                coverUrl={coverBlobUrl || `/thumbnails/${activeFile?.id}.jpg?v=${coverVersion}`}
-                muted
-                onReady={handleVideoReady}
-                onLoadedMetadata={() => setMetadataReady(true)}
-                onWaiting={handleVideoWaiting}
-                onStalled={handleVideoStalled}
-                onPlaying={handleVideoResumed}
-                onSeeked={handleVideoResumed}
-                onEnded={handleVideoEnded}
-                onError={handleVideoError}
-              />
+                <CachedVideoPlayer
+                  key={videoRemountKey}
+                  ref={videoRef}
+                  youtubeId={youtubeId}
+                  coverUrl={coverBlobUrl || `/thumbnails/${activeFile?.id}.jpg?v=${coverVersion}`}
+                  muted
+                  onReady={handleVideoReady}
+                  onLoadedMetadata={onVideoLoadedMetadata}
+                  onWaiting={onVideoWaiting}
+                  onStalled={onVideoStalled}
+                  onPlaying={onVideoPlaying}
+                  onSeeked={onVideoSeeked}
+                  onPause={onVideoPause}
+                  onEnded={handleVideoEnded}
+                  onError={handleVideoError}
+                />
             </div>
           )}
 
@@ -1566,29 +2075,14 @@ useEffect(() => {
               {videoSearchResults.length === 0 && (
                 <p className="text-white/30 text-xs text-center py-4">No results found</p>
               )}
-            </div>
-          </div>
-        )}
-
-      </div>
-      <div
-        ref={titleRef}
-        className="w-full max-w-xl px-2"
-        style={{
-          opacity: 1,
-          pointerEvents: 'auto',
-        }}
-      >
-        <h2 className="text-lg sm:text-2xl font-bold text-white truncate text-center px-4">
-          {displayTitle}
-        </h2>
-        <p className="text-purple-400/60 text-xs sm:text-sm mt-1 font-medium tracking-wide text-center">
-          {activeFile?.artist || 'Digital Audio Stream'}
-        </p>
-      </div>
-    </div>
-  );
-  }, [activeFile?.id, activeFile?.display_name, activeFile?.artist, displayTitle, coverBlobUrl, coverVersion, isLoading, error, isPlaying, playerMode, lyricsSynced, trackMetadata, youtubeId, videoSearchResults, audioRef, pause, play, handleVideoSearch, handleVideoPick, availSize]);
+             </div>
+           </div>
+      )}
+ 
+         </div>
+       </div>
+    );
+  }, [activeFile?.id, coverBlobUrl, coverVersion, isLoading, error, isPlaying, playerMode, lyricsSynced, trackMetadata, youtubeId, videoSearchResults, audioRef, pause, play, handleVideoSearch, handleVideoPick, availSize]);
 
   const handleQueueSelect = useCallback((index) => {
     const queueFile = playlistFiles[index];
@@ -1615,20 +2109,113 @@ useEffect(() => {
   }, []);
 
   return (
-    <div data-debug-id="1.1.9.3" data-debug-name="AudioPlayer" data-debug-type="player" className="w-full h-full overflow-hidden max-w-full flex flex-col bg-neutral-950 text-slate-100 select-none relative">
-      {headerNode && (
-        <div className="relative flex-none h-14 flex items-center justify-between border-b border-white/5 px-4">
-          {headerNode}
-        </div>
+    <div data-debug-id="1.1.9.3" data-debug-name="AudioPlayer" data-debug-type="player" className={`w-full h-full overflow-hidden max-w-full flex flex-col text-slate-100 select-none relative ${isVideoMode && youtubeId ? '' : 'bg-neutral-950'}`}>
+      {/* Video background: blurred, stretched video behind all content when in video mode */}
+       {youtubeId && (
+       <video
+         className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+         style={{ filter: `blur(12px) saturate(1.4) brightness(${isPlaying ? 0.85 : 0.45})`, transition: 'filter 400ms ease', transform: 'scale(1.2)', zIndex: 0, opacity: isVideoMode ? 0.45 : 0, maskImage: 'radial-gradient(ellipse at center, black 25%, transparent 70%)', WebkitMaskImage: 'radial-gradient(ellipse at center, black 25%, transparent 70%)', maskSize: '100% 100%', WebkitMaskSize: '100% 100%' }}
+         src={`/api/video-cache/stream/${youtubeId}`}
+         muted
+         playsInline
+         preload="auto"
+          ref={(el) => {
+            bgVideoRef.current = el;
+            if (el) {
+              if (typeof el.requestVideoFrameCallback === 'function') {
+                const loop = (now, metadata) => {
+                  el.requestVideoFrameCallback(loop);
+                  syncLog('rvfc', 'bg', { 
+                    mediaTime: metadata.mediaTime.toFixed(3), 
+                    presentedFrames: metadata.presentedFrames, 
+                    processingDuration: metadata.processingDuration.toFixed(3) 
+                  });
+                };
+                el.requestVideoFrameCallback(loop);
+              }
+            }
+          }}
+          onLoadedMetadata={() => {
+             const bg = bgVideoRef.current;
+             if (bg && isFinite(bg.duration) && bg.duration > 0) {
+               const mvReady = videoReady || metadataReady;
+               const audio = audioRef.current;
+               let t;
+               let pendingT = 0;
+               if (audio && isFinite(audio.currentTime)) {
+                 pendingT = audio.currentTime;
+               }
+               if (bgPendingTargetRef.current != null && mvReady) {
+                 t = bgPendingTargetRef.current;
+                 bgPendingTargetRef.current = null;
+               } else {
+                 t = 0;
+                 if (audio && isFinite(audio.currentTime)) {
+                   t = ((pendingT % bg.duration) + bg.duration) % bg.duration;
+                 }
+                 bgPendingTargetRef.current = pendingT;
+               }
+               bgEngine.anchor({ play: false, target: t });
+             }
+           }}
+          onError={() => {
+            // BG stream error is harmless — it shares the same src as the MV.
+          }}
+            onSeeked={() => {
+               const latency = syncLogRef.current.seekStartTime?.bg;
+               if (latency) {
+                 syncLog('seek_latency', 'bg', {
+                   latencyMs: Math.round(performance.now() - latency),
+                 });
+                 delete syncLogRef.current.seekStartTime.bg;
+               }
+               syncLog('seeked', 'bg', {});
+
+                // Drain pending force seek (coalesced rapid seeks).
+                // If another seek was queued while this one was in
+                // flight, execute the latest target now.
+                const nextForce = bgPendingForceSeekRef.current;
+                if (nextForce !== null && bgSeekInProgressRef.current) {
+                  bgPendingForceSeekRef.current = null;
+                  const bg = bgVideoRef.current;
+                  if (bg && Math.abs((bg.currentTime || 0) - nextForce) >= 0.001) {
+                    syncLog('bg_seek_drain', 'bg', {
+                      from: (bg.currentTime || 0).toFixed(3),
+                      to: nextForce.toFixed(3),
+                    });
+                    bgSeekInProgressRef.current = true;
+                    if (!bg.paused) bg.pause();
+                    bg.currentTime = nextForce;
+                    return; // let the subsequent seeked fire the barrier hit
+                  }
+                }
+
+               bgSeekInProgressRef.current = false;
+
+               bgEngine.onSeeked();
+             }}
+           onWaiting={() => { syncLog('waiting', 'bg', {}); bgEngine.onWaiting(); }}
+           onStalled={() => { syncLog('stalled', 'bg', {}); bgEngine.onStalled(); }}
+           onPlaying={() => { syncLog('playing', 'bg', {}); bgEngine.onPlaying(); }}
+          onEnded={() => {
+            if (!usePlaybackStore.getState().isPlaying) return;
+            const audioTarget = audioRef.current?.currentTime + (videoOffsetRef.current || 0);
+            try { bgEngine.anchor({ play: true, target: audioTarget }); } catch (_) {}
+          }}
+        />
       )}
+      <div className="relative flex flex-col flex-1 min-h-0" style={{ zIndex: 1 }}>
+      <div className="relative flex-none flex flex-col border-b border-white/5 px-4 py-1.5">
+        {headerNode}
+      </div>
 
       {/* Media area: cover + title + controls grouped and centered as ONE unit, so
           the media controls stay close to the cover/title even when the window is tall
           (instead of being pushed to the very bottom by a greedy flex child). */}
       <div ref={mediaAreaRef} className="flex-1 min-h-0 flex flex-col items-center justify-center px-4 sm:px-8">
         <div className="flex flex-col items-center w-full">
-          {mainContent}
-          <div ref={controlsRef} className="w-full max-w-3xl mt-4 sm:mt-5">
+           {mainContent}
+           <div ref={controlsRef} className="w-full max-w-3xl">
             <MediaControls
               type="audio"
               mediaRef={audioRef}
@@ -1638,10 +2225,7 @@ useEffect(() => {
               onSeek={handleSeekSync}
               onSeekStart={handleScrubStart}
               onSeekChange={handleScrubChange}
-              onClose={onClose}
               playlistMode={hasPlaylist}
-              currentTrackIndex={storeCurrentTrackIndex}
-              totalTracks={playlistFiles.length}
               onNext={hasPlaylist ? handleNext : undefined}
               onPrevious={hasPlaylist ? handlePrevious : undefined}
             />
@@ -1655,17 +2239,18 @@ useEffect(() => {
         <div className="w-full relative">
           <div className={`grid transition-all duration-300 ease-out ${manualHidden ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100'}`}>
             <div className="overflow-hidden">
-              <Carousel
-                files={carouselFiles}
-                currentFile={activeFile}
-                onSelect={handleCarouselSelect}
-                sortBy={currentSortBy}
-                sortOrder={currentSortOrder}
-                cacheBust={stableCacheBust}
-                onToggleFavorite={onFavoriteToggle}
-                contextLabel={carouselContextLabel}
-                itemSize="lg"
-              />
+               <Carousel
+                 files={carouselFiles}
+                 currentFile={activeFile}
+                 onSelect={handleCarouselSelect}
+                 sortBy={currentSortBy}
+                 sortOrder={currentSortOrder}
+                 cacheBust={stableCacheBust}
+                 onToggleFavorite={onFavoriteToggle}
+                 contextLabel={carouselContextLabel}
+                 itemSize="lg"
+                 restoreScrollKey={hasPlaylist ? `playlist-${playlistTitle || 'unknown'}` : file ? `folder-${file.dir_path || 'root'}` : null}
+               />
             </div>
           </div>
           <button
@@ -1680,6 +2265,8 @@ useEffect(() => {
 
       <QueuePanel
         isOpen={showQueuePanel}
+
+
         onClose={() => setShowQueuePanel(false)}
         tracks={playlistFiles}
         currentTrackIndex={storeCurrentTrackIndex}
@@ -1719,6 +2306,7 @@ useEffect(() => {
         }}
       />
     )}
+    </div>
     </div>
   );
 }

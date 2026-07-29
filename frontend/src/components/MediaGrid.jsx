@@ -10,6 +10,7 @@ import FolderIcon from './icons/FolderIcon';
 import GroupDivider from './GroupDivider';
 import { getGroupLabel } from '../utils/grouping';
 import { formatBytes as formatSize } from '../utils/format.js';
+import { useIsFavorite } from '../store/favoritesStore';
 import './MediaGrid.css';
 
 const CONTAINER_MAX = 1600;
@@ -41,7 +42,7 @@ const ThumbnailImage = memo(({ src, alt, file }) => {
         className={`media-thumb transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0'}`}
         loading="lazy"
         decoding="async"
-        fetchPriority="low"
+        fetchpriority="low"
         onContextMenu={(e) => e.preventDefault()}
         onLoad={() => setLoaded(true)}
         onError={() => setFailed(true)}
@@ -75,6 +76,10 @@ const VirtualizedMediaCard = memo(({ file, onSelect, onToggleFavorite, itemWidth
   };
 
   const thumbnailUrl = getThumbnailUrl(file);
+
+  // Determine favorite status via global store for instant UI updates
+  const fileId = file.id || file.file_id;
+  const isFav = useIsFavorite(fileId, file.is_favorite ? 1 : 0);
 
   if (!file || !file.id) return null;
 
@@ -118,7 +123,7 @@ const VirtualizedMediaCard = memo(({ file, onSelect, onToggleFavorite, itemWidth
                 </div>
               ))}
             </div>
-          )}
+            )}
             <div className="absolute top-1 left-1 px-1.5 py-0.5 bg-blue-900/75 rounded text-[8px] font-bold tracking-wide text-blue-300">
               {file.subfolder_count} subfolder{file.subfolder_count > 1 ? 's' : ''}
             </div>
@@ -146,34 +151,34 @@ const VirtualizedMediaCard = memo(({ file, onSelect, onToggleFavorite, itemWidth
         className="group relative rounded-xl overflow-hidden bg-neutral-900 border border-neutral-800/80 w-full h-full cursor-pointer flex flex-col flex-shrink-0 select-none"
         style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
       >
-<div data-debug-id="1.1.6.1.1" data-debug-name="Thumbnail" data-debug-type="other" className="w-full flex-1 min-h-0 bg-black/40 flex items-center justify-center overflow-hidden relative">
-         {thumbnailUrl ? (            <ThumbnailImage src={thumbnailUrl} alt={file.name} file={file} />
-          ) : (
-            <div className="text-neutral-600 flex flex-col items-center justify-center">
-              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-              </svg>
-            </div>
-          )}
-          <div data-debug-id="1.1.6.1.4" data-debug-name="GridTypeIcon" data-debug-type="other" className="absolute top-1 right-1 px-1.5 py-0.5 bg-black/75 rounded text-[8px] font-bold tracking-wide text-white/90 uppercase">{file.type || 'FILE'}</div>
-          {file.type !== 'folder' && (
-            <button
-              onClick={handleFavorite}
-              className="absolute top-1 left-1 p-1 rounded-full bg-black/50 backdrop-blur-sm transition-transform active:scale-90 z-10"
-              title={file.is_favorite ? 'Remove from favorites' : 'Add to favorites'}
-            >
-              <Heart
-                size={14}
-                className={file.is_favorite ? 'text-red-500 fill-red-500' : 'text-white/70'}
-              />
-            </button>
-          )}
-        </div>
-        <div data-debug-id="1.1.6.1.2" data-debug-name="GridMeta" data-debug-type="other" className="h-[44px] p-2 bg-neutral-900 border-t border-neutral-800/60 flex flex-col justify-center flex-shrink-0 w-full overflow-hidden">
-          <p className="text-[10px] sm:text-[11px] font-medium truncate text-neutral-200 w-full leading-tight">{file.name}</p>
-          <p className="text-[9px] text-neutral-500 mt-0.5 font-mono">{file.size ? formatSize(file.size) : '0 MB'}</p>
-        </div>
-      </div>
+        <div data-debug-id="1.1.6.1.1" data-debug-name="Thumbnail" data-debug-type="other" className="w-full flex-1 min-h-0 bg-black/40 flex items-center justify-center overflow-hidden relative">
+          {thumbnailUrl ? (            <ThumbnailImage src={thumbnailUrl} alt={file.name} file={file} />
+           ) : (
+             <div className="text-neutral-600 flex flex-col items-center justify-center">
+               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+               </svg>
+             </div>
+           )}
+           <div data-debug-id="1.1.6.1.4" data-debug-name="GridTypeIcon" data-debug-type="other" className="absolute top-1 right-1 px-1.5 py-0.5 bg-black/75 rounded text-[8px] font-bold tracking-wide text-white/90 uppercase">{file.type || 'FILE'}</div>
+           {file.type !== 'folder' && (
+             <button
+               onClick={handleFavorite}
+               className="absolute top-1 left-1 p-1 rounded-full bg-black/50 backdrop-blur-sm transition-transform active:scale-90 z-10"
+               title={isFav ? 'Remove from favorites' : 'Add to favorites'}
+             >
+               <Heart
+                 size={14}
+                 className={isFav ? 'text-red-500 fill-red-500' : 'text-white/70'}
+               />
+             </button>
+           )}
+         </div>
+         <div data-debug-id="1.1.6.1.2" data-debug-name="GridMeta" data-debug-type="other" className="h-[44px] p-2 bg-neutral-900 border-t border-neutral-800/60 flex flex-col justify-center flex-shrink-0 w-full overflow-hidden">
+           <p className="text-[10px] sm:text-[11px] font-medium truncate text-neutral-200 w-full leading-tight">{file.name}</p>
+           <p className="text-[9px] text-neutral-500 mt-0.5 font-mono">{file.size ? formatSize(file.size) : '0 MB'}</p>
+         </div>
+       </div>
     </div>
   );
 }, (prevProps, nextProps) => {

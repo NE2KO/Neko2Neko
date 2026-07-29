@@ -251,26 +251,28 @@ async function searchCoverByQuery(query) {
     }
   }
 
-  for (const v of variations) {
-    const dz = await deezerSearchQuery(v);
-    pushResults(dz);
-    if (allResults.length >= 12) break;
-
-    const it = await itunesSearchQuery(v);
-    pushResults(it);
-    if (allResults.length >= 12) break;
+  // Run Deezer + iTunes + YouTube + MusicBrainz in parallel for first variation.
+  const firstVar = variations[0];
+  const querySources = await Promise.allSettled([
+    deezerSearchQuery(firstVar).catch(() => []),
+    itunesSearchQuery(firstVar).catch(() => []),
+    searchYouTube(firstVar).catch(() => []),
+    musicbrainzSearchQuery(firstVar).catch(() => []),
+  ]);
+  for (const r of querySources) {
+    if (r.status === 'fulfilled') pushResults(r.value);
   }
 
-  // Always try YouTube — user needs crop button for YT thumbnails
-  try {
-    const yt = await searchYouTube(variations[0]);
-    pushResults(yt);
-  } catch { /* skip */ }
-
-  // If still need more results, try MusicBrainz with first variation only
-  if (allResults.length < 8) {
-    const mb = await musicbrainzSearchQuery(variations[0]);
-    pushResults(mb);
+  // If still need more results, try remaining variations (sequentially, early exit)
+  if (allResults.length < 12 && variations.length > 1) {
+    for (let i = 1; i < variations.length; i++) {
+      const dz = await deezerSearchQuery(variations[i]);
+      pushResults(dz);
+      if (allResults.length >= 12) break;
+      const it = await itunesSearchQuery(variations[i]);
+      pushResults(it);
+      if (allResults.length >= 12) break;
+    }
   }
 
   return scoreAndSort(allResults, '', '', variations[0]);
@@ -299,14 +301,16 @@ export async function searchCoverAllSources(artist, album, track, query) {
   };
 
   // Structured metadata search (most accurate when artist/track are known).
+  // Run all sources in parallel with a timeout for speed.
   if (hasMeta) {
-    try {
-      const mbResults = await searchMusicBrainz(cleanA, cleanAl, cleanT);
-      pushResults(mbResults.map(r => ({ ...r, source: 'MusicBrainz' })));
-    } catch { /* skip */ }
-
-    pushResults(await deezerSearch(cleanA, cleanAl, cleanT));
-    pushResults(await itunesSearch(cleanA, cleanAl, cleanT));
+    const structuredSources = await Promise.allSettled([
+      searchMusicBrainz(cleanA, cleanAl, cleanT).then(r => r.map(x => ({ ...x, source: 'MusicBrainz' }))).catch(() => []),
+      deezerSearch(cleanA, cleanAl, cleanT).catch(() => []),
+      itunesSearch(cleanA, cleanAl, cleanT).catch(() => []),
+    ]);
+    for (const r of structuredSources) {
+      if (r.status === 'fulfilled') pushResults(r.value);
+    }
 
     // If still few results, try a cleaned track name (strip feat/remix/etc).
     if (results.length < 5 && cleanT) {
@@ -318,8 +322,13 @@ export async function searchCoverAllSources(artist, album, track, query) {
         .replace(/\s+/g, ' ')
         .trim();
       if (cleanedTrack && cleanedTrack !== cleanT) {
-        pushResults(await deezerSearch(cleanA, '', cleanedTrack));
-        pushResults(await itunesSearch(cleanA, '', cleanedTrack));
+        const cleanedSources = await Promise.allSettled([
+          deezerSearch(cleanA, '', cleanedTrack).catch(() => []),
+          itunesSearch(cleanA, '', cleanedTrack).catch(() => []),
+        ]);
+        for (const r of cleanedSources) {
+          if (r.status === 'fulfilled') pushResults(r.value);
+        }
       }
     }
   }

@@ -1,28 +1,8 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, memo } from 'react';
+
 import { Inbox, CheckCircle2, XCircle, Ban, Trash2, Clock, ArrowLeft, X, Settings, Bug, Power, Square, Play, AlertTriangle, Pencil, ChevronUp, ChevronDown, Calendar, RotateCw } from 'lucide-react';
 import { getSendQueueStatuses, getSendQueue, clearSendQueueHistory, getThumbnailUrl, cancelSendQueueItem, retrySendQueueItem, removeSendQueueItem, getSendSettings, setSendSettings, getWhatsAppSendStatus, setQueueCaption, reorderQueueItem, resendQueueItem, rescheduleQueueItem } from '../utils/api';
-import { formatBytesCompact } from '../utils/format.js';
 
-function formatDurationSec(seconds) {
-  if (!seconds || seconds <= 0) return '';
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  if (h > 0) return `${h}h ${m}m ${s}s`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
-
-function formatEtaTime(ms) {
-  if (!ms || ms <= 0) return '';
-  const totalSec = Math.floor(ms / 1000);
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  if (h > 0) return `${h}h ${m}m ${s}s`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
 import SendQueuePlayer from './SendQueuePlayer';
 import CaptionEditorModal from './CaptionEditorModal';
 
@@ -53,26 +33,55 @@ function remainingDigits(ms) {
   return `${pad(h)}:${pad(m)}:${pad(sec)}`;
 }
 
-// Returns the countdown as a compact MM:SS string when under 1 hour.
-function remainingCompact(ms) {
-  if (!ms || ms <= 0) return '00:00';
-  const s = Math.floor(ms / 1000);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  const pad = (n) => String(n).padStart(2, '0');
-  return h > 0 ? `${pad(h)}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
+// Shared clock: one interval drives all consumers. Components subscribe via
+// useClock() and only re-render when the second actually ticks.
+let _clockNow = Date.now();
+const _clockListeners = new Set();
+let _clockStarted = false;
+function startClockIfNeeded() {
+  if (_clockStarted) return;
+  _clockStarted = true;
+  setInterval(() => {
+    _clockNow = Date.now();
+    _clockListeners.forEach((fn) => fn());
+  }, 1000);
+}
+function useClock() {
+  startClockIfNeeded();
+  const [, forceUpdate] = useState(0);
+  useEffect(() => {
+    const tick = () => forceUpdate((c) => c + 1);
+    _clockListeners.add(tick);
+    return () => _clockListeners.delete(tick);
+  }, []);
+  return _clockNow;
 }
 
-function StatusFolderCard({ meta, count, coverId, policy, timeline, now, onClick }) {
+const StatusFolderCard = memo(function StatusFolderCard({ meta, count, coverId, policy, timeline, onClick, scheduleActive }) {
+  const now = useClock();
   const Icon = meta.icon;
   const isPending = meta.key === 'pending';
   const unlimited = policy?.unlimited ?? false;
   
-  // For pending card, use first item's ETA from timeline; fallback to nextAllowedAt
   const firstItemEta = isPending && timeline && timeline.length > 0 ? timeline[0].eta : 0;
   const nextAllowed = policy?.nextAllowedAt || 0;
-  const displayEta = isPending ? Math.max(firstItemEta, nextAllowed) : nextAllowed;
+  const rawEta = isPending ? Math.max(firstItemEta, nextAllowed) : nextAllowed;
+
+  // Freeze ETA: capture on transition from active→inactive
+  const frozenEtaRef = useRef(rawEta || 0);
+  const prevActiveRef = useRef(scheduleActive);
+  useEffect(() => {
+    if (prevActiveRef.current && !scheduleActive && rawEta > 0) {
+      frozenEtaRef.current = rawEta;
+    }
+    if (scheduleActive && rawEta > 0) {
+      frozenEtaRef.current = rawEta;
+    }
+    prevActiveRef.current = scheduleActive;
+  }, [scheduleActive, rawEta]);
+
+  const displayEta = scheduleActive ? (rawEta || frozenEtaRef.current) : frozenEtaRef.current;
+
   const remainingDigitsStr = isPending && !unlimited ? remainingDigits(displayEta - now) : null;
   
   // Calculate hours until next slot
@@ -83,24 +92,25 @@ function StatusFolderCard({ meta, count, coverId, policy, timeline, now, onClick
 return (
      <button
        onClick={onClick}
-       className={`relative flex flex-col items-start gap-3 p-5 rounded-2xl border ${meta.border} ${meta.bg} hover:brightness-125 transition-all text-left min-h-[180px]`}
+       className={`relative flex flex-col items-start gap-2 p-5 rounded-2xl border ${meta.border} ${meta.bg} hover:brightness-125 transition-all text-left overflow-hidden`}
+       style={{ minHeight: '180px' }}
     >
       <div className={`flex items-center gap-2 ${meta.color}`}>
-        <Icon size={22} />
-        <span className="text-base font-semibold">{meta.label}</span>
+        <Icon size={24} />
+        <span className="text-lg font-semibold">{meta.label}</span>
       </div>
       <CounterOdometer value={count} />
 {isPending && (
        <div className="mt-auto w-full">
-          <div className="flex items-center gap-1.5 text-sm text-amber-300/90">
-            <Clock size={14} className="flex-shrink-0" />
+              <div className="flex items-center gap-1.5 text-sm text-amber-300/90">
+            <Clock size={15} className="flex-shrink-0" />
             {unlimited ? (
               <span>Tanpa batas</span>
             ) : (
-              <TimerOdometer countdown={remainingDigitsStr || '00:00:00'} />
+              <Odometer countdown={remainingDigitsStr || '00:00:00'} placeholder={!scheduleActive} format="00:00:00" size="sm" color="amber" />
             )}
           </div>
-<div className="text-[12px] text-neutral-400 mt-0.5">
+<div className="text-[13px] text-neutral-400 mt-0.5">
             {unlimited
               ? 'Tanpa batas'
               : `Slot berikutnya: ${nextSlotLabel}`}
@@ -117,20 +127,14 @@ return (
      )}
    </button>
  );
-}
+});
 
-function ItemCard({ item, onOpen, onAction, onCaptionChange, now, sendEta, ready, index, scheduleActive }) {
+const ItemCard = memo(function ItemCard({ item, onOpen, onAction, onCaptionChange, sendEta, ready, index, scheduleActive }) {
+  const now = useClock();
   const meta = STATUS_META[item.status] || STATUS_META.pending;
   const Icon = meta.icon;
   const [showCaptionModal, setShowCaptionModal] = useState(false);
-const [rollingCounter, setRollingCounter] = useState(0);
-useEffect(() => {
-  if (!scheduleActive) {
-    const id = setInterval(() => setRollingCounter(c => (c + 1) % 1000), 1000);
-    return () => clearInterval(id);
-  }
-}, [scheduleActive]);
-  
+
   const formatDateTime = (ts) => {
     if (!ts) return '';
     const d = new Date(ts);
@@ -141,7 +145,6 @@ useEffect(() => {
   const displayName = item.name || '(file dihapus)';
   const displayDate = item.completed_at ? formatDateTime(item.completed_at) : formatDateTime(item.created_at);
   
-  // Show when the item will be / was sent
   let sendTimeLabel = null;
   if (item.status === 'pending' && sendEta && Number(sendEta) > now) {
     sendTimeLabel = `Kirim ${formatDateTime(sendEta)}`;
@@ -173,33 +176,17 @@ useEffect(() => {
     }
   }
 
-  // Bitrate comfort indicator for status videos: viewers stay comfortable when
-  // the file's size-per-second is low. ≤0.75 MB/s is safe, 0.75–1.0 is a caution
-  // zone, and >1.0 MB/s tends to be risky on WhatsApp status.
-  let rateMBps = null;
-  let rateKind = null;
-  if (item.type === 'video' && item.duration > 0 && item.size > 0) {
-    rateMBps = (item.size / (1024 * 1024)) / item.duration;
-    if (rateMBps <= 0.75) rateKind = 'aman';
-    else if (rateMBps <= 1.0) rateKind = 'waspada';
-    else rateKind = 'rawan';
-  }
-  const RATE_META = {
-    aman:    { label: 'Aman',    text: 'text-emerald-400', dot: '#34d399' },
-    waspada: { label: 'Waspada', text: 'text-amber-400',   dot: '#fbbf24' },
-    rawan:   { label: 'Rawan',   text: 'text-red-400',     dot: '#f87171' },
-  };
-  const rateInfo = rateKind ? RATE_META[rateKind] : null;
-
   const quick = (e, fn) => { e.stopPropagation(); fn(); };
 
   return (
     <div
       onClick={() => onOpen(item)}
-      className="group relative flex flex-col bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden hover:border-neutral-600 transition-colors cursor-pointer"
+      className="group relative flex flex-col h-full bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden hover:border-neutral-600 transition-colors cursor-pointer"
+      style={{ contentVisibility: 'auto' }}
     >
-      {/* Thumbnail area - fills available space like Media Vault */}
-      <div className="w-full flex-1 min-h-0 bg-neutral-950 relative" style={{ aspectRatio: '1/1' }}>
+      {/* Thumbnail area — centered vertically in available space */}
+      <div className="flex-1 flex items-center justify-center min-h-0 bg-neutral-950 relative">
+        <div className="w-full relative" style={{ aspectRatio: '1/1' }}>
         {item.file_id ? (
           <img src={getThumbnailUrl({ id: item.file_id })} alt={item.name || ''} loading="lazy" className="w-full h-full object-cover"
             onError={(e) => { e.currentTarget.style.display = 'none'; }} />
@@ -215,60 +202,39 @@ useEffect(() => {
         ) : null}
         {/* Index badge - top left */}
         {index !== undefined && (
-          <span className="absolute top-1.5 left-1.5 text-[12px] px-2 py-0.5 rounded bg-neutral-900/90 text-neutral-200 font-mono font-medium border border-neutral-700">
+          <span className="absolute top-1.5 left-1.5 text-[11px] px-1.5 py-0.5 rounded bg-neutral-900/90 text-neutral-200 font-mono font-medium border border-neutral-700">
             #{index + 1}
           </span>
         )}
-<span className={`absolute top-1.5 right-1.5 text-[11px] px-1.5 py-0.5 rounded-full ${meta.bg} ${meta.color} border ${meta.border} flex items-center gap-0.5 font-semibold`}>
-           <Icon size={11} />
+        <span className={`absolute top-1.5 right-1.5 text-[9px] px-1 py-0.5 rounded ${meta.bg} ${meta.color} border ${meta.border} flex items-center gap-0.5 font-semibold`}>
+           <Icon size={9} />
            <span>{etaLabel || meta.label}</span>
-          </span>
+        </span>
+        </div>
       </div>
-      {/* Metadata area - fixed height like Media Vault */}
-<div className="h-[90px] p-2 bg-neutral-900 border-t border-neutral-800/60 flex flex-col justify-center flex-shrink-0 w-full overflow-hidden">
-         <p className="text-[11px] sm:text-[12px] font-medium truncate text-neutral-200 w-full leading-tight">
-           {displayName}
-         </p>
-         {sendTimeLabel ? (
-           <p className="text-[10px] sm:text-[11px] text-neutral-400 mt-0.5 font-mono truncate">
-             {sendTimeLabel}
-           </p>
-         ) : (
-           <p className="text-[10px] sm:text-[11px] text-neutral-500 mt-0.5 font-mono truncate">
-             {displayDate}
-           </p>
-          )}
-
-        {(eta != null && eta > 0) || item.duration || item.size ? (
-          <div className="flex items-center justify-between gap-2 mt-0.5">
+      {/* Metadata area — sits at bottom of card */}
+      <div className="p-2 bg-neutral-900 border-t border-neutral-800/60 flex flex-col justify-end mt-auto w-full overflow-hidden">
+        <p className="text-[11px] font-medium truncate text-neutral-200 w-full leading-tight">
+          {displayName}
+        </p>
+        {sendTimeLabel ? (
+          <p className="text-[10px] text-neutral-400 mt-0.5 font-mono truncate">{sendTimeLabel}</p>
+        ) : (
+          <p className="text-[10px] text-neutral-500 mt-0.5 font-mono truncate">{displayDate}</p>
+        )}
+        {/* ETA row — always rendered for consistent card height */}
+        <div className="flex items-center gap-0.5 mt-0.5 min-h-[18px]">
             {eta != null && eta > 0 ? (
-              <div className="flex items-center gap-1">
+              <>
                 <Clock size={10} className="text-amber-400/70 flex-shrink-0" />
-                {scheduleActive ? <span className="text-[10px] sm:text-[11px] tabular-nums text-amber-400/90 font-medium">{remainingCompact(eta)}</span> : <Odometer value={rollingCounter} digits={3} />}
-              </div>
+                <Odometer countdown={remainingDigits(eta)} placeholder={!scheduleActive} format="00:00:00" size="sm" color="amber" />
+              </>
             ) : <span />}
-            {(item.duration || item.size) && (
-              <span className="flex items-center justify-end gap-1.5 text-[10px] sm:text-[11px] font-mono whitespace-nowrap">
-                <span className="text-neutral-500">
-                  {[item.duration ? formatDurationSec(item.duration) : null, item.size ? formatBytesCompact(item.size) : null].filter(Boolean).join(' · ')}
-                </span>
-                {rateInfo && (
-                  <span
-                    className={`flex items-center gap-1 flex-shrink-0 ${rateInfo.text}`}
-                    title={`Bitrate ${rateMBps.toFixed(2)} MB/dtk · ${rateInfo.label}`}
-                  >
-                    <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: rateInfo.dot }} />
-                    {rateMBps.toFixed(2)}
-                  </span>
-                )}
-              </span>
-            )}
           </div>
-        ) : null}
-
+        {/* Caption */}
         <div className="flex items-center gap-1 mt-0.5 group/cap">
           <p
-            className={`text-[10px] sm:text-[11px] truncate flex-1 min-w-0 ${captionText ? 'text-neutral-400' : 'text-neutral-600 italic'}`}
+            className={`text-[10px] truncate flex-1 min-w-0 ${captionText ? 'text-neutral-400' : 'text-neutral-600 italic'}`}
           >
             {captionText ? `Caption: ${captionText}` : 'Tanpa caption'}
           </p>
@@ -284,67 +250,69 @@ useEffect(() => {
         </div>
       </div>
       {/* Hover quick actions */}
-      <div className="absolute bottom-[96px] right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className="absolute bottom-[80px] right-1.5 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
         {item.status === 'pending' && (
           <>
             <button title="Geser ke atas" onClick={(e) => quick(e, () => onAction('moveUp', item))}
-              className="p-1.5 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
-              <ChevronUp size={14} />
+              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
+              <ChevronUp size={12} />
             </button>
             <button title="Geser ke bawah" onClick={(e) => quick(e, () => onAction('moveDown', item))}
-              className="p-1.5 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
-              <ChevronDown size={14} />
+              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
+              <ChevronDown size={12} />
             </button>
             <button title="Batalkan" onClick={(e) => quick(e, () => onAction('cancel', item))}
-              className="p-1.5 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
-              <Ban size={14} />
+              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
+              <Ban size={12} />
             </button>
           </>
         )}
         {item.status === 'failed' && (
           <>
             <button title="Ulangi" onClick={(e) => quick(e, () => onAction('retry', item))}
-              className="p-1.5 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
-              <XCircle size={14} className="rotate-0" />
+              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
+              <XCircle size={12} />
             </button>
             <button title="Hapus" onClick={(e) => quick(e, () => onAction('remove', item))}
-              className="p-1.5 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
-              <Trash2 size={14} />
+              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
+              <Trash2 size={12} />
             </button>
           </>
         )}
         {item.status === 'done' && (
           <>
             <button title="Kirim lagi" onClick={(e) => quick(e, () => onAction('resend', item))}
-              className="p-1.5 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-emerald-400">
-              <RotateCw size={14} />
+              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-emerald-400">
+              <RotateCw size={12} />
             </button>
             <button title="Jadwalkan ulang" onClick={(e) => quick(e, () => onAction('reschedule', item))}
-              className="p-1.5 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-cyan-400">
-              <Calendar size={14} />
+              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-cyan-400">
+              <Calendar size={12} />
             </button>
             <button title="Hapus dari riwayat" onClick={(e) => quick(e, () => onAction('remove', item))}
-              className="p-1.5 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
-              <Trash2 size={14} />
+              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
+              <Trash2 size={12} />
             </button>
           </>
         )}
         {item.status === 'canceled' && (
           <button title="Hapus dari riwayat" onClick={(e) => quick(e, () => onAction('remove', item))}
-            className="p-1.5 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
-            <Trash2 size={14} />
+            className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
+            <Trash2 size={12} />
           </button>
         )}
       </div>
-      <CaptionEditorModal
-        open={showCaptionModal}
-        caption={item.caption || ''}
-        onSave={(c) => onCaptionChange(item, c)}
-        onClose={() => setShowCaptionModal(false)}
-      />
+      {showCaptionModal && (
+        <CaptionEditorModal
+          open={showCaptionModal}
+          caption={item.caption || ''}
+          onSave={(c) => onCaptionChange(item, c)}
+          onClose={() => setShowCaptionModal(false)}
+        />
+      )}
     </div>
   );
-}
+});
 
 function Toggle({ on, onClick, disabled, color = 'emerald' }) {
   const onCls = color === 'amber' ? 'bg-amber-500' : color === 'red' ? 'bg-red-500' : 'bg-emerald-600';
@@ -397,96 +365,229 @@ function CounterOdometer({ value, className = '' }) {
     </div>
   );
 }
-function Odometer({ value, digits = 2, className = '' }) {
-  const DIGIT_H = 40;
-  const str = String(Math.max(0, Math.round(value))).padStart(digits, '0').slice(-digits);
+function Odometer({ value, digits = 2, className = '', placeholder = false, format = null, size = 'md', countdown = null, color = 'neutral' }) {
+  const isXs = size === 'xs';
+  const isSmall = size === 'sm';
+  const DIGIT_H = isXs ? 12 : isSmall ? 16 : 40;
+  const DIGIT_W = isXs ? 8 : isSmall ? 10 : 22;
+  const FONT_CLASS = isXs ? 'text-[10px]' : isSmall ? 'text-[12px]' : 'text-2xl';
+  const COLON_W = isXs ? 4 : isSmall ? 6 : 12;
+  const CASCADE_DELAY = 80;
+  const COLOR_CLASS = color === 'amber' ? 'text-amber-300' : 'text-neutral-100';
+  const COLON_COLOR = color === 'amber' ? 'text-amber-300/70' : 'text-neutral-100';
+
+  const stripRefs = useRef([]);
+  const rafRef = useRef(null);
+  const settleTimerRef = useRef(null);
+  const prevPlaceholderRef = useRef(placeholder);
+  const stateRef = useRef({
+    mode: 'settled',
+    currentCountdown: countdown,
+    lastPositions: (() => {
+      const p = {};
+      if (countdown) { let di = 0; [...countdown].forEach((ch) => { if (ch !== ':') { p[di] = placeholder ? 10 * DIGIT_H : Number(ch) * DIGIT_H; di++; } }); }
+      return p;
+    })(),
+  });
+
+  const chars = useMemo(() => {
+    if (countdown) {
+      return [...countdown].map((ch, i) => ch === ':' ? { type: 'colon', key: `c${i}` } : { type: 'digit', key: `d${i}`, ch, digitIdx: [...countdown].slice(0, i + 1).filter(c => c !== ':').length - 1 });
+    }
+    if (format) {
+      return [...format].map((ch, i) => ch === ':' ? { type: 'colon', key: `c${i}` } : { type: 'digit', key: `d${i}`, digitIdx: format.slice(0, i + 1).replace(/:/g, '').length - 1 });
+    }
+    return String(Math.max(0, Math.round(value))).padStart(digits, '0').slice(-digits).split('').map((ch, i) => ({ type: 'digit', key: `d${i}`, ch, digitIdx: i }));
+  }, [countdown, format, value, digits]);
+
+  const stripDigitMap = useMemo(() => chars.map(c => c.type === 'digit' ? Number(c.ch || '0') : null), [chars]);
+  const numDigits = useMemo(() => stripDigitMap.filter(d => d !== null).length, [stripDigitMap]);
+  const charsToDigit = useMemo(() => {
+    const m = {}; let di = 0;
+    stripDigitMap.forEach((d, idx) => { if (d !== null) { m[idx] = di; di++; } });
+    return m;
+  }, [stripDigitMap]);
+
+  // Mount: set initial positions. When placeholder is true on mount, force all
+  // strips to the dash position (index 10) instead of the countdown digits —
+  // otherwise the flip-in animation never triggers and the display shows frozen
+  // numbers instead of --:--:--.
+  useLayoutEffect(() => {
+    const st = stateRef.current;
+    stripRefs.current.forEach((strip, idx) => {
+      if (!strip || stripDigitMap[idx] === null) return;
+      if (placeholder) {
+        const dashPos = 10 * DIGIT_H;
+        strip.style.transform = `translateY(-${dashPos}px)`;
+        st.lastPositions[charsToDigit[idx]] = dashPos;
+      } else {
+        const pos = st.lastPositions[charsToDigit[idx]];
+        if (pos !== undefined) strip.style.transform = `translateY(-${pos}px)`;
+      }
+    });
+  }, []);
+
+  // EFFECT 1: Placeholder transitions — flip in cascade / settle out
+  useEffect(() => {
+    const st = stateRef.current;
+    const prev = prevPlaceholderRef.current;
+
+    // === FLIP IN: false→true → cascade digits → --:--:-- ===
+    if (placeholder && !prev) {
+      st.mode = 'spinning';
+      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+      if (settleTimerRef.current) { clearTimeout(settleTimerRef.current); settleTimerRef.current = null; }
+
+      const FLIP_COUNT = 3;
+      const flipStates = stripRefs.current.map(() => ({ flips: 0, done: false }));
+      const startTime = performance.now();
+
+      const flipTick = (now) => {
+        const elapsed = now - startTime;
+        let allDone = true;
+
+        stripRefs.current.forEach((strip, idx) => {
+          if (!strip || stripDigitMap[idx] === null || flipStates[idx].done) return;
+          const delay = idx * CASCADE_DELAY;
+          if (elapsed < delay) { allDone = false; return; }
+          const localElapsed = elapsed - delay;
+          const interval = 60 + idx * 5;
+          const expectedFlips = Math.min(FLIP_COUNT, Math.floor(localElapsed / interval));
+
+          if (expectedFlips > flipStates[idx].flips) {
+            flipStates[idx].flips = expectedFlips;
+            strip.style.transform = `translateY(-${Math.floor(Math.random() * 10) * DIGIT_H}px)`;
+          }
+
+          if (flipStates[idx].flips >= FLIP_COUNT) {
+            strip.style.transition = 'transform 120ms ease-out';
+            strip.style.transform = `translateY(-${10 * DIGIT_H}px)`;
+            flipStates[idx].done = true;
+          } else {
+            allDone = false;
+          }
+        });
+
+        if (!allDone) {
+          rafRef.current = requestAnimationFrame(flipTick);
+        } else {
+          rafRef.current = null;
+          st.mode = 'placeholder';
+          setTimeout(() => {
+            stripRefs.current.forEach((s) => { if (s) s.style.transition = ''; });
+          }, 150);
+        }
+      };
+      rafRef.current = requestAnimationFrame(flipTick);
+    }
+
+    // === SETTLE OUT: true→false → CSS transition to countdown ===
+    if (!placeholder && prev) {
+      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+      if (settleTimerRef.current) { clearTimeout(settleTimerRef.current); }
+      st.mode = 'settling';
+
+      stripRefs.current.forEach((strip, idx) => {
+        if (!strip || stripDigitMap[idx] === null) return;
+        const target = stripDigitMap[idx] * DIGIT_H;
+        strip.style.transition = `transform 350ms cubic-bezier(.12,.8,.22,1) ${idx * CASCADE_DELAY}ms`;
+        strip.style.transform = `translateY(-${target}px)`;
+        st.lastPositions[charsToDigit[idx]] = target;
+      });
+
+      const totalMs = CASCADE_DELAY * numDigits + 400;
+      settleTimerRef.current = setTimeout(() => {
+        st.mode = 'settled';
+        stripRefs.current.forEach((s) => { if (s) s.style.transition = ''; });
+      }, totalMs);
+    }
+
+    prevPlaceholderRef.current = placeholder;
+  }, [placeholder, stripDigitMap, numDigits, charsToDigit]);
+
+  // EFFECT 2: Countdown tick — smooth digit animation when settled
+  useEffect(() => {
+    const st = stateRef.current;
+    if (placeholder || st.mode !== 'settled') {
+      if (countdown) st.currentCountdown = countdown;
+      return;
+    }
+    if (!countdown || countdown === st.currentCountdown) return;
+
+    st.currentCountdown = countdown;
+    const starts = { ...st.lastPositions };
+    const targets = {};
+    stripDigitMap.forEach((d, idx) => { if (d !== null) targets[idx] = d * DIGIT_H; });
+
+    const dur = 250;
+    const t0 = Date.now();
+    const anim = () => {
+      const p = Math.min((Date.now() - t0) / dur, 1);
+      const e = 1 - Math.pow(1 - p, 3);
+      stripRefs.current.forEach((strip, idx) => {
+        if (!strip || targets[idx] === undefined) return;
+        const from = starts[charsToDigit[idx]] ?? 0;
+        const to = targets[idx];
+        strip.style.transform = `translateY(-${Math.round(from + (to - from) * e)}px)`;
+        st.lastPositions[charsToDigit[idx]] = Math.round(from + (to - from) * e);
+      });
+      if (p < 1) { rafRef.current = requestAnimationFrame(anim); }
+      else { rafRef.current = null; }
+    };
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(anim);
+    return () => { if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; } };
+  }, [countdown, placeholder, stripDigitMap, charsToDigit]);
+
+  // Cleanup timers only on unmount — never on dependency changes, so the
+  // settle-out timer and flip-in rAF always run to completion even when
+  // stripDigitMap changes mid-animation (which previously killed the settle
+  // timer and froze the countdown at 'settling' mode forever).
+  useEffect(() => {
+    return () => {
+      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+      if (settleTimerRef.current) { clearTimeout(settleTimerRef.current); settleTimerRef.current = null; }
+    };
+  }, []);
 
   return (
-    <div className={`inline-flex ${className}`} style={{ height: DIGIT_H }}>
-      {[...str].map((ch, i) => {
-        const key = `${i}-${ch}`;
-        const pos = Number(ch) * DIGIT_H;
+    <div className={`inline-flex items-center ${className}`} style={{ height: DIGIT_H }}>
+      {chars.map((item, idx) => {
+        if (item.type === 'colon') {
+          return (
+            <div
+              key={item.key}
+              className={`flex items-center justify-center font-bold ${COLON_COLOR} ${FONT_CLASS}`}
+              style={{ width: COLON_W, height: DIGIT_H }}
+            >
+              :
+            </div>
+          );
+        }
         return (
           <div
-            key={key}
+            key={`d${item.digitIdx}`}
             className="relative overflow-hidden"
-            style={{ width: '22px', height: DIGIT_H }}
+            style={{ width: DIGIT_W, height: DIGIT_H }}
           >
             <div
-              className="absolute left-0 top-0 flex flex-col will-change-transform"
-              style={{
-                transform: `translateY(-${pos}px)`,
-                transition: 'transform 700ms cubic-bezier(.12,.8,.22,1)',
-              }}
+              ref={el => { stripRefs.current[idx] = el; }}
+              className="absolute left-0 top-0 will-change-transform"
             >
-              {Array.from({ length: 10 }, (_, n) => (
-                <span
+              {Array.from({ length: 11 }, (_, n) => (
+                <div
                   key={n}
-                  style={{ height: DIGIT_H, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                  className="text-2xl font-bold text-neutral-100 tabular-nums"
+                  className={`${COLOR_CLASS} tabular-nums ${FONT_CLASS} font-bold flex items-center justify-center`}
+                  style={{ width: DIGIT_W, height: DIGIT_H }}
                 >
-                  {n}
-                </span>
+                  {n < 10 ? n : '\u2013'}
+                </div>
               ))}
             </div>
           </div>
         );
       })}
     </div>
-  );
-}
-
-// Countdown timer rendered as an animated odometer. Each digit rolls smoothly
-// from one value to the next, giving a mechanical feel. The parent's shallow-
-// comparison fixes prevent the excessive re-renders that caused flicker before.
-function TimerOdometer({ countdown }) {
-  if (!countdown) return null;
-  const DIGIT_H = 16;
-  const COLON_W = 8;
-  // Parse HH:MM:SS or MM:SS into individual characters (digits + colons)
-  const chars = [...countdown];
-  return (
-    <span className="inline-flex items-center align-middle tabular-nums" style={{ height: DIGIT_H }}>
-      {chars.map((ch, i) => {
-        if (ch === ':') {
-          return (
-            <span
-              key={`c${i}`}
-              className="inline-flex items-center justify-center text-[12px] font-bold text-amber-300/70 leading-none"
-              style={{ width: COLON_W, height: DIGIT_H }}
-            >
-              :
-            </span>
-          );
-        }
-        const pos = Number(ch) * DIGIT_H;
-        return (
-          <span
-            key={`d${i}`}
-            className="relative inline-block overflow-hidden align-middle"
-            style={{ width: '10px', height: DIGIT_H }}
-          >
-            <span
-              className="absolute left-0 top-0 flex flex-col will-change-transform"
-              style={{
-                transform: `translateY(-${pos}px)`,
-                transition: 'transform 500ms cubic-bezier(.12,.8,.22,1)',
-              }}
-            >
-              {Array.from({ length: 10 }, (_, n) => (
-                <span
-                  key={n}
-                  style={{ height: DIGIT_H, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                  className="text-[12px] font-bold text-amber-300 leading-none"
-                >
-                  {n}
-                </span>
-              ))}
-            </span>
-          </span>
-        );
-      })}
-    </span>
   );
 }
 
@@ -754,19 +855,16 @@ const [items, setItems] = useState([]);
    const [everLoaded, setEverLoaded] = useState(false);
   const [covers, setCovers] = useState({ wa: {}, telegram: {} });
   const [selectedItem, setSelectedItem] = useState(null);
-  const [policy, setPolicy] = useState(null);
-  const [timeline, setTimeline] = useState([]);
-  const [now, setNow] = useState(Date.now());
-  const [settings, setSettings] = useState(null);
+   const [policy, setPolicy] = useState(null);
+   const [timeline, setTimeline] = useState([]);
+   const [settings, setSettings] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [waStatus, setWaStatus] = useState(null); // { connected, reconnecting, ... }
-  const [internet, setInternet] = useState(true);
-  const scrollRef = useRef(null);
-
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
+   const [waStatus, setWaStatus] = useState(null); // { connected, reconnecting, ... }
+   const [internet, setInternet] = useState(true);
+   const [sortBy, setSortBy] = useState(null);
+   const [sortOrder, setSortOrder] = useState("desc");
+   const [typeFilter, setTypeFilter] = useState(null);
+   const scrollRef = useRef(null);
 
   // Surface WA connection state in the queue UI: if WhatsApp drops while debug
   // mode is on, sends fail silently-ish — the user needs to know immediately
@@ -884,7 +982,7 @@ const prevItemsJsonRef = useRef(null);
      if (reset && !prevItemsJsonRef.current) setLoading(true);
      const prevJson = prevItemsJsonRef.current;
      try {
-       const r = await getSendQueue(status, reset ? 0 : cursor, 100, g.target);
+       const r = await getSendQueue(status, reset ? 0 : cursor, 100, g.target, { sortBy, sortOrder, typeFilter });
        const list = (r && Array.isArray(r.items)) ? r.items : [];
        const listJson = JSON.stringify(list);
        if (listJson !== prevJson) {
@@ -976,11 +1074,6 @@ useEffect(() => {
 
 useEffect(() => {
      if (selected) loadItems(selected.groupKey, selected.status, true);
-     else {
-       setItems([]);
-       prevItemsJsonRef.current = null;
-       setEverLoaded(false);
-     }
    }, [selected, loadItems]);
 
   // On reload landing directly on an item URL (#/sendqueue/<g>/<s>/<qid>),
@@ -996,10 +1089,16 @@ useEffect(() => {
 
   const openStatus = (groupKey, status) => {
     setSelected({ groupKey, status });
+    setSortBy(null);
+    setSortOrder('desc');
+    setTypeFilter(null);
     writeQueueUrl(groupKey, status);
   };
   const back = () => {
     setSelected(null);
+    setSortBy(null);
+    setSortOrder('desc');
+    setTypeFilter(null);
     writeQueueUrl(null, null);
   };
 
@@ -1075,12 +1174,32 @@ useEffect(() => {
     writeQueueUrl(selected?.groupKey, selected?.status);
   };
 
-  const onScroll = (e) => {
+  // O(1) timeline lookup instead of timeline.find() per item
+  const timelineMap = useMemo(() => {
+    const m = {};
+    for (const t of timeline) m[t.id] = t;
+    return m;
+  }, [timeline]);
+
+  // Stable callback refs so memoized ItemCards don't re-render on every parent tick
+  const onActionRef = useRef(onAction);
+  onActionRef.current = onAction;
+  const handleCaptionChangeRef = useRef(handleCaptionChange);
+  handleCaptionChangeRef.current = handleCaptionChange;
+  const openItemRef = useRef(openItem);
+  openItemRef.current = openItem;
+
+  const stableOnAction = useCallback((action, item) => onActionRef.current(action, item), []);
+  const stableOnCaptionChange = useCallback((item, c) => handleCaptionChangeRef.current(item, c), []);
+  const stableOnOpen = useCallback((item) => openItemRef.current(item), []);
+
+  // Grid virtualization — CSS grid with content-visibility for native off-screen rendering
+  const onScroll = useCallback((e) => {
     const el = e.currentTarget;
     if (hasMore && !loading && el.scrollHeight - el.scrollTop - el.clientHeight < 400) {
       if (selected) loadItems(selected.groupKey, selected.status, false);
     }
-  };
+  }, [hasMore, loading, selected]);
 
   const selectedGroup = selected ? GROUPS[selected.groupKey] : null;
   const selectedMeta = selected ? STATUS_META[selected.status] : null;
@@ -1114,6 +1233,54 @@ useEffect(() => {
             </span>
           )}
         </div>
+        {selected && (
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 bg-neutral-800/60 rounded-lg border border-neutral-700 p-0.5">
+              {[null, 'video', 'image'].map((tf) => (
+                <button
+                  key={String(tf)}
+                  onClick={() => setTypeFilter(tf)}
+                  className={`px-2 py-1 rounded text-[11px] font-medium transition-colors ${
+                    typeFilter === tf
+                      ? 'bg-neutral-700 text-white'
+                      : 'text-neutral-400 hover:text-neutral-200'
+                  }`}
+                >
+                  {tf === null ? 'All' : tf === 'video' ? 'Video' : 'Image'}
+                </button>
+              ))}
+            </div>
+            <div className="relative">
+              <select
+                value={sortBy || ''}
+                onChange={(e) => setSortBy(e.target.value || null)}
+                className="appearance-none bg-neutral-800/60 border border-neutral-700 text-neutral-200 text-xs rounded-lg pl-2.5 pr-7 py-1.5 hover:border-neutral-600 focus:outline-none focus:border-neutral-500 cursor-pointer"
+              >
+                <option value="">None</option>
+                <option value="name">Name</option>
+                <option value="size">Size</option>
+                <option value="created_at">Created</option>
+                <option value="completed_at">Modified</option>
+              </select>
+              <div className="absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none text-neutral-400">
+                <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M7 10l5 5 5-5z" />
+                </svg>
+              </div>
+            </div>
+            <button
+              onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+              className="p-1.5 rounded-lg border border-neutral-700 text-neutral-300 hover:text-white hover:bg-neutral-700/70 transition-colors"
+              title={sortOrder === 'asc' ? 'Urut: lama → baru' : 'Urut: baru → lama'}
+            >
+              {sortOrder === 'asc' ? (
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4l-8 10h16z" /></svg>
+              ) : (
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 20l8-10H4z" /></svg>
+              )}
+            </button>
+          </div>
+        )}
         <div className="flex-1" />
         {!selected && (
           <>
@@ -1191,7 +1358,7 @@ useEffect(() => {
                   <h2 className="text-sm font-semibold text-neutral-300">{g.label}</h2>
                   <div className="flex-1 h-px bg-neutral-800" />
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   {g.statuses.map((s) => (
                     <StatusFolderCard
                       key={s}
@@ -1200,7 +1367,7 @@ useEffect(() => {
                       coverId={covers[g.key] ? covers[g.key][s] : null}
                       policy={g.key === 'wa' ? policy : null}
                       timeline={g.key === 'wa' ? timeline : []}
-                      now={now}
+                      scheduleActive={settings?.tickEnabled && !settings?.debugMode}
                       onClick={() => openStatus(g.key, s)}
                     />
                   ))}
@@ -1215,18 +1382,18 @@ useEffect(() => {
              ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
                 {items.map((it, idx) => {
-                  const timelineItem = timeline.find(t => t.id === it.qid);
+                  const timelineItem = timelineMap[it.qid];
                   return (
                     <ItemCard 
                       key={it.qid} 
                       item={it} 
                       index={idx}
-                      onOpen={openItem} 
-                      onAction={onAction} 
-                      onCaptionChange={handleCaptionChange}
-                      now={now} 
+                      onOpen={stableOnOpen} 
+                      onAction={stableOnAction} 
+                      onCaptionChange={stableOnCaptionChange}
                       sendEta={timelineItem?.eta}
-                      ready={timelineItem?.ready} scheduleActive={settings?.tickEnabled && !settings?.debugMode}
+                      ready={timelineItem?.ready}
+                      scheduleActive={settings?.tickEnabled && !settings?.debugMode}
                     />
                   );
                 })}

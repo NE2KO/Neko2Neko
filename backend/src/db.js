@@ -360,6 +360,25 @@ export function deferredDbInit() {
       ['network.trackSessions', 'true', 'boolean', 'network', 'Track Sessions', 'Enable active session tracking', null, now],
       ['network.sessionTimeout', '30', 'number', 'network', 'Session Timeout (min)', 'Inactive session timeout', null, now],
       ['downloader.youtubeCookiesPath', PATHS.cookiesTxt, 'string', 'downloader', 'YouTube Cookies Path', 'Netscape cookies.txt untuk lewati verifikasi bot YouTube. Kosongkan untuk nonaktif.', null, now],
+      ['ai.providers', '[]', 'json', 'ai', 'Providers', 'LLM providers configuration (encrypted in transit)', null, now],
+      ['ai.defaultProvider', 'openai', 'string', 'ai', 'Default Provider', 'Default AI provider ID', null, now],
+      ['ai.defaultModel', 'gpt-4o-mini', 'string', 'ai', 'Default Model', 'Default model for the default provider', null, now],
+      ['ai.defaultSearchProvider', 'duckduckgo', 'string', 'ai', 'Default Search Provider', 'Default web search provider', null, now],
+      ['ai.tools.enabled', '[]', 'json', 'ai', 'Enabled Tools', 'Enabled tool module IDs (JSON array)', null, now],
+      ['ai.tools.vault', 'search-only', 'enum', 'ai', 'Vault Access', 'What the AI can do with media vault', JSON.stringify({enum: ['disabled', 'search-only', 'full']}), now],
+      ['ai.tools.system', 'disabled', 'enum', 'ai', 'System Stats', 'Allow AI to access system statistics', JSON.stringify({enum: ['disabled', 'metadata']}), now],
+      ['ai.streaming', 'true', 'boolean', 'ai', 'Streaming', 'Stream AI responses via SSE', null, now],
+      ['ai.maxContextMessages', '50', 'number', 'ai', 'Max Context Messages', 'Max messages to send to LLM per turn', null, now],
+      ['ai.maxOutputTokens', '4096', 'number', 'ai', 'Max Output Tokens', 'Max tokens in LLM response', null, now],
+      ['ai.temperature', '0.7', 'number', 'ai', 'Temperature', 'LLM temperature (0-2)', null, now],
+      ['ai.context.maxTokens', '8000', 'number', 'ai', 'Max Context Tokens', 'Maximum tokens for context window', null, now],
+      ['ai.context.autoCompact', 'true', 'boolean', 'ai', 'Auto Compact', 'Automatically compact context when nearing limit', null, now],
+      ['ai.context.compactThreshold', '0.8', 'number', 'ai', 'Compact Threshold', 'Trigger compaction at this fraction of max tokens', null, now],
+      ['ai.memory.enabled', 'true', 'boolean', 'ai', 'Memory Enabled', 'Enable conversation memory system', null, now],
+      ['ai.memory.autoExtract', 'true', 'boolean', 'ai', 'Auto Extract Memories', 'Automatically extract memories from conversations', null, now],
+      ['ai.memory.extractionFrequency', '10', 'number', 'ai', 'Extraction Frequency', 'Extract memories every N messages', null, now],
+      ['ai.memory.confidenceThreshold', '0.3', 'number', 'ai', 'Confidence Threshold', 'Minimum confidence to save auto-extracted memory', null, now],
+      ['ai.defaultSystemPrompt', '', 'string', 'ai', 'Default System Prompt', 'Global default system prompt for all conversations', null, now],
     ];
     const tx = db.transaction(() => {
       for (const row of defaults) {
@@ -436,6 +455,25 @@ export function deferredDbInit() {
     ['scanner.watchEnabled', 'true', 'boolean', 'scanner', 'File Watcher', 'Watch for file changes and auto-scan', null, migrateTime],
     ['scanner.debounceMs', '5000', 'number', 'scanner', 'Watch Debounce (ms)', 'Debounce delay for file watcher events', null, migrateTime],
     ['downloader.youtubeCookiesPath', PATHS.cookiesTxt, 'string', 'downloader', 'YouTube Cookies Path', 'Netscape cookies.txt untuk lewati verifikasi bot YouTube. Kosongkan untuk nonaktif.', null, migrateTime],
+    ['ai.providers', '[]', 'json', 'ai', 'Providers', 'LLM providers configuration', null, migrateTime],
+    ['ai.defaultProvider', 'openai', 'string', 'ai', 'Default Provider', 'Default AI provider ID', null, migrateTime],
+    ['ai.defaultModel', 'gpt-4o-mini', 'string', 'ai', 'Default Model', 'Default model for the default provider', null, migrateTime],
+    ['ai.defaultSearchProvider', 'duckduckgo', 'string', 'ai', 'Default Search Provider', 'Default web search provider', null, migrateTime],
+    ['ai.tools.enabled', '[]', 'json', 'ai', 'Enabled Tools', 'Enabled tool module IDs (JSON array)', null, migrateTime],
+    ['ai.tools.vault', 'search-only', 'enum', 'ai', 'Vault Access', 'What the AI can do with media vault', JSON.stringify({enum: ['disabled', 'search-only', 'full']}), migrateTime],
+    ['ai.tools.system', 'disabled', 'enum', 'ai', 'System Stats', 'Allow AI to access system statistics', JSON.stringify({enum: ['disabled', 'metadata']}), migrateTime],
+    ['ai.streaming', 'true', 'boolean', 'ai', 'Streaming', 'Stream AI responses via SSE', null, migrateTime],
+    ['ai.maxContextMessages', '50', 'number', 'ai', 'Max Context Messages', 'Max messages to send to LLM per turn', null, migrateTime],
+    ['ai.maxOutputTokens', '4096', 'number', 'ai', 'Max Output Tokens', 'Max tokens in LLM response', null, migrateTime],
+    ['ai.temperature', '0.7', 'number', 'ai', 'Temperature', 'LLM temperature (0-2)', null, migrateTime],
+    ['ai.context.maxTokens', '8000', 'number', 'ai', 'Max Context Tokens', 'Maximum tokens for context window', null, migrateTime],
+    ['ai.context.autoCompact', 'true', 'boolean', 'ai', 'Auto Compact', 'Automatically compact context when nearing limit', null, migrateTime],
+    ['ai.context.compactThreshold', '0.8', 'number', 'ai', 'Compact Threshold', 'Trigger compaction at this fraction of max tokens', null, migrateTime],
+    ['ai.memory.enabled', 'true', 'boolean', 'ai', 'Memory Enabled', 'Enable conversation memory system', null, migrateTime],
+    ['ai.memory.autoExtract', 'true', 'boolean', 'ai', 'Auto Extract Memories', 'Automatically extract memories from conversations', null, migrateTime],
+    ['ai.memory.extractionFrequency', '10', 'number', 'ai', 'Extraction Frequency', 'Extract memories every N messages', null, migrateTime],
+    ['ai.memory.confidenceThreshold', '0.3', 'number', 'ai', 'Confidence Threshold', 'Minimum confidence to save auto-extracted memory', null, migrateTime],
+    ['ai.defaultSystemPrompt', '', 'string', 'ai', 'Default System Prompt', 'Global default system prompt for all conversations', null, migrateTime],
   ];
   for (const row of migrationDefaults) {
     ensureInsert.run(...row);
@@ -653,6 +691,123 @@ db.exec(`
   )
 `);
 db.exec('CREATE INDEX IF NOT EXISTS idx_adb_jobs_status ON adb_jobs(status)');
+
+// AI conversations and messages
+db.exec(`
+  CREATE TABLE IF NOT EXISTS conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    local_id TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT 'New Chat',
+    pinned INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}'
+  )
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_conversations_local_id ON conversations(local_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_conversations_pinned ON conversations(pinned)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC)');
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    tool_calls TEXT,
+    tool_results TEXT,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+  )
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, id ASC)');
+
+// ─── AI Provider Status ───
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ai_provider_status (
+    provider_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'disconnected',
+    last_verified_at INTEGER,
+    latency_ms INTEGER,
+    models_json TEXT DEFAULT '[]',
+    models_cached_at INTEGER,
+    error_message TEXT
+  )
+`);
+
+// ─── AI Conversation Settings (per-conversation overrides) ───
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ai_conversation_settings (
+    conversation_id INTEGER PRIMARY KEY,
+    model TEXT,
+    temperature REAL,
+    max_tokens INTEGER,
+    system_prompt TEXT,
+    web_search INTEGER DEFAULT 0,
+    vision INTEGER DEFAULT 0,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+  )
+`);
+
+// ─── AI Memories ───
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ai_memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER,
+    content TEXT NOT NULL,
+    confidence REAL DEFAULT 0.5,
+    pinned INTEGER DEFAULT 0,
+    enabled INTEGER DEFAULT 1,
+    tags TEXT DEFAULT '[]',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
+  )
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_memories_conversation ON ai_memories(conversation_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_memories_enabled ON ai_memories(enabled, pinned DESC)');
+
+// ─── AI Context Summaries (for smart compaction) ───
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ai_context_summaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL,
+    summary TEXT NOT NULL,
+    message_range_start INTEGER,
+    message_range_end INTEGER,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+  )
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_summaries_conversation ON ai_context_summaries(conversation_id)');
+
+// ─── AI Pinned Messages ───
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ai_pinned_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+    UNIQUE(conversation_id, message_id)
+  )
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_pinned_conversation ON ai_pinned_messages(conversation_id)');
+
+// ─── AI Model Preferences ───
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ai_model_preferences (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    favorited INTEGER DEFAULT 0,
+    hidden INTEGER DEFAULT 0,
+    last_used_at INTEGER,
+    UNIQUE(provider_id, model_id)
+  )
+`);
 
 // Prepared Statements
 const stmts = {
@@ -1084,6 +1239,83 @@ const stmts = {
       SELECT f.id FROM folders f JOIN subs s ON f.parent_id = s.id
     )
     SELECT id FROM subs
+  `),
+  // AI conversations
+  createConversation: db.prepare('INSERT INTO conversations (local_id, title, pinned, archived, created_at, updated_at) VALUES (?, ?, 0, 0, ?, ?)'),
+  getConversationsForLocal: db.prepare('SELECT * FROM conversations WHERE local_id = ? ORDER BY pinned DESC, updated_at DESC'),
+  getConversation: db.prepare('SELECT * FROM conversations WHERE id = ? AND local_id = ?'),
+  updateConversation: db.prepare('UPDATE conversations SET title = ?, pinned = ?, archived = ?, updated_at = ? WHERE id = ? AND local_id = ?'),
+  deleteConversation: db.prepare('DELETE FROM conversations WHERE id = ? AND local_id = ?'),
+  getMessages: db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY id ASC'),
+  insertMessage: db.prepare('INSERT INTO messages (conversation_id, role, content, tool_calls, tool_results, created_at) VALUES (?, ?, ?, ?, ?, ?)'),
+  getMessageCount: db.prepare('SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ?'),
+  deleteMessage: db.prepare('DELETE FROM messages WHERE id = ?'),
+  deleteMessagesBefore: db.prepare('DELETE FROM messages WHERE conversation_id = ? AND id < ?'),
+
+  // AI Provider Status
+  getProviderStatus: db.prepare('SELECT * FROM ai_provider_status WHERE provider_id = ?'),
+  getAllProviderStatus: db.prepare('SELECT * FROM ai_provider_status'),
+  upsertProviderStatus: db.prepare(`
+    INSERT OR REPLACE INTO ai_provider_status (provider_id, status, last_verified_at, latency_ms, models_json, models_cached_at, error_message)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `),
+
+  // AI Conversation Settings
+  getConversationSettings: db.prepare('SELECT * FROM ai_conversation_settings WHERE conversation_id = ?'),
+  upsertConversationSettings: db.prepare(`
+    INSERT OR REPLACE INTO ai_conversation_settings (conversation_id, model, temperature, max_tokens, system_prompt, web_search, vision)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `),
+  deleteConversationSettings: db.prepare('DELETE FROM ai_conversation_settings WHERE conversation_id = ?'),
+
+  // AI Memories
+  getMemories: db.prepare('SELECT * FROM ai_memories WHERE enabled = 1 ORDER BY pinned DESC, confidence DESC, updated_at DESC LIMIT ?'),
+  getAllMemories: db.prepare('SELECT * FROM ai_memories ORDER BY pinned DESC, confidence DESC, updated_at DESC LIMIT ?'),
+  getMemory: db.prepare('SELECT * FROM ai_memories WHERE id = ?'),
+  insertMemory: db.prepare(`
+    INSERT INTO ai_memories (conversation_id, content, confidence, pinned, enabled, tags, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `),
+  updateMemory: db.prepare('UPDATE ai_memories SET content = ?, confidence = ?, pinned = ?, enabled = ?, tags = ?, updated_at = ? WHERE id = ?'),
+  deleteMemory: db.prepare('DELETE FROM ai_memories WHERE id = ?'),
+  searchMemories: db.prepare('SELECT * FROM ai_memories WHERE enabled = 1 AND content LIKE ? ORDER BY pinned DESC, confidence DESC LIMIT ?'),
+  countMemories: db.prepare('SELECT COUNT(*) as cnt FROM ai_memories WHERE enabled = 1'),
+
+  // AI Context Summaries
+  getSummaries: db.prepare('SELECT * FROM ai_context_summaries WHERE conversation_id = ? ORDER BY id ASC'),
+  getLatestSummary: db.prepare('SELECT * FROM ai_context_summaries WHERE conversation_id = ? ORDER BY id DESC LIMIT 1'),
+  insertSummary: db.prepare(`
+    INSERT INTO ai_context_summaries (conversation_id, summary, message_range_start, message_range_end, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `),
+  deleteSummaries: db.prepare('DELETE FROM ai_context_summaries WHERE conversation_id = ?'),
+
+  // AI Pinned Messages
+  getPinnedMessages: db.prepare(`
+    SELECT m.* FROM messages m
+    JOIN ai_pinned_messages p ON m.id = p.message_id
+    WHERE p.conversation_id = ? ORDER BY m.id ASC
+  `),
+  getPinnedMessageIds: db.prepare('SELECT message_id FROM ai_pinned_messages WHERE conversation_id = ?'),
+  isMessagePinned: db.prepare('SELECT 1 FROM ai_pinned_messages WHERE conversation_id = ? AND message_id = ?'),
+  pinMessage: db.prepare('INSERT OR IGNORE INTO ai_pinned_messages (conversation_id, message_id, created_at) VALUES (?, ?, ?)'),
+  unpinMessage: db.prepare('DELETE FROM ai_pinned_messages WHERE conversation_id = ? AND message_id = ?'),
+  unpinAllMessages: db.prepare('DELETE FROM ai_pinned_messages WHERE conversation_id = ?'),
+  countPinnedMessages: db.prepare('SELECT COUNT(*) as cnt FROM ai_pinned_messages WHERE conversation_id = ?'),
+
+  // AI Model Preferences
+  getModelPreference: db.prepare('SELECT * FROM ai_model_preferences WHERE provider_id = ? AND model_id = ?'),
+  upsertModelPreference: db.prepare(`
+    INSERT OR REPLACE INTO ai_model_preferences (provider_id, model_id, favorited, hidden, last_used_at)
+    VALUES (?, ?, ?, ?, ?)
+  `),
+  getFavoriteModels: db.prepare('SELECT * FROM ai_model_preferences WHERE favorited = 1 ORDER BY last_used_at DESC'),
+  getHiddenModels: db.prepare('SELECT * FROM ai_model_preferences WHERE hidden = 1'),
+  getAllModelPreferences: db.prepare('SELECT * FROM ai_model_preferences'),
+  markModelUsed: db.prepare(`
+    INSERT INTO ai_model_preferences (provider_id, model_id, last_used_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(provider_id, model_id) DO UPDATE SET last_used_at = excluded.last_used_at
   `),
 };
 

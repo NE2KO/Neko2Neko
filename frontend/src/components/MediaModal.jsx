@@ -8,7 +8,7 @@ import SendProgressPills from './SendProgressPills';
 import { useVaultMediaActions } from '../hooks/useVaultMediaActions';
 import { buildPlaylistWindow } from '../utils/playlistWindow';
 
-function MediaModal({ file, folderFiles, currentFilter, currentSortBy, currentSortOrder = 'asc', onClose, onFileChange, onLoadFolderFiles, onToggleFavorite, sharedAudioRef, audioReady }) {
+function MediaModal({ file, folderFiles, currentFilter, currentSortBy, currentSortOrder = 'asc', favoriteOnly = false, onClose, onFileChange, onLoadFolderFiles, onToggleFavorite, sharedAudioRef, audioReady }) {
    const [displayFile, setDisplayFile] = useState(file);
    const [prevFile, setPrevFile] = useState(null);
    const touchStartX = useRef(0);
@@ -130,10 +130,15 @@ function MediaModal({ file, folderFiles, currentFilter, currentSortBy, currentSo
         filtered = folderFiles;
       }
 
+      // Apply favorites filter (matches vault grid's favoriteOnly toggle)
+      if (favoriteOnly) {
+        filtered = filtered.filter(f => f.is_favorite === 1);
+      }
+
       // Window it to avoid passing 72k to carousel/player
       const result = buildPlaylistWindow(filtered, displayFile?.id, 125);
       return result.window;
-    }, [folderFiles, currentFilter, displayFile?.id]);
+    }, [folderFiles, currentFilter, displayFile?.id, favoriteOnly]);
 
      const renderPlayer = useCallback((f, startPaused = false, isCur = false) => {
       if (!f) return null;

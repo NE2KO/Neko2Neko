@@ -17,6 +17,7 @@ export default function VaultAudioPlayer({
   folderFiles = [],
   currentSortBy = null,
   currentSortOrder = 'asc',
+  favoriteOnly = false,
   onClose,
   onAudioChange,
   onToggleFavorite,
@@ -142,7 +143,7 @@ export default function VaultAudioPlayer({
     };
   }, [autoPlayPending, audioRef]);
 
-  const carouselFiles = folderFiles;
+  const carouselFiles = favoriteOnly ? folderFiles.filter(f => f.is_favorite === 1) : folderFiles;
 
   const handleCarouselSelect = useCallback((selectedFile) => {
     const fileId = selectedFile?.file_id || selectedFile?.id;
@@ -256,7 +257,6 @@ export default function VaultAudioPlayer({
           currentFile={activeFile}
           onFileChange={handleCarouselSelect}
           onSeek={(s) => usePlaybackStore.getState().setPosition?.(s)}
-          onClose={onClose}
         />
       )}
     >

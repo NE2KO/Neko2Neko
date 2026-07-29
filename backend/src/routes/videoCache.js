@@ -101,26 +101,40 @@ router.get('/progress/:youtubeId', (req, res) => {
 
 router.get('/stream/:youtubeId', async (req, res) => {
   const youtubeId = req.params.youtubeId;
-  // Build the optimized, web-seekable copy BEFORE streaming so the very first
-  // play already serves the faststart / short-GOP file — no long black screen
-  // behind a background ffmpeg re-encode (the "blank on entering video mode"
-  // bug). Idempotent + deduped via activeOptimizations, so this only does real
-  // work once per file.
-  try {
-    await ensureSeekable(youtubeId);
-  } catch (e) {
-    console.error(`[videoCache] ensureSeekable ${youtubeId}: ${e.message}`);
+
+  // Serve whatever cached file exists IMMEDIATELY — don't block on
+  // ensureSeekable() which can take 30+ seconds for a short-GOP re-encode.
+  // The raw .mp4 is perfectly playable; the optimized copy (.seek/.sgop) will
+  // be ready for NEXT request.
+  const videoPath = getCachedVideoPath(youtubeId);
+  if (!videoPath) {
+    // No cached file at all. This shouldn't happen if the download completed,
+    // but try ensureSeekable as a last resort (audio-only .m4a won't have a
+    // video copy to build).
+    try {
+      await ensureSeekable(youtubeId);
+    } catch (e) {
+      console.error(`[videoCache] ensureSeekable ${youtubeId}: ${e.message}`);
+    }
+    const retryPath = getCachedVideoPath(youtubeId);
+    if (!retryPath) return res.status(404).json({ error: 'Not cached' });
+    return serveVideo(res, retryPath);
   }
 
-  const videoPath = getCachedVideoPath(youtubeId);
-  if (!videoPath) return res.status(404).json({ error: 'Not cached' });
+  // Fire ensureSeekable in background for NEXT request — build the optimized
+  // copy so subsequent plays serve the faststart / short-GOP file.
+  ensureSeekable(youtubeId).catch(() => {});
 
+  serveVideo(res, videoPath);
+});
+
+function serveVideo(res, videoPath) {
   const ext = extname(videoPath).toLowerCase();
   const mime = ext === '.mp4' ? 'video/mp4' : ext === '.m4a' ? 'audio/mp4' : 'video/webm';
 
   const fileInfo = statSync(videoPath);
   const fileSize = fileInfo.size;
-  const range = req.headers.range;
+  const range = res.req?.headers?.range || '';
 
   if (range) {
     const parts = range.replace(/bytes=/, '').split('-');
@@ -145,7 +159,7 @@ router.get('/stream/:youtubeId', async (req, res) => {
     });
     createReadStream(videoPath).pipe(res);
   }
-});
+}
 
 router.get('/status', async (req, res) => {
   try {

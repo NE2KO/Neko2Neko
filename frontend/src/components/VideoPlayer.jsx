@@ -312,7 +312,7 @@ const handleSend = useCallback(async (target) => {
                bottomBarOverlay
                bottomClusterAnim={bottomClusterAnim}
                controls={embedded ? undefined : (
-                <MediaControls type="video" mediaRef={videoRef} folderFiles={folderFiles} currentFile={file} onFileChange={onFileChange} onClose={onClose} />
+                 <MediaControls type="video" mediaRef={videoRef} folderFiles={folderFiles} currentFile={file} onFileChange={onFileChange} />
               )}
                bottomBar={embedded ? undefined : (queueMode ? undefined : (
                  <VaultActionBar

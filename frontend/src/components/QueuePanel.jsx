@@ -24,7 +24,7 @@ function formatDuration(seconds) {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-const QueueItem = memo(({ track, index, isActive, onSelect, onToggleFavorite }) => {
+const QueueItem = memo(({ track, index, isActive, onSelect, onToggleFavorite, isToggling }) => {
   const [imgError, setImgError] = useState(false);
   const fileId = track.file_id || track._file_id;
   const showImg = !!fileId && !imgError;
@@ -88,9 +88,9 @@ const QueueItem = memo(({ track, index, isActive, onSelect, onToggleFavorite }) 
       {onToggleFavorite && (
         <span
           onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-          onClick={(e) => { e.stopPropagation(); onToggleFavorite(track); }}
+          onClick={(e) => { e.stopPropagation(); if (!isToggling) onToggleFavorite(track); }}
           title={isFav ? 'Remove from favorites' : 'Add to favorites'}
-          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18, flexShrink: 0, cursor: 'pointer' }}
+          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18, flexShrink: 0, cursor: 'pointer', opacity: isToggling ? 0.5 : 1 }}
         >
           <Heart size={14} style={{ color: isFav ? '#ef4444' : COLORS.text.tertiary, fill: isFav ? '#ef4444' : 'none' }} />
         </span>
@@ -109,10 +109,20 @@ export default function QueuePanel({ isOpen, onClose, tracks, currentTrackIndex,
   const inputRef = useRef(null);
   const listRef = useRef(null);
   const [scrollTop, setScrollTop] = useState(0);
+  const [togglingIds, setTogglingIds] = useState(new Set());
 
   const handleToggleFav = useCallback((track) => {
-    onFavoriteToggle?.(track);
-  }, [onFavoriteToggle]);
+    const fileId = track.file_id || track._file_id || track.id;
+    if (togglingIds.has(fileId)) return;
+    setTogglingIds(prev => new Set(prev).add(fileId));
+    onFavoriteToggle?.(track).finally(() => {
+      setTogglingIds(prev => {
+        const next = new Set(prev);
+        next.delete(fileId);
+        return next;
+      });
+    });
+  }, [togglingIds, onFavoriteToggle]);
 
   useEffect(() => {
     if (isOpen && inputRef.current) {
@@ -279,6 +289,7 @@ export default function QueuePanel({ isOpen, onClose, tracks, currentTrackIndex,
                       isActive={origIndex === currentTrackIndex}
                       onSelect={handleSelect}
                       onToggleFavorite={handleToggleFav}
+                      isToggling={togglingIds.has(track.file_id || track.id || realIndex)}
                     />
                   </div>
                 );

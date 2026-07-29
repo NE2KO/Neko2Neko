@@ -32,6 +32,8 @@ import { startEngine, getEngineStatus } from './monitor/engine.js';
 import { startWebSocketServer } from './monitor/websocket.js';
 import { startMonitoringCache } from './monitor/monitoringCache.js';
 import db, { stmts, setupFTS, deferredDbInit } from './db.js';
+globalThis.db = db;
+globalThis.stmts = stmts;
 
 import { startWatcher, addSseClient, runIncrementalScan } from './utils/watcher.js';
 import { startMaintenanceScheduler } from './utils/maintenance.js';
@@ -41,6 +43,9 @@ import { PATHS, SETTINGS } from './config/paths.js';
 import { createLogger } from './utils/logger.js';
 import servicesRouter, { registerAllServices } from './routes/services.js';
 import { requireService } from './middleware/serviceGuard.js';
+import aiRouter from './routes/ai.js';
+import aiProvidersRouter from './routes/ai-providers.js';
+import aiContextRouter from './routes/ai-context.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -84,6 +89,9 @@ app.use('/api/monitoring', monitoringRouter);
 app.use('/api/monitoring/jobs', jobsRouter);
 app.use('/api/services', servicesRouter);
 app.use('/api/settings', settingsRouter);
+app.use('/api/ai', aiRouter);
+app.use('/api/ai/providers', aiProvidersRouter);
+app.use('/api/ai', aiContextRouter);
 app.use('/api/playback', playbackRouter);
 app.get('/api/logs/stream', addLogClient);
 app.get('/api/logs', (req, res) => {

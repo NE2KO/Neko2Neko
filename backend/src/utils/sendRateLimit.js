@@ -59,7 +59,13 @@ function dayStart(ts = Date.now()) {
 
 export function getRateState() {
   const row = db.prepare('SELECT date, count, last_send_at FROM send_rate_limit WHERE id = 1').get();
-  return { date: row?.date || '', count: row?.count || 0, lastSendAt: row?.last_send_at || 0 };
+  const date = row?.date || '';
+  const today = todayStr();
+  if (date !== today) {
+    db.prepare("UPDATE send_rate_limit SET date = ?, count = 0, last_send_at = 0 WHERE id = 1").run(today);
+    return { date: today, count: 0, lastSendAt: 0 };
+  }
+  return { date, count: row?.count || 0, lastSendAt: row?.last_send_at || 0 };
 }
 
 function resetIfNewDay() {
@@ -74,6 +80,19 @@ function resetIfNewDay() {
 export function recordSend() {
   const state = resetIfNewDay();
   db.prepare('UPDATE send_rate_limit SET count = ?, last_send_at = ? WHERE id = 1').run(state.count + 1, Date.now());
+}
+
+// Reset the daily rate counter so the scheduler recalculates slots from scratch.
+// Called when auto-send is re-enabled or debug mode is turned off.
+export function resetRateState() {
+  db.prepare("UPDATE send_rate_limit SET count = 0, last_send_at = 0 WHERE id = 1").run();
+}
+
+// Clear stale scheduled_at timestamps so pending items get fresh ETAs on the
+// next tick.  Without this, items scheduled for a slot that passed while
+// auto-send was off would either fire immediately or stay stuck.
+export function clearScheduledAt() {
+  return db.prepare("UPDATE send_queue SET scheduled_at = NULL WHERE status = 'pending'").run().changes;
 }
 
 export function canSendNow() {
@@ -98,12 +117,21 @@ export function canSendNow() {
   }
 
   const elapsedSlots = Math.floor((now - start) / intervalMs);
+  const slotAfterLastSend = state.lastSendAt > start
+    ? Math.floor((state.lastSendAt - start) / intervalMs) + 1
+    : 0;
+  const nextSlot = Math.max(elapsedSlots, slotsUsed, slotAfterLastSend);
 
-  let nextSlot;
-  if (state.lastSendAt > start) {
-    nextSlot = Math.floor((state.lastSendAt - start) / intervalMs) + 1;
-  } else {
-    nextSlot = Math.max(elapsedSlots, slotsUsed);
+  // Grace period: skip ALL missed slots so items never get assigned to a
+  // slot that already expired. Without this, a delayed tick could place
+  // items into a slot that started >5 min ago.
+  while (nextSlot < perDay) {
+    const slotStart = start + nextSlot * intervalMs;
+    if (now >= slotStart + TICK_GRACE_MS) {
+      nextSlot += 1;
+    } else {
+      break;
+    }
   }
 
   let nextAllowedAt;
@@ -171,29 +199,27 @@ export function buildQueueTimeline({ now, pendingItems, perDay, rateState }) {
   const slotsUsed = rateState?.count || 0;
   const lastSendAt = rateState?.lastSendAt || 0;
   
-  // Calculate elapsed slots from midnight
+  // Calculate elapsed slots from midnight (slots that have arrived)
   const elapsedSlots = Math.floor((now - today) / intervalMs);
-  
-  // Determine next available slot index
-  // Priority: 1) After last send, 2) Next unused slot, 3) First future slot
-  let nextSlotIdx;
-  if (lastSendAt > today) {
-    // Items sent today: next slot is after the last send's slot
-    nextSlotIdx = Math.floor((lastSendAt - today) / intervalMs) + 1;
-  } else if (slotsUsed < perDay) {
-    // No sends yet today: next slot is the first unused one
-    nextSlotIdx = slotsUsed;
-  } else {
-    // All today's slots used: items wait for tomorrow
-    nextSlotIdx = perDay;
-  }
 
-  // Apply grace period: if the tick runs >= TICK_GRACE_MS after the next slot's start,
-  // treat that slot as missed and move to the following slot.
-  if (nextSlotIdx < perDay) {
+  // Determine next available slot index.
+  // Compare: how many slots have arrived vs how many were actually sent vs
+  // slot after the last send. Take the maximum so a delayed tick (e.g. 00:03
+  // running at 08:00) doesn't incorrectly skip today's early slots.
+  const slotAfterLastSend = lastSendAt > today
+    ? Math.floor((lastSendAt - today) / intervalMs) + 1
+    : 0;
+  let nextSlotIdx = Math.max(elapsedSlots, slotsUsed, slotAfterLastSend);
+
+  // Apply grace period: skip ALL missed slots, not just one.
+  // If the tick runs >= TICK_GRACE_MS after a slot's start, that slot is
+  // considered missed and items roll forward to the next available slot.
+  while (nextSlotIdx < perDay) {
     const slotStart = slots[nextSlotIdx];
     if (now >= slotStart + TICK_GRACE_MS) {
       nextSlotIdx += 1;
+    } else {
+      break;
     }
   }
   
@@ -383,6 +409,19 @@ export function setSendSettings({ tickEnabled, debugMode, perDay } = {}) {
     nextPerDay = Math.round(perDay);
   }
   db.prepare('UPDATE send_settings SET tick_enabled = ?, debug_mode = ?, per_day = ? WHERE id = 1').run(nextTick, nextDebug, nextPerDay);
+
+  // When auto-send is re-enabled (OFF→ON) or debug mode is turned OFF,
+  // reset the rate state and clear stale scheduled_at so the scheduler
+  // recalculates slots from scratch.  Without this, items that were scheduled
+  // for a slot that passed while auto-send was OFF would either fire
+  // immediately or stay stuck at the old time.
+  const turnedOn = !cur.tickEnabled && nextTick;
+  const debugOff = cur.debugMode && !nextDebug;
+  if (turnedOn || debugOff) {
+    resetRateState();
+    clearScheduledAt();
+  }
+
   return { tickEnabled: !!nextTick, debugMode: !!nextDebug, perDay: nextPerDay };
 }
 
@@ -436,27 +475,48 @@ function targetFilter(target) {
   return { condition: `target IN (${placeholders})`, params: list };
 }
 
-export function getQueueByStatus(status, cursor = 0, limit = 100, target) {
+const VALID_SORT_BY = new Set([null, 'name', 'size', 'created_at', 'completed_at']);
+const VALID_SORT_ORDER = new Set(['asc', 'desc']);
+const VALID_TYPE_FILTER = new Set([null, 'video', 'image']);
+
+export function getQueueByStatus(status, cursor = 0, limit = 100, target, opts = {}) {
+  const sortBy = VALID_SORT_BY.has(opts.sortBy) ? opts.sortBy : null;
+  const sortOrder = VALID_SORT_ORDER.has(opts.sortOrder) ? opts.sortOrder : 'desc';
+  const typeFilter = VALID_TYPE_FILTER.has(opts.typeFilter) ? opts.typeFilter : null;
+
   const { condition, params } = targetFilter(target);
-  // 'processing' rows are in-flight direct sends (or a crashed send <10min ago)
-  // and are still "not delivered" — getStatusCounts folds them into pending, so
-  // the list must include them too. Otherwise the Antrian count shows N but the
-  // list renders empty ("1 item, no items") whenever a send is mid-flight.
   const statusClause = status === 'pending' ? "sq.status IN ('pending','processing')" : 'sq.status = ?';
-  // Only non-pending status uses a `?` placeholder for the status value; the
-  // pending branch inlines the two literal statuses, so don't pass `status` as a
-  // bound param there (otherwise sqlite throws "Too many parameter values").
   const statusParam = status === 'pending' ? [] : [status];
+
+  const extraWhere = [];
+  const extraParams = [];
+  if (typeFilter) {
+    extraWhere.push('f.type = ?');
+    extraParams.push(typeFilter);
+  }
+
+  const where = [statusClause, 'sq.id > ?', ...extraWhere].filter(Boolean).join(' AND ');
+  const allParams = [...statusParam, cursor, ...extraParams, ...params];
+
+  let orderBy = 'COALESCE(sq.completed_at, sq.created_at) DESC, sq.id DESC';
+  if (sortBy === 'name') orderBy = 'f.name COLLATE NOCASE ASC, sq.id ASC';
+  else if (sortBy === 'size') orderBy = 'COALESCE(f.size, 0) DESC, sq.id ASC';
+  else if (sortBy === 'created_at') orderBy = 'sq.created_at DESC, sq.id DESC';
+  else if (sortBy === 'completed_at') orderBy = 'sq.completed_at DESC, sq.id DESC';
+  if (sortOrder === 'asc') {
+    orderBy = orderBy.replace(/ DESC/g, ' ASC').replace(/ ASC/g, ' DESC');
+  }
+
   const rows = db.prepare(`
     SELECT sq.id AS qid, sq.file_id, sq.target, sq.created_at, sq.status, sq.error,
            sq.hold_until, sq.completed_at, sq.caption, sq.debug, sq.sort_order, sq.scheduled_at,
            f.name, f.type, f.ext, f.has_thumb, f.size, f.duration
     FROM send_queue sq
     LEFT JOIN files f ON f.id = sq.file_id
-    WHERE ${statusClause} AND sq.id > ?${condition ? ' AND ' + condition : ''}
-    ORDER BY COALESCE(sq.sort_order, sq.id) ASC, sq.id ASC
+    WHERE ${where}
+    ORDER BY ${orderBy}
     LIMIT ?
-  `).all(...statusParam, cursor, ...params, limit);
+  `).all(...allParams, limit);
   const last = rows.length ? rows[rows.length - 1].qid : cursor;
   return { items: rows, nextCursor: rows.length < limit ? null : last };
 }

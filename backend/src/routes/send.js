@@ -404,7 +404,11 @@ router.get('/queue', (req, res) => {
     if (!VALID_STATUS.has(status)) return res.status(400).json({ error: 'invalid status' });
     const cursor = parseInt(req.query.cursor || '0', 10) || 0;
     const limit = Math.min(parseInt(req.query.limit || '100', 10) || 100, 500);
-    const { items, nextCursor } = getQueueByStatus(status, cursor, limit, req.query.target);
+    const { items, nextCursor } = getQueueByStatus(status, cursor, limit, req.query.target, {
+      sortBy: req.query.sortBy || null,
+      sortOrder: req.query.sortOrder || 'desc',
+      typeFilter: req.query.typeFilter || null,
+    });
     res.json({ items, nextCursor });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -516,8 +520,6 @@ export function startSendScheduler() {
   schedulerStarted = true;
   setInterval(async () => {
     try {
-      const purgeBefore = Date.now() - 7 * 24 * 3600 * 1000;
-      db.prepare("DELETE FROM send_queue WHERE status != 'pending' AND created_at < ?").run(purgeBefore);
 
       const settings = getSendSettings();
       // Skip tick only when debug mode is ON without share-only target.

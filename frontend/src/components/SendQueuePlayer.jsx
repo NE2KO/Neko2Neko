@@ -266,7 +266,6 @@ useEffect(() => {
         folderFiles={files}
         currentFile={displayFile}
         onFileChange={handleFileChange}
-        onClose={onClose}
         onSeek={(s) => { try { const el = isAudio ? sharedAudioRef.current : activeMediaRef.current; if (el) el.currentTime = s; } catch {} }}
       />
     </div>

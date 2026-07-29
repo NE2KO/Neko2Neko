@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, forwardRef, useImperativeHandle, memo } from 'react';
 
-const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId, playing, onReady, onWaiting, onPlaying, onStalled, onSeeked, onEnded, onError, onLoadedMetadata, scrubbingRef, coverUrl }, ref) {
+const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId, onReady, onWaiting, onPlaying, onStalled, onSeeked, onEnded, onError, onLoadedMetadata, onPause, coverUrl }, ref) {
   const videoRef = useRef(null);
   const [status, setStatus] = useState('checking');
   const [progress, setProgress] = useState(0);
@@ -10,8 +10,7 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
   const seekInProgressRef = useRef(false);
   const pendingSeekRef = useRef(null);
   const lastRequestedSeekRef = useRef(null);
-  const playingRef = useRef(false);
-  playingRef.current = playing;
+  const pendingForceSeekRef = useRef(null);
 
   useImperativeHandle(ref, () => ({
     getCurrentTime() {
@@ -36,15 +35,37 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
     forceSeek(time) {
       const video = videoRef.current;
       if (!video) return false;
-      // No-op if already at (or within a frame of) the target: re-assigning
+
+      // If another force seek is still pending, queue/replace it so rapid
+      // re-anchors win on the latest target instead of stacking浏览器 seeks.
+      if (pendingForceSeekRef.current !== null) {
+        if (Math.abs(pendingForceSeekRef.current - time) < 0.25) {
+          lastRequestedSeekRef.current = time;
+          return true;
+        }
+        pendingForceSeekRef.current = time;
+        lastRequestedSeekRef.current = time;
+        return true;
+      }
+
+      // No-op if already at (or within 1ms of) the target: re-assigning
       // currentTime to the same value makes the <video> briefly flash the
       // pre-seek frame, which reads as flicker during rapid seeks.
-      if (Math.abs((video.currentTime || 0) - time) < 0.05) {
+      // Threshold lowered from 50ms to 1ms so soft-seek corrections
+      // (drift 3–50ms) are not silently dropped.
+      if (Math.abs((video.currentTime || 0) - time) < 0.001) {
         lastRequestedSeekRef.current = time;
         return false;
       }
-      seekInProgressRef.current = false;
-      pendingSeekRef.current = null;
+      // Pause before seek to prevent wrong-frame flash on videos with long GOPs
+      // or sparse keyframes. Skip pause for seeks < 300ms to allow seamless
+      // soft-seek correction from the sync engine (no visible frame jump).
+      if (Math.abs((video.currentTime || 0) - time) > 0.3) {
+        if (!video.paused) video.pause();
+      }
+
+      seekInProgressRef.current = true;
+      pendingForceSeekRef.current = null;
       lastRequestedSeekRef.current = time;
       video.currentTime = time;
       return true;
@@ -65,6 +86,19 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
     getRate() {
       const video = videoRef.current;
       return video ? video.playbackRate : 1;
+    },
+    getPaused() {
+      const video = videoRef.current;
+      return video ? video.paused : true;
+    },
+    getSeeking() {
+      const video = videoRef.current;
+      return video ? video.seeking : false;
+    },
+    getReadyState() {
+      const video = videoRef.current;
+      if (!video) return 0;
+      return video.readyState;
     },
     getDuration() {
       const video = videoRef.current;
@@ -90,17 +124,23 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
       if (next !== null) {
         pendingSeekRef.current = null;
         video.currentTime = next;
-        // Only auto-resume if we're NOT mid-scrub. While the user is dragging the
-        // progress bar the parent has paused the video and is soft-seeking it for
-        // frame-preview; auto-playing here would cancel that pause and let the MV
-        // run as a second timeline (the "frame from old position carried over"
-        // glitch). The parent re-anchors + resumes on scrub-end.
-        if (playingRef.current && !scrubbingRef?.current) {
-          video.play().catch(() => {});
+        notifySeeked?.();
+        return;
+      }
+
+      // Drain pending force-seek queue so the latest target wins without
+      // stacking browser seeks on top of each other.
+      const nextForce = pendingForceSeekRef.current;
+      if (nextForce !== null && seekInProgressRef.current) {
+        pendingForceSeekRef.current = null;
+        if (Math.abs((videoRef.current?.currentTime || 0) - nextForce) >= 0.001) {
+          seekInProgressRef.current = true;
+          videoRef.current.currentTime = nextForce;
         }
         notifySeeked?.();
         return;
       }
+
       seekInProgressRef.current = false;
       notifySeeked?.();
     };
@@ -113,10 +153,12 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
     };
   }, [status]);
 
-  // TEMP DIAGNOSTIC: raw <video> event timeline.
+  // TEMP DIAGNOSTIC: raw <video> event timeline. Enabled only when the global
+  // sync telemetry flag is active to avoid console spam during normal playback.
   useEffect(() => {
+    const enabled = typeof window !== 'undefined' && window.__SYNC_ENABLED__;
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || !enabled) return;
     const fmt = () => {
       let buf = '';
       try {
@@ -191,22 +233,9 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
   // Remove the background blob hot-swap effect (post-streaming regression that
   // caused the backward-seek double-frame glitch). Playback stays on the
   // range-streamed URL; the <video src> is never reassigned.
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    if (playing) {
-      // Only auto-resume when the clip is already positioned mid-playback. The
-      // INITIAL start from ~0 is driven by the parent AFTER it seeks to the
-      // offset target (prepare-then-play), so frame 0 is never painted for
-      // offset tracks. Resuming an already-advanced clip (user pause→play) is
-      // still handled here. Don't auto-resume mid-scrub — the parent paused the
-      // video and will re-anchor + resume on scrub-end.
-      if (!scrubbingRef?.current && (video.currentTime || 0) > 0.05) video.play().catch(() => {});
-    } else {
-      video.pause();
-    }
-  }, [playing]);
+  // Playback is now driven entirely by the parent engine via playVideo/pauseVideo;
+  // the old `playing` prop auto-play/pause effect was removed so the engine is
+  // the single source of truth and cannot fight with rapid play/pause spam.
 
   if (!youtubeId) return null;
 
@@ -255,6 +284,7 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
     onLoadedMetadata={onLoadedMetadata}
     onEnded={onEnded}
     onError={onError}
+    onPause={onPause}
   />
   );
 }));

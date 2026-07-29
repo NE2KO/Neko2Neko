@@ -54,6 +54,30 @@ function hasNonZeroOffset(youtubeId) {
   }
 }
 
+// Are ALL tracks using this youtubeId offset>0? If so, the seek copy is
+// unnecessary and can be deleted to save disk.
+function allTracksOffsetNonZero(youtubeId) {
+  try {
+    const row = db.prepare('SELECT COUNT(*) AS total FROM files WHERE youtube_id = ?').get(youtubeId);
+    const nonzero = db.prepare('SELECT COUNT(*) AS c FROM files WHERE youtube_id = ? AND video_offset > 0').get(youtubeId);
+    return row && nonzero && row.total > 0 && row.total === nonzero.c;
+  } catch {
+    return false;
+  }
+}
+
+// Are ALL tracks using this youtubeId offset=0? If so, the sgop copy is
+// unnecessary and can be deleted to save disk.
+function allTracksOffsetZero(youtubeId) {
+  try {
+    const row = db.prepare('SELECT COUNT(*) AS total FROM files WHERE youtube_id = ?').get(youtubeId);
+    const nonzero = db.prepare('SELECT COUNT(*) AS c FROM files WHERE youtube_id = ? AND video_offset > 0').get(youtubeId);
+    return row && nonzero && row.total > 0 && nonzero.c === 0;
+  } catch {
+    return false;
+  }
+}
+
 // Guard against operating on mangled/non-canonical ids (e.g. a filename base
 // like "<id>.sgop"). YouTube ids are 11 chars of [A-Za-z0-9_-].
 function isValidYoutubeId(id) {
@@ -211,12 +235,18 @@ export async function ensureSeekable(youtubeId) {
       await remuxForWeb(srcPath, targetPath, wantSgop);
       const ok = await verifySeekable(targetPath);
       if (ok) {
-        // Keep BOTH variant files: a shared YouTube ID can legitimately need
-        // `<id>.seek.mp4` (offset-0 track) AND `<id>.sgop.mp4` (offset>0 track)
-        // on disk at the same time. Deleting the sibling variant was the root
-        // cause of the "video tiba2 hilang" bug (one track's file vanished when
-        // the other track's copy was built). Only drop the raw download (if it
-        // still exists) so storage stays ~1x.
+        // Clean up the unused sibling variant to save disk. A shared YouTube ID
+        // can legitimately need BOTH variants (offset-0 + offset>0 tracks), so
+        // only delete the sibling when ALL tracks agree on offset direction.
+        const sibling = wantSgop
+          ? join(CACHE_DIR, `${youtubeId}.seek.mp4`)
+          : join(CACHE_DIR, `${youtubeId}.sgop.mp4`);
+        const canDeleteSibling = wantSgop ? allTracksOffsetNonZero(youtubeId) : allTracksOffsetZero(youtubeId);
+        if (canDeleteSibling && existsSync(sibling)) {
+          await unlink(sibling).catch(() => {});
+          console.log(`[videoCache] ${youtubeId}: removed unused ${wantSgop ? '.seek' : '.sgop'} copy (all tracks offset-${wantSgop ? '0' : '>0'})`);
+        }
+        // Only drop the raw download (if it still exists) so storage stays ~1x.
         await unlink(rawPath).catch(() => {});
         console.log(`[videoCache] ${youtubeId}: ${wantSgop ? `re-encoded short-GOP (${REENCODE_CODEC}, offset>0)` : 'remuxed copy+faststart'}`);
       } else {

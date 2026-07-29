@@ -19,90 +19,78 @@ export async function searchLyricsAllSources(trackName, artistName, albumName, d
   const seen = new Set();
   const allResults = [];
 
-  // 1. LRCLIB exact match with full metadata (most reliable)
-  try {
-    const exact = await getLyrics(trackName, artistName, albumName, duration);
-    if (exact) {
-      allResults.push(exact);
-    }
-  } catch (err) {
-    console.error('[lyrics] LRCLIB exact match error:', err.message);
+  // Run all primary sources in parallel for speed.
+  const query = [trackName, artistName].filter(Boolean).join(' ');
+  const primarySources = await Promise.allSettled([
+    getLyrics(trackName, artistName, albumName, duration),
+    query ? searchLyrics(query) : Promise.resolve([]),
+    searchLrcmux(artistName, trackName, albumName, duration).catch(() => null),
+    query ? searchPyjlyric(query) : Promise.resolve([]),
+    searchGenius(artistName, trackName).catch(() => null),
+    searchNetEase(artistName, trackName, albumName, duration).catch(() => []),
+  ]);
+
+  // 1. LRCLIB exact match (most reliable)
+  const lrclibExact = primarySources[0];
+  if (lrclibExact.status === 'fulfilled' && lrclibExact.value) {
+    allResults.push(lrclibExact.value);
   }
 
-  // 2. LRCLIB search with artist + track
-  try {
-    const query = [trackName, artistName].filter(Boolean).join(' ');
-    const results = await searchLyrics(query);
-    allResults.push(...dedup(results, seen));
-  } catch (err) {
-    console.error('[lyrics] LRCLIB search error:', err.message);
+  // 2. LRCLIB search
+  const lrclibSearch = primarySources[1];
+  if (lrclibSearch.status === 'fulfilled') {
+    allResults.push(...dedup(lrclibSearch.value || [], seen));
   }
 
-  // 3. Try lrcmux (aggregator) - may be unreliable
-  try {
-    const result = await searchLrcmux(artistName, trackName, albumName, duration);
-    if (result && (result.plainLyrics || result.syncedLyrics)) {
-      allResults.push(result);
-    }
-  } catch (err) {
-    console.error('[lyrics] Lrcmux error:', err.message);
+  // 3. lrcmux
+  const lrcmuxResult = primarySources[2];
+  if (lrcmuxResult.status === 'fulfilled' && lrcmuxResult.value?.plainLyrics || lrcmuxResult.value?.syncedLyrics) {
+    allResults.push(lrcmuxResult.value);
   }
 
-  // 4. Try pyjlyric (Japanese lyrics from 14+ sites)
-  try {
-    const query = [trackName, artistName].filter(Boolean).join(' ');
-    const pyjlyricResults = await searchPyjlyric(query);
-    allResults.push(...dedup(pyjlyricResults, seen));
-  } catch (err) {
-    console.error('[lyrics] pyjlyric error:', err.message);
+  // 4. pyjlyric
+  const pyjlyricResult = primarySources[3];
+  if (pyjlyricResult.status === 'fulfilled') {
+    allResults.push(...dedup(pyjlyricResult.value || [], seen));
   }
 
-  // 5. Try Genius as fallback
-  try {
-    const result = await searchGenius(artistName, trackName);
-    if (result && result.plainLyrics) {
-      allResults.push(result);
-    }
-  } catch (err) {
-    console.error('[lyrics] Genius error:', err.message);
+  // 5. Genius
+  const geniusResult = primarySources[4];
+  if (geniusResult.status === 'fulfilled' && geniusResult.value?.plainLyrics) {
+    allResults.push(geniusResult.value);
   }
 
-  // 5. Try NetEase (great for Japanese/Asian music)
-  try {
-    const neteaseResults = await searchNetEase(artistName, trackName, albumName, duration);
-    allResults.push(...dedup(neteaseResults, seen));
-  } catch (err) {
-    console.error('[lyrics] NetEase error:', err.message);
+  // 6. NetEase
+  const neteaseResult = primarySources[5];
+  if (neteaseResult.status === 'fulfilled') {
+    allResults.push(...dedup(neteaseResult.value || [], seen));
   }
 
-  // 6. Try cleaned track name on LRCLIB
-  const cleanedTrack = trackName
-    .replace(/\bfeat\.?\s*.*/i, '')
-    .replace(/\bft\.?\s*.*/i, '')
-    .replace(/\bremix\b/gi, '')
-    .replace(/\bversion\b/gi, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (cleanedTrack && cleanedTrack !== trackName) {
-    try {
-      const results = await searchLyrics(cleanedTrack);
-      allResults.push(...dedup(results, seen));
-    } catch (err) {
-      console.error('[lyrics] LRCLIB cleaned error:', err.message);
-    }
-
-    try {
-      const result = await searchLrcmux(artistName, cleanedTrack, albumName, duration);
-      if (result && (result.plainLyrics || result.syncedLyrics)) {
-        allResults.push(result);
+  // 7. Try cleaned track name on LRCLIB + lrcmux (only if few results so far)
+  if (allResults.length < 3) {
+    const cleanedTrack = trackName
+      .replace(/\bfeat\.?\s*.*/i, '')
+      .replace(/\bft\.?\s*.*/i, '')
+      .replace(/\bremix\b/gi, '')
+      .replace(/\bversion\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (cleanedTrack && cleanedTrack !== trackName) {
+      const cleanedSources = await Promise.allSettled([
+        searchLyrics(cleanedTrack),
+        searchLrcmux(artistName, cleanedTrack, albumName, duration).catch(() => null),
+      ]);
+      const cl1 = cleanedSources[0];
+      if (cl1.status === 'fulfilled') allResults.push(...dedup(cl1.value || [], seen));
+      const cl2 = cleanedSources[1];
+      if (cl2.status === 'fulfilled' && cl2.value?.plainLyrics || cl2.value?.syncedLyrics) {
+        allResults.push(cl2.value);
       }
-    } catch (err) {
-      console.error('[lyrics] Lrcmux cleaned error:', err.message);
     }
   }
 
-  // 7. Try artist-only search
-  if (artistName) {
+  // 8. Try artist-only search (only if still few results)
+  if (allResults.length < 3 && artistName) {
     try {
       const results = await searchLyrics(artistName);
       allResults.push(...dedup(results, seen));
@@ -129,43 +117,39 @@ export async function searchLyricsByQuery(query) {
   let q = query.trim();
   const allResults = [];
 
-  // 1. Try raw query on LRCLIB first (most reliable)
-  try {
-    const results = await searchLyrics(q);
-    if (results.length > 0) {
-      allResults.push(...dedup(results, seen));
-    }
-  } catch (err) {
-    console.error('[lyrics] LRCLIB raw query error:', err.message);
+  // Run all raw query sources in parallel for speed.
+  const rawSources = await Promise.allSettled([
+    searchLyrics(q).catch(() => []),
+    searchLrcmuxByQuery(q).catch(() => null),
+    searchPyjlyric(q).catch(() => []),
+    searchNetEaseByQuery(q).catch(() => []),
+  ]);
+
+  // 1. LRCLIB raw query
+  const lrclibRaw = rawSources[0];
+  if (lrclibRaw.status === 'fulfilled' && lrclibRaw.value?.length > 0) {
+    allResults.push(...dedup(lrclibRaw.value, seen));
   }
 
-  // 2. Try lrcmux with raw query
-  try {
-    const result = await searchLrcmuxByQuery(q);
-    if (result && (result.plainLyrics || result.syncedLyrics)) {
-      allResults.push(result);
-    }
-  } catch (err) {
-    console.error('[lyrics] Lrcmux raw query error:', err.message);
+  // 2. lrcmux raw query
+  const lrcmuxRaw = rawSources[1];
+  if (lrcmuxRaw.status === 'fulfilled' && (lrcmuxRaw.value?.plainLyrics || lrcmuxRaw.value?.syncedLyrics)) {
+    allResults.push(lrcmuxRaw.value);
   }
 
-  // 3. Try pyjlyric (Japanese lyrics from 14+ sites)
-  try {
-    const pyjlyricResults = await searchPyjlyric(q);
-    allResults.push(...dedup(pyjlyricResults, seen));
-  } catch (err) {
-    console.error('[lyrics] pyjlyric error:', err.message);
+  // 3. pyjlyric
+  const pyjRaw = rawSources[2];
+  if (pyjRaw.status === 'fulfilled') {
+    allResults.push(...dedup(pyjRaw.value || [], seen));
   }
 
-  // 4. Try NetEase (great for Japanese/Asian music)
-  try {
-    const neteaseResults = await searchNetEaseByQuery(q);
-    allResults.push(...dedup(neteaseResults, seen));
-  } catch (err) {
-    console.error('[lyrics] NetEase raw query error:', err.message);
+  // 4. NetEase
+  const neRaw = rawSources[3];
+  if (neRaw.status === 'fulfilled') {
+    allResults.push(...dedup(neRaw.value || [], seen));
   }
 
-  // 4. Clean query: remove cover markers, special brackets, feat., remix, etc.
+  // 5. Clean query: remove cover markers, special brackets, feat., remix, etc.
   let cleaned = q
     .replace(/^【[^】]*】\s*/g, '')
     .replace(/[⧸【】\[\]「」『』]/g, ' ')
@@ -180,97 +164,59 @@ export async function searchLyricsByQuery(query) {
     .replace(/\s+/g, ' ')
     .trim();
 
-  // If cleaned is different from raw, try LRCLIB + lrcmux + Genius
+  // If cleaned is different from raw, try LRCLIB + lrcmux + Genius in parallel
   if (cleaned && cleaned !== q) {
-    try {
-      const results = await searchLyrics(cleaned);
-      allResults.push(...dedup(results, seen));
-    } catch (err) {
-      console.error('[lyrics] LRCLIB cleaned error:', err.message);
-    }
+    const cleanedSources = await Promise.allSettled([
+      searchLyrics(cleaned).catch(() => []),
+      searchLrcmuxByQuery(cleaned).catch(() => null),
+      searchGenius('', cleaned).catch(() => null),
+    ]);
 
-    try {
-      const result = await searchLrcmuxByQuery(cleaned);
-      if (result && (result.plainLyrics || result.syncedLyrics)) {
-        allResults.push(result);
-      }
-    } catch (err) {
-      console.error('[lyrics] Lrcmux cleaned error:', err.message);
+    const cl1 = cleanedSources[0];
+    if (cl1.status === 'fulfilled') allResults.push(...dedup(cl1.value || [], seen));
+    const cl2 = cleanedSources[1];
+    if (cl2.status === 'fulfilled' && (cl2.value?.plainLyrics || cl2.value?.syncedLyrics)) {
+      allResults.push(cl2.value);
     }
-
-    // Try Genius with cleaned query
-    try {
-      const result = await searchGenius('', cleaned);
-      if (result && result.plainLyrics) {
-        allResults.push(result);
-      }
-    } catch (err) {
-      console.error('[lyrics] Genius cleaned error:', err.message);
+    const cl3 = cleanedSources[2];
+    if (cl3.status === 'fulfilled' && cl3.value?.plainLyrics) {
+      allResults.push(cl3.value);
     }
   }
 
-  // 5. Try to parse as "Artist Track" (split at midpoint)
+  // 6. Try to parse as "Artist Track" (split at midpoint)
   const words = cleaned.split(/\s+/);
   if (words.length >= 2) {
     const mid = Math.ceil(words.length / 2);
     const artistGuess = words.slice(0, mid).join(' ');
     const trackGuess = words.slice(mid).join(' ');
-
-    try {
-      const exact = await getLyrics(trackGuess, artistGuess, '', null);
-      if (exact) allResults.push(exact);
-    } catch (err) {
-      console.error('[lyrics] LRCLIB split error:', err.message);
-    }
-
-    try {
-      const results = await searchLyrics(`${trackGuess} ${artistGuess}`);
-      allResults.push(...dedup(results, seen));
-    } catch (err) {
-      console.error('[lyrics] LRCLIB split search error:', err.message);
-    }
-
-    // Try Genius with split
-    try {
-      const result = await searchGenius(artistGuess, trackGuess);
-      if (result && result.plainLyrics) {
-        allResults.push(result);
-      }
-    } catch (err) {
-      console.error('[lyrics] Genius split error:', err.message);
-    }
-
-    // Try reverse split
     const revArtist = words.slice(mid).join(' ');
     const revTrack = words.slice(0, mid).join(' ');
-    try {
-      const exact = await getLyrics(revTrack, revArtist, '', null);
-      if (exact) allResults.push(exact);
-    } catch (err) {
-      console.error('[lyrics] LRCLIB reverse split error:', err.message);
-    }
-
-    // Try track-only with last 2 words
-    if (words.length >= 3) {
-      const lastTwo = words.slice(-2).join(' ');
-      try {
-        const results = await searchLyrics(lastTwo);
-        allResults.push(...dedup(results, seen));
-      } catch (err) {
-        console.error('[lyrics] LRCLIB last two error:', err.message);
-      }
-    }
-
-    // Try track-only with last word
+    const lastTwo = words.length >= 3 ? words.slice(-2).join(' ') : null;
     const lastWord = words[words.length - 1];
-    if (lastWord.length > 2) {
-      try {
-        const results = await searchLyrics(lastWord);
-        allResults.push(...dedup(results, seen));
-      } catch (err) {
-        console.error('[lyrics] LRCLIB last word error:', err.message);
-      }
-    }
+
+    // Run all split-based searches in parallel
+    const splitSources = await Promise.allSettled([
+      getLyrics(trackGuess, artistGuess, '', null).catch(() => null),
+      searchLyrics(`${trackGuess} ${artistGuess}`).catch(() => []),
+      searchGenius(artistGuess, trackGuess).catch(() => null),
+      getLyrics(revTrack, revArtist, '', null).catch(() => null),
+      lastTwo ? searchLyrics(lastTwo).catch(() => []) : Promise.resolve([]),
+      lastWord?.length > 2 ? searchLyrics(lastWord).catch(() => []) : Promise.resolve([]),
+    ]);
+
+    const s1 = splitSources[0];
+    if (s1.status === 'fulfilled' && s1.value) allResults.push(s1.value);
+    const s2 = splitSources[1];
+    if (s2.status === 'fulfilled') allResults.push(...dedup(s2.value || [], seen));
+    const s3 = splitSources[2];
+    if (s3.status === 'fulfilled' && s3.value?.plainLyrics) allResults.push(s3.value);
+    const s4 = splitSources[3];
+    if (s4.status === 'fulfilled' && s4.value) allResults.push(s4.value);
+    const s5 = splitSources[4];
+    if (s5.status === 'fulfilled') allResults.push(...dedup(s5.value || [], seen));
+    const s6 = splitSources[5];
+    if (s6.status === 'fulfilled') allResults.push(...dedup(s6.value || [], seen));
   }
 
   // Generate romaji for Japanese lyrics

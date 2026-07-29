@@ -16,7 +16,7 @@ const useFavoritesStore = create((set) => ({
 // the store on every data load). Once the user toggles, the store entry wins.
 export function useIsFavorite(fileId, fallback = 0) {
   const v = useFavoritesStore((s) => s.map[fileId]);
-  return (v === undefined ? fallback : v) === 1;
+  return (v == null ? fallback : v) === 1;
 }
 
 export default useFavoritesStore;

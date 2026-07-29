@@ -109,7 +109,6 @@ export default function VaultBottomCluster({
         folderFiles={files}
         currentFile={currentFile}
         onFileChange={onSelect}
-        onClose={onClose}
         onSeek={(s) => usePlaybackStore.getState().setPosition?.(s)}
       />
     </div>
@@ -133,6 +132,7 @@ export default function VaultBottomCluster({
           autoHide={autoHide}
           hidden={!carouselVisible}
           onToggleHidden={toggleCarouselHidden}
+          slide
         />
       </div>
     </div>

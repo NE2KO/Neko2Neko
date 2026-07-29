@@ -7,6 +7,8 @@ import { getGroupLabel } from '../utils/grouping';
 
 
 import { fetchBlob, getCached } from '../utils/thumbCache';
+import { useIsFavorite } from '../store/favoritesStore';
+
 
 // Thumbnail strip item sizing. `lg` is used by the dedicated Music UI so the
 // carousel reads as a big, tappable track list (vs the compact media-vault strip).
@@ -15,51 +17,61 @@ const ITEM_SIZES = {
   lg: 'w-20 h-20 md:w-24 md:h-24',
 };
 
-  const CarouselItem = React.memo(React.forwardRef(function CarouselItem({ file, isActive, onClick, cacheBust, onToggleFavorite, itemSize = 'sm' }, ref) {
-   const [imgFailed, setImgFailed] = useState(false);
-   const isFav = file.is_favorite === 1 || file.is_favorite === true;
-   const thumbUrl = file.type === 'video' || file.type === 'audio'
-   ? `/thumbnails/${file.id}.jpg?v=${cacheBust}`
-   : file.type === 'image'
-   ? `/file/${file.id}`
-   : null;
+const CarouselItem = React.memo(React.forwardRef(function CarouselItem({ file, currentFileId, onClick, cacheBust, onToggleFavorite, itemSize = 'sm' }, ref) {
+  const isActive = file.id === currentFileId;
+  const [imgFailed, setImgFailed] = useState(false);
+  const [isToggling, setIsToggling] = useState(false);
+  const fileId = file.file_id || file.id;
+  const isFav = useIsFavorite(fileId, file.is_favorite ? 1 : 0);
+  const thumbUrl = file.type === 'video' || file.type === 'audio'
+    ? `/thumbnails/${file.id}.jpg?v=${cacheBust}`
+    : file.type === 'image'
+    ? `/file/${file.id}`
+    : null;
 
-   // Only resolve the thumbnail once the item is near the viewport. The carousel
-   // renders a wide windowed strip (up to ~160 items) that is NOT virtualized, so
-   // without this every item would fire a thumbnail request on open — that burst
-   // is what made opening a media item / folder feel heavy.
-   const [blobUrl, setBlobUrl] = useState(() => getCached(thumbUrl) || null);
-   const [shouldLoad, setShouldLoad] = useState(() => !!getCached(thumbUrl));
-   const localRef = useRef(null);
+  const handleFavoriteClick = useCallback((e) => {
+    e.stopPropagation();
+    if (isToggling) return;
+    setIsToggling(true);
+    onToggleFavorite(file).finally(() => setIsToggling(false));
+  }, [isToggling, onToggleFavorite, file]);
 
-   const setRefs = useCallback((el) => {
-     localRef.current = el;
-     if (typeof ref === 'function') ref(el);
-     else if (ref) ref.current = el;
-   }, [ref]);
+  // Only resolve the thumbnail once the item is near the viewport. The carousel
+  // renders a wide windowed strip (up to ~160 items) that is NOT virtualized, so
+  // without this every item would fire a thumbnail request on open — that burst
+  // is what made opening a media item / folder feel heavy.
+  const [blobUrl, setBlobUrl] = useState(() => getCached(thumbUrl) || null);
+  const [shouldLoad, setShouldLoad] = useState(() => !!getCached(thumbUrl));
+  const localRef = useRef(null);
 
-   useEffect(() => {
-     const el = localRef.current;
-     if (!el || !thumbUrl || shouldLoad) return;
-     const io = new IntersectionObserver((entries) => {
-       for (const e of entries) {
-         if (e.isIntersecting) { setShouldLoad(true); io.disconnect(); break; }
-       }
-      }, { root: null, rootMargin: '150px' });
-     io.observe(el);
-     return () => io.disconnect();
-   }, [thumbUrl, shouldLoad]);
+  const setRefs = useCallback((el) => {
+    localRef.current = el;
+    if (typeof ref === 'function') ref(el);
+    else if (ref) ref.current = el;
+  }, [ref]);
 
-   useEffect(() => {
-     if (!shouldLoad || !thumbUrl) return;
-     let cancelled = false;
-     fetchBlob(thumbUrl, { priority: 'low' }).then((u) => {
-       if (!cancelled && u) setBlobUrl(u);
-     });
-     return () => { cancelled = true; };
-   }, [shouldLoad, thumbUrl]);
+  useEffect(() => {
+    const el = localRef.current;
+    if (!el || !thumbUrl || shouldLoad) return;
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (e.isIntersecting) { setShouldLoad(true); io.disconnect(); break; }
+      }
+    }, { root: null, rootMargin: '50px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [thumbUrl, shouldLoad]);
 
-   const activeBg = { video: 'bg-sky-500/25', audio: 'bg-purple-500/25', image: 'bg-green-500/25' }[file.type] || 'bg-sky-500/25';
+  useEffect(() => {
+    if (!shouldLoad || !thumbUrl) return;
+    let cancelled = false;
+    fetchBlob(thumbUrl, { priority: 'low' }).then((u) => {
+      if (!cancelled && u) setBlobUrl(u);
+    });
+    return () => { cancelled = true; };
+  }, [shouldLoad, thumbUrl]);
+
+  const activeBg = { video: 'bg-sky-500/25', audio: 'bg-purple-500/25', image: 'bg-green-500/25' }[file.type] || 'bg-sky-500/25';
   const barColor = { video: 'bg-sky-400', audio: 'bg-purple-400', image: 'bg-green-400' }[file.type] || 'bg-sky-400';
   const typeIcon = { video: <VideoIcon className="w-5 h-5 text-neutral-600" />, audio: <AudioIcon className="w-5 h-5 text-purple-400" />, image: <ImageIcon className="w-5 h-5 text-neutral-600" /> }[file.type] || <VideoIcon className="w-5 h-5 text-neutral-600" />;
 
@@ -98,8 +110,8 @@ const ITEM_SIZES = {
       {onToggleFavorite && (
         <span
           onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-          onClick={(e) => { e.stopPropagation(); onToggleFavorite(file); }}
-          className="absolute top-0.5 right-0.5 p-1 rounded-full bg-black/40 hover:bg-black/60 transition-colors z-10"
+          onClick={handleFavoriteClick}
+          className={`absolute top-0.5 right-0.5 p-1 rounded-full bg-black/40 hover:bg-black/60 transition-colors z-10 ${isToggling ? 'opacity-50 cursor-not-allowed' : ''}`}
           title={isFav ? 'Remove from favorites' : 'Add to favorites'}
         >
           <Heart size={12} className={isFav ? 'text-red-500 fill-red-500' : 'text-white/80'} />
@@ -109,22 +121,21 @@ const ITEM_SIZES = {
   );
 }));
 
-  export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrder = 'asc', cacheBust = '', onToggleFavorite = null, autoHide = false, hidden = false, onToggleHidden = () => {}, itemSize = 'sm' }) {
+export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrder = 'asc', cacheBust = '', onToggleFavorite = null, autoHide = false, hidden = false, onToggleHidden = () => {}, itemSize = 'sm', restoreScrollKey = null, slide = false }) {
+  const currentFileId = currentFile?.id;
   const scrollRef = useRef(null);
   const itemRefs = useRef(new Map());
   const tweenRafRef = useRef(null);
   const targetScrollRef = useRef(null);
-  // First centering after the carousel mounts (i.e. when the modal opens from a
-  // grid click) must JUMP instantly to the active item — no tween/scroll. After
-  // that, in-strip navigation is allowed to animate smoothly.
-  const mountedCenterRef = useRef(false);
+  const SCROLL_STORAGE_KEY = `mv_carousel_scroll_${restoreScrollKey || 'default'}`;
+  const scrollRestoredRef = useRef(false);
 
   const showFolderLabels = files?.length > 1 && files.some(f => f.dir_path !== files[0]?.dir_path);
 
   const getGroupLabelShared = useCallback((item) => getGroupLabel(item, sortBy), [sortBy]);
 
   const metadataGroupedNodes = useMemo(() => {
-    if (!sortBy || sortBy === 'size' || showFolderLabels) return null;
+    if (!sortBy || sortBy === 'size') return null;
     const nodes = [];
     let lastLabel = null;
     for (const file of files) {
@@ -136,28 +147,33 @@ const ITEM_SIZES = {
       nodes.push({ type: 'item', file });
     }
     return nodes;
-  }, [files, sortBy, getGroupLabelShared, showFolderLabels]);
+  }, [files, sortBy, getGroupLabelShared]);
 
-   const getActiveWindow = useCallback((list, activeId) => {
+  const getActiveWindow = useCallback((list, activeId) => {
     if (!list || list.length === 0) return list;
-    // Render the whole strip when it fits a comfortable scroll range; only
-    // window for larger lists so the carousel stays freely scrollable
-    // (the active item is still centered, so this is items-per-side).
-    // Kept small (~61 nodes) on purpose: the strip only shows ~21 items at
-    // once, so a big window just mounts hundreds of DOM nodes / observers on
-    // every modal open — that mount cost is what made opening feel heavy.
-    if (list.length <= 61) return list;
+    // Render a tight windowed strip — only the ~25 items nearest the active
+    // item stay mounted.  A smaller window means fewer IntersectionObservers,
+    // fewer blob fetches and less GPU compositing work.
+    if (list.length <= 25) return list;
     let activeIdx = list.findIndex((n) => {
       if (n && n.type === 'item') return n.file && n.file.id === activeId;
       if (n && n.id) return n.id === activeId;
       return false;
     });
-    if (activeIdx === -1) return list.slice(0, 61);
-    const radius = 30;
-   const start = Math.max(0, activeIdx - radius);
-   const end = Math.min(list.length, activeIdx + radius + 1);
-   return list.slice(start, end);
-   }, []);
+    if (activeIdx === -1) return list.slice(0, 25);
+    const radius = 12;
+    // Expand toward the opposite edge when near start/end so the carousel
+    // doesn't show empty space on one side.
+    let start = Math.max(0, activeIdx - radius);
+    let end = Math.min(list.length, activeIdx + radius + 1);
+    const windowLen = end - start;
+    if (start === 0 && windowLen < radius * 2 + 1) {
+      end = Math.min(list.length, start + radius * 2 + 1);
+    } else if (end === list.length && windowLen < radius * 2 + 1) {
+      start = Math.max(0, end - radius * 2 - 1);
+    }
+    return list.slice(start, end);
+  }, []);
 
   const grouped = useMemo(() => {
     if (!showFolderLabels) return null;
@@ -180,12 +196,11 @@ const ITEM_SIZES = {
   }, []);
 
   const renderItem = useCallback((item) => {
-    const isActive = item.id === currentFile?.id;
     return (
       <CarouselItem
         key={item.id}
         file={item}
-        isActive={isActive}
+        currentFileId={currentFileId}
         onClick={() => onSelect(item)}
         cacheBust={cacheBust}
         onToggleFavorite={onToggleFavorite}
@@ -193,7 +208,7 @@ const ITEM_SIZES = {
         ref={setItemRef(item.id)}
       />
     );
-  }, [currentFile?.id, onSelect, cacheBust, onToggleFavorite, setItemRef, itemSize]);
+  }, [currentFileId, onSelect, cacheBust, onToggleFavorite, setItemRef, itemSize]);
 
   const stopTween = useCallback(() => {
     if (tweenRafRef.current != null) {
@@ -202,6 +217,7 @@ const ITEM_SIZES = {
     }
   }, []);
 
+ 
   const easeToTarget = useCallback(() => {
     const container = scrollRef.current;
     const target = targetScrollRef.current;
@@ -209,62 +225,152 @@ const ITEM_SIZES = {
       tweenRafRef.current = null;
       return;
     }
-    const diff = target - container.scrollLeft;
+    const maxScroll = container.scrollWidth - container.clientWidth;
+    const clamped = Math.max(0, Math.min(maxScroll, target));
+    const diff = clamped - container.scrollLeft;
     if (Math.abs(diff) < 0.5) {
-      container.scrollLeft = target;
+      container.scrollLeft = clamped;
       tweenRafRef.current = null;
       return;
     }
-    container.scrollLeft += diff * 0.2;
+    container.scrollLeft += diff * 0.12;
     tweenRafRef.current = requestAnimationFrame(easeToTarget);
+  }, []);
+ 
+
+  const slideRafRef = useRef(null);
+
+  const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : (t - 1) * (2 * t - 2) * (2 * t - 2) + 1;
+
+  const animateSlide = useCallback((container, start, target) => {
+    if (slideRafRef.current != null) {
+      cancelAnimationFrame(slideRafRef.current);
+      slideRafRef.current = null;
+    }
+    const delta = target - start;
+    if (Math.abs(delta) < 0.5) {
+      container.scrollLeft = target;
+      return;
+    }
+    const duration = Math.min(700, 350 + Math.abs(delta) * 0.9);
+    const startTime = performance.now();
+    const step = (now) => {
+      const elapsed = now - startTime;
+      const t = Math.min(elapsed / duration, 1);
+      container.scrollLeft = start + delta * easeInOutCubic(t);
+      if (t < 1) {
+        slideRafRef.current = requestAnimationFrame(step);
+      }
+    };
+    slideRafRef.current = requestAnimationFrame(step);
   }, []);
 
   // Keep the active item horizontally centered inside the scroll viewport.
-  // A single rAF tween continuously eases toward the latest target, replacing
-  // any previous smooth-scroll so rapid left/right navigation never oscillates.
-  // NOTE: intentionally NOT keyed on `hidden` — auto-hide idle toggles must not
-  // re-center (and fight) the user's manual scroll.
+  // Always animate to the target — no instant snaps. We defer layout reads
+  // to a rAF so the browser has finished laying out the newly-mounted items
+  // in the windowed slice, preventing wrong-direction jumps.
   useEffect(() => {
     const container = scrollRef.current;
-    if (!container || !currentFile?.id) return;
-    const rafId = requestAnimationFrame(() => {
-      const el = itemRefs.current.get(currentFile.id);
-      if (!el) return;
-      const cRect = container.getBoundingClientRect();
-      const eRect = el.getBoundingClientRect();
-      const delta = (eRect.left + eRect.width / 2) - (cRect.left + cRect.width / 2);
-      if (Math.abs(delta) < 1) {
-        stopTween();
-        mountedCenterRef.current = true;
-        return;
-      }
-      // Snap instantly on the first centering after mount (modal opened from a
-      // grid click): the strip must jump straight to the active item, never
-      // scroll/tween across the width. Snap large jumps too (far-down items),
-      // since animating the full distance reads as "load lag". Keep the smooth
-      // tween only for nearby navigation (carousel arrows / adjacent clicks).
-      const SNAP_THRESHOLD = container.clientWidth * 1.5;
-      if (!mountedCenterRef.current || hidden || Math.abs(delta) > SNAP_THRESHOLD) {
-        container.scrollLeft += delta;
-        stopTween();
-        mountedCenterRef.current = true;
-        return;
-      }
-      mountedCenterRef.current = true;
-      targetScrollRef.current = container.scrollLeft + delta;
-      if (tweenRafRef.current == null) {
-        tweenRafRef.current = requestAnimationFrame(easeToTarget);
-      }
-    });
-    return () => cancelAnimationFrame(rafId);
-  }, [currentFile?.id, stopTween, easeToTarget]);
+    if (!container || !currentFileId) return;
 
-  // Cancel the tween on unmount.
-  useEffect(() => () => stopTween(), [stopTween]);
+    let retryRaf = null;
+    const computeTarget = () => {
+      const el = itemRefs.current.get(currentFileId);
+      if (!el || !container) {
+        retryRaf = requestAnimationFrame(computeTarget);
+        return;
+      }
+      const cWidth = container.clientWidth;
+      if (cWidth === 0) {
+        retryRaf = requestAnimationFrame(computeTarget);
+        return;
+      }
+      const cLeft = container.scrollLeft;
+      const eLeft = el.offsetLeft;
+      const eWidth = el.offsetWidth;
+      const delta = (eLeft + eWidth / 2) - (cLeft + cWidth / 2);
+      const maxScroll = container.scrollWidth - container.clientWidth;
+      const target = Math.max(0, Math.min(maxScroll, cLeft + delta));
+
+      if (slide) {
+        const startScroll = container.scrollLeft;
+        animateSlide(container, startScroll, target);
+      } else {
+        const diff = target - container.scrollLeft;
+        if (Math.abs(diff) < 1) {
+          return;
+        }
+        targetScrollRef.current = target;
+        if (tweenRafRef.current == null) {
+          tweenRafRef.current = requestAnimationFrame(easeToTarget);
+        }
+      }
+    };
+
+    const rafId = requestAnimationFrame(() => {
+      requestAnimationFrame(computeTarget);
+    });
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      if (retryRaf != null) cancelAnimationFrame(retryRaf);
+      if (slideRafRef.current != null) cancelAnimationFrame(slideRafRef.current);
+    };
+  }, [currentFileId, slide, animateSlide]);
+  // Scroll restoration: on mount, restore the last scroll position from
+  // localStorage so that a tab reload doesn't snap the carousel back to the
+  // active item — which causes a long jump when the user was scrolled far away.
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container || !restoreScrollKey) return;
+    if (scrollRestoredRef.current) return;
+    scrollRestoredRef.current = true;
+    try {
+      const saved = localStorage.getItem(SCROLL_STORAGE_KEY);
+      if (saved != null) {
+        const pos = parseFloat(saved);
+        if (!isNaN(pos) && pos > 0) {
+          container.scrollLeft = pos;
+        }
+      }
+    } catch {}
+  }, [restoreScrollKey, SCROLL_STORAGE_KEY]);
+
+  // Persist scroll position to localStorage on unmount so it can be restored
+  // on the next mount (e.g. after a tab reload).
+  useEffect(() => {
+    if (!restoreScrollKey) return;
+    const container = scrollRef.current;
+    if (!container) return;
+    const save = () => {
+      try {
+        localStorage.setItem(SCROLL_STORAGE_KEY, String(container.scrollLeft));
+      } catch {}
+    };
+    container.addEventListener('scroll', save, { passive: true });
+    return () => {
+      save();
+      container.removeEventListener('scroll', save);
+    };
+  }, [restoreScrollKey, SCROLL_STORAGE_KEY]);
 
   if (!files || files.length < 1) return null;
 
-  const items = showFolderLabels && grouped ? (
+  const items = metadataGroupedNodes ? (() => {
+    const windowed = getActiveWindow(metadataGroupedNodes, currentFileId);
+    return windowed.map((node, idx) => {
+      if (node.type === 'divider') {
+        return (
+          <div key={`div-${idx}`} className="flex items-center flex-shrink-0 mx-3">
+            <div className="px-2.5 py-0.5 text-[10px] text-neutral-500 font-semibold uppercase tracking-wider whitespace-nowrap select-none bg-neutral-900 border border-neutral-700 rounded">
+              {node.label}
+            </div>
+          </div>
+        );
+      }
+      return renderItem(node.file);
+    });
+  })() : showFolderLabels && grouped ? (
     grouped.map((group, gi) => (
       <React.Fragment key={gi}>
         {gi > 0 && (
@@ -280,22 +386,8 @@ const ITEM_SIZES = {
         {group.files.map((item) => renderItem(item))}
       </React.Fragment>
     ))
-  ) : metadataGroupedNodes ? (() => {
-    const windowed = getActiveWindow(metadataGroupedNodes, currentFile?.id);
-    return windowed.map((node, idx) => {
-      if (node.type === 'divider') {
-        return (
-          <div key={`div-${idx}`} className="flex items-center flex-shrink-0 mx-3">
-            <div className="px-2.5 py-0.5 text-[10px] text-neutral-500 font-semibold uppercase tracking-wider whitespace-nowrap select-none bg-neutral-900 border border-neutral-700 rounded">
-              {node.label}
-            </div>
-          </div>
-        );
-      }
-      return renderItem(node.file);
-    });
-  })() : (() => {
-    const windowed = getActiveWindow(files, currentFile?.id);
+  ) : (() => {
+    const windowed = getActiveWindow(files, currentFileId);
     return windowed.map((item) => renderItem(item));
   })();
 
@@ -309,7 +401,7 @@ const ITEM_SIZES = {
       <div className="bg-neutral-950/90 backdrop-blur-sm border-t border-white/10 px-2 pt-3 pb-1.5">
         <div
           ref={scrollRef}
-          className="flex gap-2 overflow-x-auto items-stretch py-1 justify-start"
+          className={`flex gap-2 overflow-x-auto items-stretch py-1 justify-start`}
           style={{ scrollbarWidth: 'none', msOverflowStyle: 'none', touchAction: 'pan-x' }}
         >
           {items}

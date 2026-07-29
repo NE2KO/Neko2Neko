@@ -429,7 +429,10 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
     const hashId = playlistMatch ? playlistMatch[1] : null;
 
     if (!hashId || String(hashId) !== String(savedId)) {
-      // URL doesn't target this playlist — clear stale state and stay on list view
+      // If URL has no /playlists/ segment (e.g. audio URL), we're rendered in
+      // background — leave selectedPlaylistId alone so it survives for later.
+      if (hashId === null) return;
+      // URL targets a different playlist — clear stale state and stay on list view
       sessionStorage.removeItem('selectedPlaylistId');
       clearPlaylistDetail();
       setSelectedPlaylist(null);

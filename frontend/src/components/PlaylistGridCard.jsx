@@ -22,7 +22,7 @@ const ThumbnailImage = memo(({ src, alt }) => {
         className={`media-thumb transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0'}`}
         loading="lazy"
         decoding="async"
-        fetchPriority="low"
+        fetchpriority="low"
         onContextMenu={(e) => e.preventDefault()}
         onLoad={() => setLoaded(true)}
         onError={() => setFailed(true)}
