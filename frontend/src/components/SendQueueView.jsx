@@ -973,31 +973,49 @@ const [items, setItems] = useState([]);
     } catch {}
   }, []);
 
-const prevItemsJsonRef = useRef(null);
-   const loadItems = useCallback(async (groupKey, status, reset) => {
-     const g = GROUPS[groupKey];
-     if (!g) return;
-     // Only show loading spinner on initial/fresh loads, not on2s refreshes.
-     // Without this, every 2s tick briefly flashes "Memuat…" over the grid.
-     if (reset && !prevItemsJsonRef.current) setLoading(true);
-     const prevJson = prevItemsJsonRef.current;
-     try {
-       const r = await getSendQueue(status, reset ? 0 : cursor, 100, g.target, { sortBy, sortOrder, typeFilter });
-       const list = (r && Array.isArray(r.items)) ? r.items : [];
-       const listJson = JSON.stringify(list);
-       if (listJson !== prevJson) {
-         prevItemsJsonRef.current = listJson;
-         setItems(list);
-         setEverLoaded(true);
-       }
-       setCursor(r && r.nextCursor ? r.nextCursor : 0);
-       setHasMore(!!(r && r.nextCursor));
-     } catch {
-       // On error, keep existing items instead of clearing - prevents flicker on temp network issue
-     } finally {
-       setLoading(false);
-     }
-   }, [cursor]);
+  const prevItemsJsonRef = useRef(null);
+  const requestIdRef = useRef(0);
+  const loadingMoreRef = useRef(false);
+  // Track the last loaded sentinel ID to avoid duplicate loads
+  const lastLoadedRef = useRef(null);
+  // Mutable ref mirroring the items state for stable scroll callbacks
+  const itemsRef = useRef([]);
+  const loadItems = useCallback(async (groupKey, status, reset) => {
+    const g = GROUPS[groupKey];
+    if (!g) return;
+    // Only show loading spinner on initial/fresh loads, not on2s refreshes.
+    // Without this, every 2s tick briefly flashes "Memuat…" over the grid.
+    if (reset && !prevItemsJsonRef.current) setLoading(true);
+    const myId = ++requestIdRef.current;
+    try {
+      loadingMoreRef.current = true;
+      const r = await getSendQueue(status, reset ? 0 : cursor, 100, g.target, { sortBy, sortOrder, typeFilter });
+      if (myId !== requestIdRef.current) return;
+      const list = (r && Array.isArray(r.items)) ? r.items : [];
+      const listJson = JSON.stringify(list);
+      if (listJson !== prevItemsJsonRef.current) {
+        prevItemsJsonRef.current = listJson;
+        if (reset) {
+          setItems(list);
+        } else {
+          setItems((prev) => [...prev, ...list]);
+        }
+        setEverLoaded(true);
+      }
+      setCursor(r && r.nextCursor ? r.nextCursor : 0);
+      setHasMore(!!(r && r.nextCursor));
+    } catch {
+      // On error, keep existing items instead of clearing - prevents flicker on temp network issue
+    } finally {
+      loadingMoreRef.current = false;
+      setLoading(false);
+    }
+  }, [cursor]);
+
+  // Keep a mutable ref of the current items array for the scroll handler
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
 
   const loadStatuses = useCallback(async () => {
     await loadCounts();
@@ -1025,31 +1043,31 @@ const prevItemsJsonRef = useRef(null);
   }, [loadStatuses, loadItems, selected]);
   refreshRef.current = refresh;
 
-  // Live-refresh: counts + covers every 2s, and the open folder's items too, so
-  // a send made elsewhere shows up without a manual reload.
+// Live-refresh: counts + covers every 2s, and the open folder's items too, so
+// a send made elsewhere shows up without a manual reload.
 useEffect(() => {
-     const tick = () => {
-       loadCountsRef.current();
-       loadCoversRef.current();
-       const sel = selectedRef.current;
-       if (sel) loadItemsRef.current(sel.groupKey, sel.status, true);
-     };
-     tick();
-     const t = setInterval(tick, 2000);
-     const onVisibility = () => {
-       if (document.visibilityState === 'visible' && selectedRef.current) {
-         loadItemsRef.current(selectedRef.current.groupKey, selectedRef.current.status, true);
-       }
-     };
-     const onFocus = () => {
-       if (selectedRef.current) {
-         loadItemsRef.current(selectedRef.current.groupKey, selectedRef.current.status, true);
-       }
-     };
-     document.addEventListener('visibilitychange', onVisibility);
-     window.addEventListener('focus', onFocus);
-     return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVisibility); window.removeEventListener('focus', onFocus); };
-   }, []);
+  const tick = () => {
+    loadCountsRef.current();
+    loadCoversRef.current();
+    const sel = selectedRef.current;
+    if (sel) loadItemsRef.current(sel.groupKey, sel.status, true);
+  };
+  tick();
+  const t = setInterval(tick, 2000);
+  const onVisibility = () => {
+    if (document.visibilityState === 'visible' && selectedRef.current) {
+      loadItemsRef.current(selectedRef.current.groupKey, selectedRef.current.status, true);
+    }
+  };
+  const onFocus = () => {
+    if (selectedRef.current) {
+      loadItemsRef.current(selectedRef.current.groupKey, selectedRef.current.status, true);
+    }
+  };
+  document.addEventListener('visibilitychange', onVisibility);
+  window.addEventListener('focus', onFocus);
+  return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVisibility); window.removeEventListener('focus', onFocus); };
+}, []);
 
   // Load queue behaviour settings (tick / debug) on mount + when modal opens.
   useEffect(() => {
@@ -1087,13 +1105,14 @@ useEffect(() => {
     }
   }, [items, selectedItem]);
 
-  const openStatus = (groupKey, status) => {
-    setSelected({ groupKey, status });
-    setSortBy(null);
-    setSortOrder('desc');
-    setTypeFilter(null);
-    writeQueueUrl(groupKey, status);
-  };
+const openStatus = (groupKey, status) => {
+  lastLoadedRef.current = null;
+  setSelected({ groupKey, status });
+  setSortBy(null);
+  setSortOrder('desc');
+  setTypeFilter(null);
+  writeQueueUrl(groupKey, status);
+};
   const back = () => {
     setSelected(null);
     setSortBy(null);
@@ -1196,10 +1215,22 @@ useEffect(() => {
   // Grid virtualization — CSS grid with content-visibility for native off-screen rendering
   const onScroll = useCallback((e) => {
     const el = e.currentTarget;
-    if (hasMore && !loading && el.scrollHeight - el.scrollTop - el.clientHeight < 400) {
-      if (selected) loadItems(selected.groupKey, selected.status, false);
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) {
+      if (!loadingMoreRef.current) {
+        const sel = selectedRef.current;
+        if (sel) {
+          const last = itemsRef.current[itemsRef.current.length - 1];
+          const sentinel = last ? last.qid : null;
+          if (!sentinel || sentinel !== lastLoadedRef.current) {
+            lastLoadedRef.current = sentinel;
+            loadItemsRef.current(sel.groupKey, sel.status, false);
+          }
+        }
+      }
+    } else {
+      lastLoadedRef.current = null;
     }
-  }, [hasMore, loading, selected]);
+  }, []);
 
   const selectedGroup = selected ? GROUPS[selected.groupKey] : null;
   const selectedMeta = selected ? STATUS_META[selected.status] : null;
