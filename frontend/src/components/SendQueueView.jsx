@@ -989,7 +989,7 @@ const [items, setItems] = useState([]);
     const myId = ++requestIdRef.current;
     try {
       loadingMoreRef.current = true;
-      const r = await getSendQueue(status, reset ? 0 : cursor, 100, g.target, { sortBy, sortOrder, typeFilter });
+      const r = await getSendQueue(status, reset ? 0 : cursor, 5000, g.target, { sortBy, sortOrder, typeFilter });
       if (myId !== requestIdRef.current) return;
       const list = (r && Array.isArray(r.items)) ? r.items : [];
       const listJson = JSON.stringify(list);
