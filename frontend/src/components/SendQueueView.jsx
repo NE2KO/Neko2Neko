@@ -1258,60 +1258,13 @@ const openStatus = (groupKey, status) => {
           <h1 className="text-base font-semibold text-neutral-100">
             {selected ? `${selectedGroup.label} · ${selectedMeta.label}` : 'Antrian Kirim'}
           </h1>
-          {selected && items.length > 0 && (
-            <span className="px-2.5 py-1 text-[12px] font-mono text-neutral-300 bg-neutral-800/60 rounded border border-neutral-700">
-              {items.length} item
-            </span>
-          )}
+{selected && (
+              <span className="px-2.5 py-1 text-[12px] font-mono text-neutral-300 bg-neutral-800/60 rounded border border-neutral-700">
+                { (counts[selected?.groupKey] && counts[selected?.groupKey][selected?.status]) || 0 } item
+              </span>
+            )}
         </div>
-        {selected && (
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1 bg-neutral-800/60 rounded-lg border border-neutral-700 p-0.5">
-              {[null, 'video', 'image'].map((tf) => (
-                <button
-                  key={String(tf)}
-                  onClick={() => setTypeFilter(tf)}
-                  className={`px-2 py-1 rounded text-[11px] font-medium transition-colors ${
-                    typeFilter === tf
-                      ? 'bg-neutral-700 text-white'
-                      : 'text-neutral-400 hover:text-neutral-200'
-                  }`}
-                >
-                  {tf === null ? 'All' : tf === 'video' ? 'Video' : 'Image'}
-                </button>
-              ))}
-            </div>
-            <div className="relative">
-              <select
-                value={sortBy || ''}
-                onChange={(e) => setSortBy(e.target.value || null)}
-                className="appearance-none bg-neutral-800/60 border border-neutral-700 text-neutral-200 text-xs rounded-lg pl-2.5 pr-7 py-1.5 hover:border-neutral-600 focus:outline-none focus:border-neutral-500 cursor-pointer"
-              >
-                <option value="">None</option>
-                <option value="name">Name</option>
-                <option value="size">Size</option>
-                <option value="created_at">Created</option>
-                <option value="completed_at">Modified</option>
-              </select>
-              <div className="absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none text-neutral-400">
-                <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M7 10l5 5 5-5z" />
-                </svg>
-              </div>
-            </div>
-            <button
-              onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
-              className="p-1.5 rounded-lg border border-neutral-700 text-neutral-300 hover:text-white hover:bg-neutral-700/70 transition-colors"
-              title={sortOrder === 'asc' ? 'Urut: lama → baru' : 'Urut: baru → lama'}
-            >
-              {sortOrder === 'asc' ? (
-                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4l-8 10h16z" /></svg>
-              ) : (
-                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 20l8-10H4z" /></svg>
-              )}
-            </button>
-          </div>
-        )}
+
         <div className="flex-1" />
         {!selected && (
           <>
