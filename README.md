@@ -1,5 +1,26 @@
 # Media Vault
 
+> ## ⚠️ IMPORTANT — Music Menu: DO NOT MODIFY THE SYNC ENGINE CARELESSLY
+>
+> Do not touch `frontend/src/components/Music.jsx` or its sync pipeline (`frontend/src/utils/decision/*`, `frontend/src/utils/memory/*`, `frontend/src/utils/syncCore.js`) unless you understand the whole control loop first.
+>
+> **Why it's dangerous.** The Music menu's MV/BG sync engine is a real-time control system that corrects millisecond-scale drift between two muted videos and the audio clock. It is *adaptive and stateful*: every ~30ms tick it reads smoothed drift (EMA, alpha 0.15), adaptive thresholds (soft = 2σ, clamp 8–40ms), confidence scores, and constraint gates, then issues `playbackRate` changes (target: keep |drift| < 10ms, landing/deadband 5ms) and hard-seeks only for gross errors (>1500ms).
+>
+> A careless edit **compiles cleanly but silently breaks A/V sync** — there is no build error or exception. Failures only appear at runtime:
+> - Bang-bang / coarse rate switching (e.g. rate stuck at `0.850` / `1.150`),
+> - Persistent drift or high sigma (sync sitting at 10ms+ forever),
+> - Frame repeats / strobe loops from soft-seeks on sparse-keyframe videos.
+>
+> **Architecture (data → judge → action — deliberately clean & short, so the judge is never interrupted):**
+> 1. **Memory layer** — per-engine drift EMA, bias, sigma, tick/decoder/scheduler telemetry (`DriftMemory`, `SchedulerMemory`, `PipelineMemory`, …).
+> 2. **DerivedMetrics** — turns raw memory into facts the judge can trust: `driftMagnitude`, `driftConfidence`, `consistencyScore`, triangle MV↔BG↔Audio.
+> 3. **ConstraintProvider** — hard gates that forbid actions unsafe right now (pipeline not ready, decoder unhealthy, futile seek).
+> 4. **DecisionEngine (`decide`)** — picks exactly one action (HOLD / SET_RATE / SOFT_SEEK / HARD_SEEK) with a confidence value.
+> 5. **ExecutionQueue** — serializes + coalesces (latest-wins per type, 100ms cooldown); the only place that calls `setRate()`/`seek()`.
+> 6. **SyncCore + SyncOverlay (`SYNC DEBUG`)** — telemetry, spike recorder, decision counters, and the debug overlay used to audit judge behavior.
+>
+> **Before changing anything:** run `npm run build`, open the `SYNC DEBUG` overlay during playback, and verify — rate is proportional/smooth (never just two extreme values), Δ MV↔BG stays < 10ms, sigma stays low, and the judge's chosen action matches the actual drift. Never bump `rateGain`/thresholds blindly; the adaptive behavior depends on them.
+
 > **Hardware Note:** This platform is specifically designed for AMD-based laptops. The Monitoring menu uses nbfc and ryzenadj which are hardware-specific and do not support Intel or NVIDIA systems. Other menus are hardware-agnostic.
 
 ## Tech Stack Overview
