@@ -462,7 +462,8 @@ function resolveDownloadedPaths(task) {
   if (task.category === 'instagram') return [];
 
   if (task.outputDir && !task._requireExactPath) {
-    return scanDownloadDir(task.outputDir, VIDEO_EXTS).sort((a, b) => {
+    const scanExts = new Set([...VIDEO_EXTS, ...AUDIO_EXTS]);
+    return scanDownloadDir(task.outputDir, scanExts).sort((a, b) => {
       try { return fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs; } catch { return 0; }
     }).slice(0, 1);
   }
@@ -686,9 +687,9 @@ function savePersistentTasks() {
       quality: t.quality, formatId: t.formatId,
       audioExtract: t.audioExtract, audioFormat: t.audioFormat, audioBitrate: t.audioBitrate,
       twitterMode: t.twitterMode, twitterAccount: t.twitterAccount, imageMode: t.imageMode,
-      twitterCookiesPath: t.twitterCookiesPath || '',
-      customOutput: !!t.customOutput,
-      type: t.type, status: t.status, progress: t.progress, speed: t.speed,
+  twitterCookiesPath: t.twitterCookiesPath || '',
+  customOutput: !!t.customOutput, embedCover: !!t.embedCover,
+  type: t.type, status: t.status, progress: t.progress, speed: t.speed,
       eta: t.eta, statusText: t.statusText || '', logs: t.logs || [],
       filename: t.filename, filePath: t.filePath || '',
       totalSize: t.totalSize, downloaded: t.downloaded,
@@ -819,9 +820,9 @@ function sanitize(t) {
     quality: t.quality, formatId: t.formatId,
     audioExtract: t.audioExtract, audioFormat: t.audioFormat, audioBitrate: t.audioBitrate,
     twitterMode: t.twitterMode, twitterAccount: t.twitterAccount, imageMode: t.imageMode,
-    twitterCookiesPath: t.twitterCookiesPath || '',
-    customOutput: !!t.customOutput,
-    type: t.type, status: t.status, progress: t.progress, speed: t.speed,
+  twitterCookiesPath: t.twitterCookiesPath || '',
+  customOutput: !!t.customOutput, embedCover: !!t.embedCover,
+  type: t.type, status: t.status, progress: t.progress, speed: t.speed,
     eta: t.eta, statusText: t.statusText || '', logs: t.logs || [],
     filename: t.filename, filePath: t.filePath || '',
     totalSize: t.totalSize, downloaded: t.downloaded,
@@ -883,6 +884,7 @@ export function createTask(url, options = {}) {
   const imageMode = !!options.imageMode;
   const customOutput = !!options.customOutput;
   const customTitle = (options.customTitle || '').trim();
+  const embedCover = !!options.embedCover;
 
   if (!VALID_CATEGORIES.includes(category)) return { error: `Kategori "${category}" tidak dikenal` };
 
@@ -923,7 +925,7 @@ export function createTask(url, options = {}) {
   const task = {
     id: nextId++, url: trimmed, category, quality, formatId,
     audioExtract, audioFormat, audioBitrate,
-    twitterMode, twitterAccount, imageMode, twitterCookiesPath, youtubeCookiesPath, customOutput, customTitle,
+    twitterMode, twitterAccount, imageMode, twitterCookiesPath, youtubeCookiesPath, customOutput, customTitle, embedCover,
     type: category === 'torrent' ? 'torrent' : category === 'twitter' ? 'gallery' : 'ytdlp',
     status: 'queued', progress: 0, speed: '', eta: '', statusText: '', logs: [],
     filename: '', filePath: '', totalSize: '', downloaded: '',
@@ -1724,11 +1726,11 @@ function spawnYtdlp(task) {
     args.push('-f', 'bestaudio[ext=m4a]/bestaudio/best');
     args.push('-S', 'lang:original');
     args.push('--extract-audio', '--audio-format', task.audioFormat, '--audio-quality', bitrate);
-  } else if (task.quality === 'audio') {
-    args.push('-f', 'bestaudio[ext=m4a]/bestaudio/best');
-    args.push('-S', 'lang:original');
-    args.push('--extract-audio', '--audio-format', 'mp3', '--audio-quality', '0');
-  } else if (task.category === 'instagram') {
+} else if (task.quality === 'audio') {
+  args.push('-f', 'bestaudio[ext=m4a]/bestaudio/best');
+  args.push('-S', 'lang:original');
+  args.push('--extract-audio', '--audio-format', 'mp3', '--audio-quality', '0');
+} else if (task.category === 'instagram') {
     args.push('-f', INSTAGRAM_FORMAT_SELECTOR);
     args.push('--merge-output-format', 'mp4');
     addLog(task, `Instagram format policy: ${INSTAGRAM_FORMAT_SELECTOR}`);
@@ -1737,9 +1739,13 @@ function spawnYtdlp(task) {
     args.push('-f', srcPref || FORMAT_MAP[task.quality] || 'bestvideo[height<=2160]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best[height<=2160]');
     args.push('--merge-output-format', 'mp4');
     args.push('-S', 'lang:original');
-  }
+}
 
-  const outputTemplate = task.customTitle
+if (task.embedCover) {
+  args.push('--embed-thumbnail');
+}
+
+const outputTemplate = task.customTitle
     ? path.join(downloadDir, `${task.customTitle}.%(ext)s`)
     : path.join(downloadDir, '%(title)s.%(ext)s');
   args.push('-o', outputTemplate);

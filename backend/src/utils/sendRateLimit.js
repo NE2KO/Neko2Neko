@@ -85,7 +85,7 @@ export function recordSend() {
 // Reset the daily rate counter so the scheduler recalculates slots from scratch.
 // Called when auto-send is re-enabled or debug mode is turned off.
 export function resetRateState() {
-  db.prepare("UPDATE send_rate_limit SET count = 0, last_send_at = 0 WHERE id = 1").run();
+  db.prepare("UPDATE send_rate_limit SET date = ?, count = 0, last_send_at = 0 WHERE id = 1").run();
 }
 
 // Clear stale scheduled_at timestamps so pending items get fresh ETAs on the
@@ -120,7 +120,7 @@ export function canSendNow() {
   const slotAfterLastSend = state.lastSendAt > start
     ? Math.floor((state.lastSendAt - start) / intervalMs) + 1
     : 0;
-  const nextSlot = Math.max(elapsedSlots, slotsUsed, slotAfterLastSend);
+  let nextSlot = Math.max(elapsedSlots, slotsUsed, slotAfterLastSend);
 
   // Grace period: skip ALL missed slots so items never get assigned to a
   // slot that already expired. Without this, a delayed tick could place
@@ -177,89 +177,115 @@ function calculateSlotsForDay(ts = Date.now(), perDay) {
   return slots;
 }
 
-// Find the current slot index (slots that have passed or are current)
-function findCurrentSlotIndex(now, slots) {
-  return slots.findIndex(slot => slot > now);
-}
-
 // Build a timeline of pending items with their individual ETAs
 // Each item gets its own ETA based on slot timeline, enabling cascading
 export function buildQueueTimeline({ now, pendingItems, perDay, rateState }) {
-  if (perDay === 0 || !pendingItems || pendingItems.length === 0) {
+  if (!pendingItems || pendingItems.length === 0) {
     return [];
   }
-  
-  const today = dayStart(now);
-  const tomorrow = today + 24 * 60 * 60 * 1000;
-  const intervalMs = (24 / perDay) * 60 * 60 * 1000;
-  const slots = calculateSlotsForDay(now, perDay);
-  
-  if (slots.length === 0) return [];
-  
-  const slotsUsed = rateState?.count || 0;
-  const lastSendAt = rateState?.lastSendAt || 0;
-  
-  // Calculate elapsed slots from midnight (slots that have arrived)
-  const elapsedSlots = Math.floor((now - today) / intervalMs);
 
-  // Determine next available slot index.
-  // Compare: how many slots have arrived vs how many were actually sent vs
-  // slot after the last send. Take the maximum so a delayed tick (e.g. 00:03
-  // running at 08:00) doesn't incorrectly skip today's early slots.
-  const slotAfterLastSend = lastSendAt > today
-    ? Math.floor((lastSendAt - today) / intervalMs) + 1
-    : 0;
-  let nextSlotIdx = Math.max(elapsedSlots, slotsUsed, slotAfterLastSend);
+  const sendable = [];
+  const held = [];
+  const scheduled = [];
 
-  // Apply grace period: skip ALL missed slots, not just one.
-  // If the tick runs >= TICK_GRACE_MS after a slot's start, that slot is
-  // considered missed and items roll forward to the next available slot.
-  while (nextSlotIdx < perDay) {
-    const slotStart = slots[nextSlotIdx];
-    if (now >= slotStart + TICK_GRACE_MS) {
-      nextSlotIdx += 1;
+  for (const item of pendingItems) {
+    const hold = Number(item.hold_until) || 0;
+    const sched = Number(item.scheduled_at) || 0;
+    if (hold > now) {
+      held.push({ ...item, _eta: hold });
+    } else if (sched > now) {
+      scheduled.push({ ...item, _eta: sched });
     } else {
-      break;
+      sendable.push(item);
     }
   }
-  
-  // If all today's slots are used, items go to tomorrow
-  if (nextSlotIdx >= perDay) {
-    return pendingItems.map((item, position) => {
-      const tomorrowSlotIdx = position;
-      const eta = tomorrow + tomorrowSlotIdx * intervalMs;
-      return {
-        id: item.id,
-        fileId: item.file_id,
-        target: item.target,
-        caption: item.caption || '',
-        eta,
-        ready: eta <= now,
-      };
-    });
-  }
-  
-  return pendingItems.map((item, position) => {
-    const slotIdx = nextSlotIdx + position;
-    let eta;
-    
-    if (slotIdx < slots.length) {
-      eta = slots[slotIdx];
-    } else {
-      // Item needs to wait for tomorrow's slots
-      const tomorrowSlotIdx = slotIdx - slots.length;
-      eta = tomorrow + tomorrowSlotIdx * intervalMs;
-    }
-    
-    return {
+
+  const result = [];
+
+  // Held items: ETA = hold_until, not ready
+  for (const item of held) {
+    result.push({
       id: item.id,
       fileId: item.file_id,
       target: item.target,
       caption: item.caption || '',
-      eta,
-      ready: eta <= now,
-    };
-  });
+      eta: item._eta,
+      ready: false,
+    });
+  }
+
+  // Scheduled items: ETA = scheduled_at, not ready
+  for (const item of scheduled) {
+    result.push({
+      id: item.id,
+      fileId: item.file_id,
+      target: item.target,
+      caption: item.caption || '',
+      eta: item._eta,
+      ready: false,
+    });
+  }
+
+  // Sendable items: slot-based ETA
+  if (sendable.length > 0) {
+    const today = dayStart(now);
+    const tomorrow = today + 24 * 60 * 60 * 1000;
+    const intervalMs = perDay > 0 ? (24 / perDay) * 60 * 60 * 1000 : 0;
+    const slots = perDay > 0 ? calculateSlotsForDay(now, perDay) : [];
+
+    if (perDay > 0 && slots.length > 0) {
+      const slotsUsed = rateState?.count || 0;
+      const lastSendAt = rateState?.lastSendAt || 0;
+      const elapsedSlots = Math.floor((now - today) / intervalMs);
+      const slotAfterLastSend = lastSendAt > today
+        ? Math.floor((lastSendAt - today) / intervalMs) + 1
+        : 0;
+      let nextSlotIdx = Math.max(elapsedSlots, slotsUsed, slotAfterLastSend);
+
+      while (nextSlotIdx < perDay) {
+        const slotStart = slots[nextSlotIdx];
+        if (now >= slotStart + TICK_GRACE_MS) {
+          nextSlotIdx += 1;
+        } else {
+          break;
+        }
+      }
+
+      for (let i = 0; i < sendable.length; i++) {
+        const item = sendable[i];
+        const slotIdx = nextSlotIdx + i;
+        let eta;
+        if (slotIdx < slots.length) {
+          eta = slots[slotIdx];
+        } else {
+          const tomorrowSlotIdx = slotIdx - slots.length;
+          eta = tomorrow + tomorrowSlotIdx * intervalMs;
+        }
+        result.push({
+          id: item.id,
+          fileId: item.file_id,
+          target: item.target,
+          caption: item.caption || '',
+          eta,
+          ready: eta <= now,
+        });
+      }
+    } else if (perDay === 0) {
+      // Unlimited mode: all sendable items are ready now
+      for (const item of sendable) {
+        result.push({
+          id: item.id,
+          fileId: item.file_id,
+          target: item.target,
+          caption: item.caption || '',
+          eta: now,
+          ready: true,
+        });
+      }
+    }
+  }
+
+  return result;
 }
 
 export function enqueueSend(fileId, target, debug = 0, caption = '') {
@@ -281,7 +307,7 @@ export function clearDebugHistory() {
 
 // Sub-targets each logical target covers, so dedup can detect overlap (e.g. an
 // 'all' or 'whatsapp' row already covers 'status', so a later 'status'-only send
-// must NOT be enqueued again → no duplicate WA Status post).
+// must NOT be enqueued again → no duplicate WA Status post.
 const SUB_TARGETS = {
   telegram: ['telegram'],
   channel: ['channel'],
@@ -330,14 +356,25 @@ export function getPendingSends() {
     FROM send_queue
     WHERE (status = 'pending' AND (hold_until IS NULL OR hold_until <= ?) AND (scheduled_at IS NULL OR scheduled_at <= ?))
        OR (status = 'processing' AND created_at < ?)
-    ORDER BY COALESCE(sort_order, id) ASC, id ASC LIMIT 100
+    ORDER BY COALESCE(sort_order, id) ASC, id ASC
   `).all(Date.now(), Date.now(), Date.now() - STUCK_MS);
+}
+
+// All pending/processing items regardless of hold/schedule status.
+// Used for the UI timeline so held/scheduled items still show an ETA.
+export function getAllPendingSends() {
+  return db.prepare(`
+    SELECT id, file_id, target, created_at, status, caption, hold_until, scheduled_at
+    FROM send_queue
+    WHERE status IN ('pending', 'processing')
+    ORDER BY COALESCE(sort_order, id) ASC, id ASC
+  `).all();
 }
 
 export function getPendingDebugSends() {
   return db.prepare(`
     SELECT sq.id AS qid, sq.file_id, sq.target, sq.created_at, sq.status, sq.caption,
-           f.name, f.type, f.ext, f.has_thumb
+         f.name, f.type, f.ext, f.has_thumb
     FROM send_queue sq
     LEFT JOIN files f ON f.id = sq.file_id
     WHERE sq.status = 'pending' AND sq.debug = 1
@@ -456,12 +493,12 @@ export function getStatusCounts(target) {
     // are still "not delivered" — fold them into pending so the queue count stays
     // exact for notifications/auto-send instead of vanishing from every bucket.
     if (r.status === 'processing') counts.pending += r.c;
-    else if (r.status in counts) counts[r.status] = r.c;
+    else if (r.status in counts) counts[r.status] += r.c;
   }
   return counts;
 }
 
-// Build a safe `target IN (...)` filter condition (WITHOUT a leading WHERE so it
+// Build a safe `target IN (...)` filter condition (WITHOUT a leading Where so it
 // can be appended after an existing WHERE with AND). `target` may be a
 // comma-separated list (e.g. 'whatsapp,all'). Only whitelisted values are allowed
 // — anything else is dropped to prevent SQL injection via the query string.
@@ -495,15 +532,18 @@ export function getQueueByStatus(status, cursor = 0, limit = 100, target, opts =
     extraParams.push(typeFilter);
   }
 
-  const where = [statusClause, 'sq.id > ?', ...extraWhere].filter(Boolean).join(' AND ');
+  const where = [statusClause, 'sq.id > ?', condition, ...extraWhere].filter(Boolean).join(' AND ');
   const allParams = [...statusParam, cursor, ...extraParams, ...params];
 
-  let orderBy = 'COALESCE(sq.completed_at, sq.created_at) DESC, sq.id DESC';
+  const isPending = status === 'pending';
+  let orderBy = isPending
+    ? 'COALESCE(sq.sort_order, sq.id) ASC, sq.id ASC'
+    : 'COALESCE(sq.completed_at, sq.created_at) DESC, sq.id DESC';
   if (sortBy === 'name') orderBy = 'f.name COLLATE NOCASE ASC, sq.id ASC';
   else if (sortBy === 'size') orderBy = 'COALESCE(f.size, 0) DESC, sq.id ASC';
   else if (sortBy === 'created_at') orderBy = 'sq.created_at DESC, sq.id DESC';
   else if (sortBy === 'completed_at') orderBy = 'sq.completed_at DESC, sq.id DESC';
-  if (sortOrder === 'asc') {
+  if (sortBy && sortOrder === 'asc') {
     orderBy = orderBy.replace(/ DESC/g, ' ASC').replace(/ ASC/g, ' DESC');
   }
 

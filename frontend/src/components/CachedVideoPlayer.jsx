@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, forwardRef, useImperativeHandle, memo } from 'react';
 
-const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId, onReady, onWaiting, onPlaying, onStalled, onSeeked, onEnded, onError, onLoadedMetadata, onPause, coverUrl }, ref) {
+const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId, onReady, onWaiting, onPlaying, onStalled, onSeeked, onEnded, onError, onLoadedMetadata, onPause, coverUrl, onVideoFrame }, ref) {
   const videoRef = useRef(null);
   const [status, setStatus] = useState('checking');
   const [progress, setProgress] = useState(0);
@@ -12,6 +12,15 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
   const lastRequestedSeekRef = useRef(null);
   const pendingForceSeekRef = useRef(null);
 
+  const clampTime = (video, time) => {
+    const dur = video.duration;
+    if (Number.isFinite(dur) && dur > 0) {
+      if (time < 0) return 0;
+      if (time > dur) return dur;
+    }
+    return time;
+  };
+
   useImperativeHandle(ref, () => ({
     getCurrentTime() {
       return videoRef.current?.currentTime || 0;
@@ -20,31 +29,37 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
       const video = videoRef.current;
       if (!video) return false;
 
-      if (lastRequestedSeekRef.current === time) return false;
-      lastRequestedSeekRef.current = time;
+      const t = clampTime(video, time);
+      if (lastRequestedSeekRef.current === t) return false;
+      lastRequestedSeekRef.current = t;
 
       if (seekInProgressRef.current) {
-        pendingSeekRef.current = time;
+        pendingSeekRef.current = t;
         return true;
       }
 
       seekInProgressRef.current = true;
-      video.currentTime = time;
+      video.currentTime = t;
       return true;
     },
     forceSeek(time) {
       const video = videoRef.current;
       if (!video) return false;
 
-      // If another force seek is still pending, queue/replace it so rapid
-      // re-anchors win on the latest target instead of stacking浏览器 seeks.
-      if (pendingForceSeekRef.current !== null) {
-        if (Math.abs(pendingForceSeekRef.current - time) < 0.25) {
-          lastRequestedSeekRef.current = time;
+      const t = clampTime(video, time);
+
+      // If a force seek is already in flight, coalesce nearby targets or chase
+      // the latest target (applied once the in-flight seek lands) instead of
+      // dropping it silently.
+      if (seekInProgressRef.current && pendingForceSeekRef.current !== null) {
+        const delta = Math.abs(pendingForceSeekRef.current - t);
+        console.log('[FORCESEEK]', { requested: t, pending: pendingForceSeekRef.current, delta, action: delta < 0.25 ? 'coalesce' : 'chase' });
+        if (delta < 0.25) {
+          lastRequestedSeekRef.current = t;
           return true;
         }
-        pendingForceSeekRef.current = time;
-        lastRequestedSeekRef.current = time;
+        pendingForceSeekRef.current = t;
+        lastRequestedSeekRef.current = t;
         return true;
       }
 
@@ -53,26 +68,24 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
       // pre-seek frame, which reads as flicker during rapid seeks.
       // Threshold lowered from 50ms to 1ms so soft-seek corrections
       // (drift 3–50ms) are not silently dropped.
-      if (Math.abs((video.currentTime || 0) - time) < 0.001) {
-        lastRequestedSeekRef.current = time;
+      if (Math.abs((video.currentTime || 0) - t) < 0.001) {
+        lastRequestedSeekRef.current = t;
         return false;
       }
-      // Pause before seek to prevent wrong-frame flash on videos with long GOPs
-      // or sparse keyframes. Skip pause for seeks < 300ms to allow seamless
-      // soft-seek correction from the sync engine (no visible frame jump).
-      if (Math.abs((video.currentTime || 0) - time) > 0.3) {
-        if (!video.paused) video.pause();
-      }
-
+      // Do NOT pause before seeking. Pausing on every hard seek keeps the
+      // video at readyState 1 (HAVE_METADATA): a paused video stops buffering,
+      // so it can never reach a seekable range and every seek lands at the
+      // pre-seek position — the hard-seek loop around one region. The <video>
+      // pauses internally while seeking and the engine resumes on seeked/playing.
       seekInProgressRef.current = true;
-      pendingForceSeekRef.current = null;
-      lastRequestedSeekRef.current = time;
-      video.currentTime = time;
+      pendingForceSeekRef.current = t;
+      lastRequestedSeekRef.current = t;
+      video.currentTime = t;
       return true;
     },
     pauseVideo() {
       if (videoRef.current) videoRef.current.pause();
-  },
+    },
     playVideo() {
       const video = videoRef.current;
       if (video) {
@@ -91,11 +104,19 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
       const video = videoRef.current;
       return video ? video.paused : true;
     },
-    getSeeking() {
-      const video = videoRef.current;
-      return video ? video.seeking : false;
-    },
-    getReadyState() {
+ getWaiting() {
+ const video = videoRef.current;
+ return video ? !!video.waiting : false;
+ },
+ getStalled() {
+ const video = videoRef.current;
+ return video ? !!video.stalled : false;
+ },
+ getSeeking() {
+ const video = videoRef.current;
+ return video ? video.seeking : false;
+ },
+ getReadyState() {
       const video = videoRef.current;
       if (!video) return 0;
       return video.readyState;
@@ -111,6 +132,12 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
       reloadCountRef.current += 1;
       setReloadKey(k => k + 1);
     },
+    resetSeekState() {
+      seekInProgressRef.current = false;
+      pendingSeekRef.current = null;
+      lastRequestedSeekRef.current = null;
+      pendingForceSeekRef.current = null;
+    },
   }));
 
 
@@ -123,20 +150,25 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
       const next = pendingSeekRef.current;
       if (next !== null) {
         pendingSeekRef.current = null;
-        video.currentTime = next;
+        lastRequestedSeekRef.current = next;
         notifySeeked?.();
         return;
       }
 
-      // Drain pending force-seek queue so the latest target wins without
-      // stacking browser seeks on top of each other.
       const nextForce = pendingForceSeekRef.current;
       if (nextForce !== null && seekInProgressRef.current) {
         pendingForceSeekRef.current = null;
-        if (Math.abs((videoRef.current?.currentTime || 0) - nextForce) >= 0.001) {
-          seekInProgressRef.current = true;
-          videoRef.current.currentTime = nextForce;
+        lastRequestedSeekRef.current = nextForce;
+        console.log('[SEEKED] chasing pending', { current: video.currentTime, target: nextForce });
+        if (Math.abs((video.currentTime || 0) - nextForce) >= 0.001) {
+          video.currentTime = clampTime(video, nextForce);
         }
+        // The chased target is the seek completion the engine is waiting on.
+        // Clear the in-flight flag and notify so the engine's onSeeked runs;
+        // otherwise seekInProgressRef stays true and every later forceSeek
+        // enters this chase branch without ever notifying, which wedges
+        // seekPending and keeps hard-seek re-issuing on the same region.
+        seekInProgressRef.current = false;
         notifySeeked?.();
         return;
       }
@@ -153,6 +185,32 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
     };
   }, [status]);
 
+  // RVFC loop for MV — feeds presentation latency to syncCore
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !onVideoFrame) return;
+    if (typeof video.requestVideoFrameCallback !== 'function') return;
+
+    let running = true;
+    const loop = (now, metadata) => {
+      if (!running) return;
+      video.requestVideoFrameCallback(loop);
+      try {
+        onVideoFrame({
+          mediaTime: metadata.mediaTime,
+          presentationTime: metadata.presentationTime,
+          expectedDisplayTime: metadata.expectedDisplayTime,
+          processingDuration: metadata.processingDuration,
+          presentedFrames: metadata.presentedFrames,
+        });
+      } catch (err) {
+        console.error('[RVFC] loop error:', err);
+      }
+    };
+    video.requestVideoFrameCallback(loop);
+    return () => { running = false; };
+  }, [status, onVideoFrame]);
+
   // TEMP DIAGNOSTIC: raw <video> event timeline. Enabled only when the global
   // sync telemetry flag is active to avoid console spam during normal playback.
   useEffect(() => {
@@ -167,7 +225,7 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
       } catch {}
       return `t=${(performance.now()/1000).toFixed(2)} ct=${video.currentTime.toFixed(2)} rs=${video.readyState} buf=[${buf}]`;
     };
-    const evs = ['loadedmetadata', 'canplay', 'seeking', 'seeked', 'waiting', 'stalled', 'playing', 'play', 'pause'];
+    const evs = ['seeking', 'seeked', 'waiting', 'stalled'];
     const log = (e) => console.log(`[VID ${e.type.padEnd(13)}] ${fmt()}`);
     evs.forEach(ev => video.addEventListener(ev, log));
     return () => evs.forEach(ev => video.removeEventListener(ev, log));
@@ -270,7 +328,6 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
     ref={videoRef}
     className="w-full h-full object-contain rounded-2xl"
     src={`/api/video-cache/stream/${youtubeId}`}
-    poster={coverUrl || undefined}
     preload="auto"
     playsInline
     muted
@@ -280,7 +337,6 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
     onWaiting={onWaiting}
     onPlaying={onPlaying}
     onStalled={onStalled}
-    onSeeked={onSeeked}
     onLoadedMetadata={onLoadedMetadata}
     onEnded={onEnded}
     onError={onError}

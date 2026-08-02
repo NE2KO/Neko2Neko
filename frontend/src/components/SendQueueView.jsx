@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, memo } from 'react';
+import AutoSizer from 'react-virtualized-auto-sizer';
+import { FixedSizeGrid as Grid } from 'react-window';
 
 import { Inbox, CheckCircle2, XCircle, Ban, Trash2, Clock, ArrowLeft, X, Settings, Bug, Power, Square, Play, AlertTriangle, Pencil, ChevronUp, ChevronDown, Calendar, RotateCw } from 'lucide-react';
 import { getSendQueueStatuses, getSendQueue, clearSendQueueHistory, getThumbnailUrl, cancelSendQueueItem, retrySendQueueItem, removeSendQueueItem, getSendSettings, setSendSettings, getWhatsAppSendStatus, setQueueCaption, reorderQueueItem, resendQueueItem, rescheduleQueueItem } from '../utils/api';
@@ -38,13 +40,26 @@ function remainingDigits(ms) {
 let _clockNow = Date.now();
 const _clockListeners = new Set();
 let _clockStarted = false;
+let _clockPaused = false;
 function startClockIfNeeded() {
   if (_clockStarted) return;
   _clockStarted = true;
   setInterval(() => {
     _clockNow = Date.now();
-    _clockListeners.forEach((fn) => fn());
+    if (!_clockPaused) _clockListeners.forEach((fn) => fn());
   }, 1000);
+}
+// Pause the whole clock while the user is actively scrolling the grid. Without
+// this, every mounted ItemCard re-renders + runs an Odometer rAF animation once
+// per second, which makes scrolling the (virtualized) grid feel janky. On resume
+// we notify listeners immediately so countdowns refresh without waiting a tick.
+function setClockPaused(paused) {
+  if (_clockPaused === paused) return;
+  _clockPaused = paused;
+  if (!paused) {
+    _clockNow = Date.now();
+    _clockListeners.forEach((fn) => fn());
+  }
 }
 function useClock() {
   startClockIfNeeded();
@@ -505,14 +520,24 @@ function Odometer({ value, digits = 2, className = '', placeholder = false, form
     prevPlaceholderRef.current = placeholder;
   }, [placeholder, stripDigitMap, numDigits, charsToDigit]);
 
-  // EFFECT 2: Countdown tick — smooth digit animation when settled
+  // EFFECT 2: Countdown tick — smooth digit roll on every change.
   useEffect(() => {
     const st = stateRef.current;
-    if (placeholder || st.mode !== 'settled') {
+    if (placeholder) {
       if (countdown) st.currentCountdown = countdown;
       return;
     }
     if (!countdown || countdown === st.currentCountdown) return;
+
+    // Force a clean 'settled' state before rolling so the update never snaps:
+    // cancel a pending settle-out timer / any rAF, drop leftover CSS transitions,
+    // and reset a mode stuck at 'spinning'/'settling' (e.g. a flip-in that got
+    // interrupted by a re-render). Without this the digits occasionally jump to
+    // the new value instead of rolling.
+    if (settleTimerRef.current) { clearTimeout(settleTimerRef.current); settleTimerRef.current = null; }
+    if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+    st.mode = 'settled';
+    stripRefs.current.forEach((s) => { if (s) s.style.transition = ''; });
 
     st.currentCountdown = countdown;
     const starts = { ...st.lastPositions };
@@ -534,9 +559,7 @@ function Odometer({ value, digits = 2, className = '', placeholder = false, form
       if (p < 1) { rafRef.current = requestAnimationFrame(anim); }
       else { rafRef.current = null; }
     };
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(anim);
-    return () => { if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; } };
   }, [countdown, placeholder, stripDigitMap, charsToDigit]);
 
   // Cleanup timers only on unmount — never on dependency changes, so the
@@ -864,7 +887,7 @@ const [items, setItems] = useState([]);
    const [sortBy, setSortBy] = useState(null);
    const [sortOrder, setSortOrder] = useState("desc");
    const [typeFilter, setTypeFilter] = useState(null);
-   const scrollRef = useRef(null);
+    // const scrollRef = useRef(null); // removed – scroll handled by react-window
 
   // Surface WA connection state in the queue UI: if WhatsApp drops while debug
   // mode is on, sends fail silently-ish — the user needs to know immediately
@@ -976,6 +999,8 @@ const [items, setItems] = useState([]);
   const prevItemsJsonRef = useRef(null);
   const requestIdRef = useRef(0);
   const loadingMoreRef = useRef(false);
+  const cursorRef = useRef(cursor);
+  cursorRef.current = cursor;
   // Track the last loaded sentinel ID to avoid duplicate loads
   const lastLoadedRef = useRef(null);
   // Mutable ref mirroring the items state for stable scroll callbacks
@@ -989,7 +1014,8 @@ const [items, setItems] = useState([]);
     const myId = ++requestIdRef.current;
     try {
       loadingMoreRef.current = true;
-      const r = await getSendQueue(status, reset ? 0 : cursor, 5000, g.target, { sortBy, sortOrder, typeFilter });
+      const currentCursor = reset ? 0 : cursorRef.current;
+      const r = await getSendQueue(status, currentCursor, 5000, g.target, { sortBy, sortOrder, typeFilter });
       if (myId !== requestIdRef.current) return;
       const list = (r && Array.isArray(r.items)) ? r.items : [];
       const listJson = JSON.stringify(list);
@@ -1010,7 +1036,7 @@ const [items, setItems] = useState([]);
       loadingMoreRef.current = false;
       setLoading(false);
     }
-  }, [cursor]);
+  }, [sortBy, sortOrder, typeFilter]);
 
   // Keep a mutable ref of the current items array for the scroll handler
   useEffect(() => {
@@ -1091,8 +1117,8 @@ useEffect(() => {
   }, [showSettings]);
 
 useEffect(() => {
-     if (selected) loadItems(selected.groupKey, selected.status, true);
-   }, [selected, loadItems]);
+  if (selected) loadItems(selected.groupKey, selected.status, true);
+}, [selected]);
 
   // On reload landing directly on an item URL (#/sendqueue/<g>/<s>/<qid>),
   // re-open the player once the folder's items have loaded.
@@ -1212,24 +1238,26 @@ const openStatus = (groupKey, status) => {
   const stableOnCaptionChange = useCallback((item, c) => handleCaptionChangeRef.current(item, c), []);
   const stableOnOpen = useCallback((item) => openItemRef.current(item), []);
 
-  // Grid virtualization — CSS grid with content-visibility for native off-screen rendering
-  const onScroll = useCallback((e) => {
-    const el = e.currentTarget;
-    if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) {
-      if (!loadingMoreRef.current) {
-        const sel = selectedRef.current;
-        if (sel) {
-          const last = itemsRef.current[itemsRef.current.length - 1];
-          const sentinel = last ? last.qid : null;
-          if (!sentinel || sentinel !== lastLoadedRef.current) {
-            lastLoadedRef.current = sentinel;
-            loadItemsRef.current(sel.groupKey, sel.status, false);
-          }
-        }
-      }
-    } else {
-      lastLoadedRef.current = null;
+  // Removed scroll handler – infinite loading now handled via react-window onItemsRendered
+
+  // Tracks react-window's isScrolling so the shared countdown clock can be
+  // paused while the user scrolls (keeps the grid light during fast scrolling).
+  const scrollingRef = useRef(false);
+
+  // Resume the clock when leaving the folder grid back to the folder cards.
+  useEffect(() => {
+    if (!selected) {
+      scrollingRef.current = false;
+      setClockPaused(false);
     }
+  }, [selected]);
+
+  // Never leak a paused clock into other views on unmount.
+  useEffect(() => {
+    return () => {
+      scrollingRef.current = false;
+      setClockPaused(false);
+    };
   }, []);
 
   const selectedGroup = selected ? GROUPS[selected.groupKey] : null;
@@ -1333,7 +1361,7 @@ const openStatus = (groupKey, status) => {
       )}
 
       {/* Content */}
-      <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto p-4">
+      <div className="flex-1 overflow-auto p-4" style={{ minHeight: 0 }}>
         {!selected ? (
           <div className="space-y-8 max-w-4xl">
             {GROUP_ORDER.map((g) => (
@@ -1360,28 +1388,86 @@ const openStatus = (groupKey, status) => {
             ))}
           </div>
 ) : (
-           <div>
+           <div className="h-full">
              {items.length === 0 && !loading && !everLoaded ? (
                <div className="text-center text-neutral-500 py-20">Tidak ada item di status ini.</div>
              ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-                {items.map((it, idx) => {
-                  const timelineItem = timelineMap[it.qid];
-                  return (
-                    <ItemCard 
-                      key={it.qid} 
-                      item={it} 
-                      index={idx}
-                      onOpen={stableOnOpen} 
-                      onAction={stableOnAction} 
-                      onCaptionChange={stableOnCaptionChange}
-                      sendEta={timelineItem?.eta}
-                      ready={timelineItem?.ready}
-                      scheduleActive={settings?.tickEnabled && !settings?.debugMode}
-                    />
-                  );
-                })}
-              </div>
+               <AutoSizer>
+                  {({ height, width }) => {
+                    const GUTTER = 16; // gap between cards (matches the old gap-4 grid)
+                    const SCROLLBAR = 20; // reserve room for react-window's vertical
+                                          // scrollbar so the grid content never overflows
+                                          // horizontally (which drew a horizontal slider +
+                                          // a white corner box where both sliders met).
+                    const META_HEIGHT = 88; // fixed metadata block (name / date / ETA / caption)
+                    const columnCount = width >= 1024 ? 5 : width >= 768 ? 4 : width >= 640 ? 3 : 2;
+                    // Card width = available width minus reserved scrollbar minus the gutters
+                    // between columns. Total content width stays <= width so no horizontal scroll.
+                    const cardW = Math.max(1, Math.floor((width - SCROLLBAR - (columnCount - 1) * GUTTER) / columnCount));
+                    const cardH = cardW + META_HEIGHT; // square thumbnail (1:1, = cardW) + metadata
+                    const columnWidth = cardW + GUTTER;
+                    const rowHeight = cardH + GUTTER;
+                    const rowCount = Math.ceil(items.length / columnCount);
+                   const handleItemsRendered = ({ visibleRowStopIndex }) => {
+                     if (visibleRowStopIndex >= rowCount - 1 && !loadingMoreRef.current) {
+                       const sel = selectedRef.current;
+                       if (sel) {
+                         const last = itemsRef.current[itemsRef.current.length - 1];
+                         const sentinel = last ? last.qid : null;
+                         if (!sentinel || sentinel !== lastLoadedRef.current) {
+                           lastLoadedRef.current = sentinel;
+                           loadItemsRef.current(sel.groupKey, sel.status, false);
+                         }
+                       }
+                     }
+                   };
+                    return (
+                      <Grid
+                        height={height}
+                        width={width}
+                        columnCount={columnCount}
+                        rowCount={rowCount}
+                        columnWidth={columnWidth}
+                        rowHeight={rowHeight}
+                        onItemsRendered={handleItemsRendered}
+                        overscanRowCount={2}
+                        useIsScrolling
+                        style={{ overflowX: 'hidden' }}
+                      >
+                        {({ columnIndex, rowIndex, style, isScrolling }) => {
+                          // Pause the shared countdown clock while scrolling so the
+                          // ~20 mounted cards don't re-render + run flip animations
+                          // every second (the main cause of scroll jank).
+                          if (isScrolling !== scrollingRef.current) {
+                            scrollingRef.current = isScrolling;
+                            setClockPaused(isScrolling);
+                          }
+                          const idx = rowIndex * columnCount + columnIndex;
+                          const it = items[idx];
+                          if (!it) return null;
+                          const timelineItem = timelineMap[it.qid];
+                          const isLastCol = columnIndex === columnCount - 1;
+                          const isLastRow = rowIndex === rowCount - 1;
+                          return (
+                            <div style={{ ...style, paddingRight: isLastCol ? 0 : GUTTER, paddingBottom: isLastRow ? 0 : GUTTER }}>
+                              <ItemCard
+                               key={it.qid}
+                               item={it}
+                               index={idx}
+                               onOpen={stableOnOpen}
+                               onAction={stableOnAction}
+                               onCaptionChange={stableOnCaptionChange}
+                               sendEta={timelineItem?.eta}
+                               ready={timelineItem?.ready}
+                               scheduleActive={settings?.tickEnabled && !settings?.debugMode}
+                             />
+                           </div>
+                         );
+                       }}
+                     </Grid>
+                   );
+                 }}
+               </AutoSizer>
             )}
             {loading && <div className="text-center text-neutral-500 py-6">Memuat…</div>}
           </div>

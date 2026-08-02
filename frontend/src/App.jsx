@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Bell, Upload as UploadIcon, X, Trash2, Bug, Heart, Send } from 'lucide-react';
+import { Bell, Upload as UploadIcon, X, Trash2, Bug, Heart, Send, SlidersHorizontal } from 'lucide-react';
 import { fetchFolder, fetchFileById, clearResponseCache, toggleFavorite, fetchPlaylistPlay } from './utils/api';
 
 // Initial page size when opening a folder. The backend caps a folder at 5000
@@ -18,6 +18,7 @@ import UploadsMonitor from './components/UploadsMonitor';
 import useDebugStore from './debug/useDebugStore';
 import PlaylistView from './components/PlaylistView';
 import MusicPlayer from './components/Music';
+import MusicSyncSandbox from './components/MusicSyncSandbox';
 import VaultAudioPlayer from './components/VaultAudioPlayer';
 import MiniPlayer from './components/MiniPlayer';
 import ServiceStoppedBanner from './components/ServiceStoppedBanner';
@@ -115,6 +116,7 @@ function parseHash(hash) {
   }
   if (parts[0] === 'ai-settings') return { type: 'ai-settings' };
   if (parts[0] === 'ai') return { type: 'ai' };
+  if (parts[0] === 'music-sandbox') return { type: 'music-sandbox' };
   if (parts[0] === 'audio') {
     if (parts[1] === 'playlist' && parts[2] && parts[3] === 'track' && parts[4] !== undefined) {
       return { type: 'audio', playlistId: parts[2], trackFileId: parts[4] };
@@ -200,16 +202,17 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
     const initialView = initialRoute.type === 'playlists' ? 'playlists'
        : initialRoute.type === 'playlist-detail' ? 'playlists'
        : initialRoute.type === 'monitoring' ? 'monitoring'
-      : initialRoute.type === 'downloader' ? 'downloader'
-      : initialRoute.type === 'adb' ? 'adb'
-      : initialRoute.type === 'audio' ? 'audio'
-      : initialRoute.type === 'vault-audio' ? 'vaultAudio'
-      : initialRoute.type === 'scrcpy' ? 'scrcpy'
-      : initialRoute.type === 'whatsapp' ? 'whatsapp'
-      : initialRoute.type === 'sendqueue' ? 'sendqueue'
-      : initialRoute.type === 'ai' ? 'ai'
-      : initialRoute.type === 'ai-settings' ? 'ai-settings'
-      : 'media';
+       : initialRoute.type === 'downloader' ? 'downloader'
+       : initialRoute.type === 'adb' ? 'adb'
+       : initialRoute.type === 'music-sandbox' ? 'musicSandbox'
+       : initialRoute.type === 'audio' ? 'audio'
+       : initialRoute.type === 'vault-audio' ? 'vaultAudio'
+       : initialRoute.type === 'scrcpy' ? 'scrcpy'
+       : initialRoute.type === 'whatsapp' ? 'whatsapp'
+       : initialRoute.type === 'sendqueue' ? 'sendqueue'
+       : initialRoute.type === 'ai' ? 'ai'
+       : initialRoute.type === 'ai-settings' ? 'ai-settings'
+       : 'media';
     const [view, setView] = useState(initialView);
     const viewRef = useRef(view);
     useEffect(() => { viewRef.current = view; }, [view]);
@@ -1544,9 +1547,9 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
   // === PROCESSED ITEMS (STABLE MEMOIZED) ===
   const processedFolders = useMemo(() => {
     if (state.currentFilter !== 'all' && state.currentFilter !== 'folder') return [];
-    if (state.currentSortBy === 'love') return [];
+    if (state.currentFilter === 'love') return [];
     return [...state.folders].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-  }, [state.folders, state.currentFilter, state.currentSortBy]);
+  }, [state.folders, state.currentFilter]);
 
   const processedItems = useMemo(() => {
     if (state.currentFilter === 'folder') return [];
@@ -1561,8 +1564,8 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
       result = result.filter(f => f.is_favorite === 1);
     }
 
-    // When sorting by love, show only loved items (acts as a filter)
-    if (state.currentSortBy === 'love') {
+    // Love filter type — show only loved items
+    if (state.currentFilter === 'love') {
       result = result.filter(f => f.is_favorite === 1);
     }
 
@@ -1595,11 +1598,11 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
      if (state.currentFilter !== 'all') {
        result = result.filter(f => f.type === state.currentFilter);
      }
-     // When sorting by love, filter to only loved items
-     if (state.currentSortBy === 'love') {
+     // Love filter type — show only loved items
+     if (state.currentFilter === 'love') {
        result = result.filter(f => f.is_favorite === 1);
      }
-     if (state.currentSortBy && state.currentSortBy !== 'love') {
+     if (state.currentSortBy) {
        result.sort((a, b) => {
          let cmp = 0;
          if (state.currentSortBy === 'name') {
@@ -1664,6 +1667,7 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
        }
         if (route.type === 'downloader') { setView('downloader'); return; }
         if (route.type === 'adb') { setView('adb'); return; }
+        if (route.type === 'music-sandbox') { setView('musicSandbox'); return; }
         if (route.type === 'scrcpy') { setView('scrcpy'); return; }
         if (route.type === 'whatsapp') { setView('whatsapp'); return; }
         if (route.type === 'sendqueue') { setView('sendqueue'); return; }
@@ -1774,6 +1778,7 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
   }
       if (route.type === 'downloader') { setView('downloader'); return; }
       if (route.type === 'adb') { setView('adb'); return; }
+      if (route.type === 'music-sandbox') { setView('musicSandbox'); return; }
       if (route.type === 'scrcpy') { setView('scrcpy'); return; }
       if (route.type === 'whatsapp') { setView('whatsapp'); return; }
 if (route.type === 'sendqueue') { setView('sendqueue'); return; }
@@ -1957,17 +1962,9 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
                 <button
                   onClick={() => setShowFilterPanel(true)}
                   className={`single-panel-btn ${state.currentFilter !== 'all' || state.currentSortBy !== null ? 'has-filters' : ''}`}
-                  aria-label="Open filters and sort panel"
+                  title="Filters"
                 >
-                  <span>Filters</span>
-                </button>
-                <button
-                  onClick={handleSortOrderToggle}
-                  className={`direction-toggle ${state.currentSortBy === null ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  disabled={state.currentSortBy === null}
-                  title="Toggle sort direction"
-                >
-                  {state.currentSortOrder === 'asc' ? '↑' : '↓'}
+                  <SlidersHorizontal size={16} />
                 </button>
               </div>
             )}
@@ -2077,6 +2074,16 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
               Music
             </button>
             <button
+              data-debug-id="1.1.1.5b" data-debug-name="NavMusicSandbox" data-debug-type="other"
+              onClick={() => { setView('musicSandbox'); setSidebarOpen(false); history.pushState({ view: 'musicSandbox' }, '', '#/music-sandbox'); }}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'musicSandbox' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+            >
+              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 20V10M18 20V4M6 20v-4" />
+              </svg>
+              Music Sync Sandbox
+            </button>
+            <button
               data-debug-id="1.1.1.6" data-debug-name="NavBot" data-debug-type="other"
               onClick={() => { setView('whatsapp'); setSidebarOpen(false); history.pushState({ view: 'whatsapp' }, '', '#/whatsapp'); }}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'whatsapp' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
@@ -2138,6 +2145,16 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
             </div>
 ) : view === 'adb' ? (
   <AdbTransfer />
+) : view === 'musicSandbox' ? (
+  <div className="flex-1 flex overflow-hidden">
+    <MusicSyncSandbox
+      file={state.selectedFile}
+      onClose={() => {
+        setView('media');
+        navigateToRoot();
+      }}
+    />
+  </div>
 ) : (view === 'playlists' || view === 'audio' || view === 'vaultAudio') ? (
       <div className="flex-1 flex flex-col overflow-hidden relative">
         <div className="flex-1 overflow-hidden" style={{ display: (view === 'audio' || view === 'vaultAudio') ? 'none' : 'flex', flexDirection: 'column' }}>
@@ -2216,6 +2233,17 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
        }}
      />
         </div>
+        {view === 'musicSandbox' && (
+          <div className="flex-1 flex overflow-hidden">
+            <MusicSyncSandbox
+              file={state.selectedFile}
+              onClose={() => {
+                setView('media');
+                navigateToRoot();
+              }}
+            />
+          </div>
+        )}
         {view === 'audio' && (
           <div className="flex-1 flex overflow-hidden">
           <MusicPlayer
@@ -2565,6 +2593,7 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
           title="Filters"
           filterTypeOptions={[
             { key: 'all', label: 'All' },
+            { key: 'love', label: 'Love' },
             { key: 'video', label: 'Video' },
             { key: 'audio', label: 'Audio' },
             { key: 'image', label: 'Image' },
@@ -2574,12 +2603,11 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
           filterType={panelFilterType}
           onFilterTypeChange={setPanelFilterType}
           sortOptions={[
-            { key: null, label: 'None', order: 'asc' },
-            { key: 'love', label: 'Love', order: 'desc' },
-            { key: 'name', label: 'Name', order: 'asc' },
-            { key: 'mtime', label: 'Modified', order: 'desc' },
-            { key: 'created_at', label: 'Created', order: 'desc' },
-            { key: 'size', label: 'Size', order: 'desc' },
+            { key: null, label: 'None' },
+            { key: 'name', label: 'Name' },
+            { key: 'mtime', label: 'Modified' },
+            { key: 'created_at', label: 'Created' },
+            { key: 'size', label: 'Size' },
           ]}
           sortBy={panelSortBy}
           sortOrder={panelSortOrder}

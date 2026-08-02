@@ -12,22 +12,33 @@ const DEFAULT_ALLOWED = (process.env.TELEGRAM_ALLOWED_CHAT_IDS || '1399809913')
   .split(',').map(s => s.trim()).filter(Boolean);
 
 let bot = null;
+let messageHandler = null;
+let lastPollingErrorLog = 0;
+const POLLING_ERROR_LOG_INTERVAL = 10000;
 
 function createBot() {
   if (bot) return bot;
   if (!BOT_TOKEN) return null;
   bot = new TelegramBotApi(BOT_TOKEN, { polling: true });
   bot.on('polling_error', (err) => {
-    console.error('[tg polling]', err.message);
     const msg = (err && err.message) || String(err);
     const shouldRestart = /EFATAL|ECONNRESET|409 Conflict|ETELEGRAM: 409/i.test(msg);
     if (shouldRestart) {
       bot.stopPolling().then(() => {
         setTimeout(() => {
           bot = null;
-          createBot();
+          const newBot = createBot();
+          if (newBot && messageHandler) {
+            newBot.on('message', messageHandler);
+            console.log('[tg] message handler re-registered after restart');
+          }
         }, 5000);
       }).catch(() => {});
+    }
+    const now = Date.now();
+    if (now - lastPollingErrorLog > POLLING_ERROR_LOG_INTERVAL) {
+      lastPollingErrorLog = now;
+      console.error('[tg polling]', msg);
     }
   });
   return bot;
@@ -36,8 +47,8 @@ function createBot() {
 export function getBot() {
   if (bot) return bot;
   if (!BOT_TOKEN) return null;
-  bot = new TelegramBotApi(BOT_TOKEN, { polling: false });
-  return bot;
+  const sendBot = new TelegramBotApi(BOT_TOKEN, { polling: false });
+  return sendBot;
 }
 
 export async function sendFileToTelegram(fileId, captionPrefix = '') {
@@ -49,9 +60,6 @@ export async function sendFileToTelegram(fileId, captionPrefix = '') {
 
   const caption = captionPrefix || '';
 
-  // Kirim sebagai dokumen untuk SEMUA tipe → byte-for-byte 1:1 (tidak dikompres
-  // Telegram seperti sendPhoto/sendVideo/sendAudio). Trade-off: preview di Telegram
-  // tidak sekaya foto/video inline, tapi kualitas asli terjaga (sesuai keputusan user).
   await b.sendDocument(CHAT_ID, file.fullPath, { caption });
 }
 
@@ -160,6 +168,8 @@ async function onMessage(msg) {
   if (!chatId) return;
   const text = (msg.text || '').trim();
 
+  console.log(`[tg msg] chat=${chatId} type=${msg.chat.type} text="${text.substring(0, 80)}"`);
+
   if (text.startsWith('/start') || text.startsWith('/allow')) {
     if (msg.chat.type === 'private') {
       authorizeChat(chatId);
@@ -168,8 +178,14 @@ async function onMessage(msg) {
     return;
   }
 
-  if (msg.chat.type !== 'private') return;
-  if (!isAuthorized(chatId)) return;
+  if (msg.chat.type !== 'private') {
+    console.log(`[tg msg] skipped: not private chat`);
+    return;
+  }
+  if (!isAuthorized(chatId)) {
+    console.log(`[tg msg] skipped: not authorized (chatId=${chatId})`);
+    return;
+  }
 
   const urls = extractUrls(text);
   if (urls.length === 0) {
@@ -177,16 +193,26 @@ async function onMessage(msg) {
     return;
   }
 
-  if (dbIsProcessed(msg.message_id)) return;
+  if (dbIsProcessed(msg.message_id)) {
+    console.log(`[tg msg] skipped: already processed (msgId=${msg.message_id})`);
+    return;
+  }
   dbMarkProcessed(msg.message_id);
 
   try {
     const results = createBulkTasks(urls, { botMode: true });
-    const ok = results.filter(r => !r.error);
+    const ok = results.filter(r => !r.error && r.id != null);
     const failed = results.filter(r => r.error);
+    const skipped = results.filter(r => r.skipped || r.cached);
+
+    console.log(`[tg msg] urls=${urls.length} ok=${ok.length} failed=${failed.length} skipped=${skipped.length}`);
 
     if (ok.length === 0) {
-      const reply = `⚠️ ${failed.length} gagal: ${failed[0].error}`;
+      const errOrSkip = [...failed, ...skipped];
+      const detail = errOrSkip.length > 0
+        ? (errOrSkip[0].error || errOrSkip[0].reason || 'unknown')
+        : 'no valid tasks';
+      const reply = `⚠️ ${results.length} link gagal: ${detail}`;
       await bot.sendMessage(chatId, reply).catch(() => {});
       return;
     }
@@ -202,7 +228,11 @@ async function onMessage(msg) {
     if (failed.length > 0) {
       await bot.sendMessage(chatId, `⚠️ ${failed.length} link dilewati: ${failed[0].error}`).catch(() => {});
     }
+    if (skipped.length > 0) {
+      await bot.sendMessage(chatId, `ℹ️ ${skipped.length} link sudah didownload sebelumnya`).catch(() => {});
+    }
   } catch (err) {
+    console.error('[tg msg] error:', err);
     await bot.sendMessage(chatId, `❌ Gagal: ${err.message}`).catch(() => {});
   }
 }
@@ -228,7 +258,9 @@ export function initTelegramInbound() {
   if (!BOT_TOKEN) return;
   createBot();
   if (!bot) return;
+  messageHandler = onMessage;
   bot.on('message', onMessage);
+  console.log('[tg] inbound initialized, polling active');
   if (!finishedHookRegistered) {
     finishedHookRegistered = true;
     onTaskFinished(handleTaskFinished);

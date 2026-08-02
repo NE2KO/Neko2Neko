@@ -199,7 +199,6 @@ const Row = ({ index, style, data }) => {
         paddingLeft: '12px',
         paddingBottom: '6px',
       }}>
-        <hr className="border-neutral-800 w-full mb-1.5" />
         <GroupDivider label={row.label} folderPath={row.folderPath} />
       </div>
     );
@@ -277,7 +276,6 @@ const MediaGrid = forwardRef(({ folders = [], files = [], onSelect, onToggleFavo
   }, [hasMore, fetchingMore]);
 
   const flatItems = useMemo(() => {
-    if (!groupByFolder && !hasDividers) return null;
     const result = [];
 
     if (groupByFolder) {
@@ -310,6 +308,9 @@ const MediaGrid = forwardRef(({ folders = [], files = [], onSelect, onToggleFavo
       if (folders.length > 0) {
         result.push({ _separator: true, _label: 'Folders' });
         result.push(...folders);
+      }
+      if (files.length > 0) {
+        result.push({ _separator: true, _label: 'Files' });
       }
       if (hasDividers) {
         let lastLabel = null;
@@ -392,7 +393,7 @@ const MediaGrid = forwardRef(({ folders = [], files = [], onSelect, onToggleFavo
 
             const getRowHeight = (index) => {
               const row = rows[index];
-              return row.type === 'separator' ? 32 : CARD_HEIGHT + GUTTER;
+              return row.type === 'separator' ? 44 : CARD_HEIGHT + GUTTER;
             };
 
             return (

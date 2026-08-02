@@ -169,7 +169,7 @@ const PlaylistGrid = forwardRef(({
             rowsRef.current = rows;
             const gridHeight = Math.max(0, height - GUTTER);
 
-            const getRowHeight = (i) => (rows[i].type === 'separator' ? 32 : CARD_H + GUTTER);
+            const getRowHeight = (i) => (rows[i].type === 'separator' ? 44 : CARD_H + GUTTER);
 
             const itemData = {
               rows,

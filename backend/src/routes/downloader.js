@@ -68,17 +68,17 @@ router.post('/config', (req, res) => {
 });
 
 router.post('/start', (req, res) => {
-  const { url, category, quality, formatId, audioExtract, audioFormat, audioBitrate, twitterMode, twitterAccount, imageMode, twitterCookiesPath, youtubeCookiesPath, customOutput, customTitle } = req.body;
-  const result = createTask(url, { category, quality, formatId, audioExtract, audioFormat, audioBitrate, twitterMode, twitterAccount, imageMode, twitterCookiesPath, youtubeCookiesPath, customOutput, customTitle });
+  const { url, category, quality, formatId, audioExtract, audioFormat, audioBitrate, twitterMode, twitterAccount, imageMode, twitterCookiesPath, youtubeCookiesPath, customOutput, customTitle, embedCover } = req.body;
+  const result = createTask(url, { category, quality, formatId, audioExtract, audioFormat, audioBitrate, twitterMode, twitterAccount, imageMode, twitterCookiesPath, youtubeCookiesPath, customOutput, customTitle, embedCover });
   if (result.error) return res.status(400).json(result);
   res.json(result);
 });
 
 router.post('/bulk', (req, res) => {
-  const { urls, category, quality, formatId, audioExtract, audioFormat, audioBitrate, twitterMode, twitterAccount, imageMode, twitterCookiesPath, youtubeCookiesPath, customOutput } = req.body;
+  const { urls, category, quality, formatId, audioExtract, audioFormat, audioBitrate, twitterMode, twitterAccount, imageMode, twitterCookiesPath, youtubeCookiesPath, customOutput, embedCover } = req.body;
   if (!urls || (!Array.isArray(urls) && typeof urls !== 'string'))
     return res.status(400).json({ error: 'urls harus array atau string (satu URL per baris)' });
-  const results = createBulkTasks(urls, { category, quality, formatId, audioExtract, audioFormat, audioBitrate, twitterMode, twitterAccount, imageMode, twitterCookiesPath, youtubeCookiesPath, customOutput });
+  const results = createBulkTasks(urls, { category, quality, formatId, audioExtract, audioFormat, audioBitrate, twitterMode, twitterAccount, imageMode, twitterCookiesPath, youtubeCookiesPath, customOutput, embedCover });
   res.json({ results });
 });
 

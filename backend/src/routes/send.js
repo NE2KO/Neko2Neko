@@ -3,7 +3,7 @@ import db from '../db.js';
 import { sendFileToTelegram, getBot } from '../utils/telegramBot.js';
 import { getFileWithRelPath } from '../utils/fileResolver.js';
 import { incrementTelegramCount, incrementWhatsAppCount, isSeparatorNeeded } from '../utils/sendCounter.js';
-import { canSendNow, recordSend, enqueueSend, getActiveOrRecentSend, markProcessing, markSendDone, cancelSend, retrySend, removeSend, clearHistory, getStatusCounts, getQueueByStatus, getSendSettings, setSendSettings, clearHolds, clearDebugHistory, buildQueueTimeline, getPerDay, getPendingSends, getRateState, setQueueCaption, reorderQueueItem, rescheduleQueueItem } from '../utils/sendRateLimit.js';
+import { canSendNow, recordSend, enqueueSend, getActiveOrRecentSend, markProcessing, markSendDone, cancelSend, retrySend, removeSend, clearHistory, getStatusCounts, getQueueByStatus, getSendSettings, setSendSettings, clearHolds, clearDebugHistory, buildQueueTimeline, getPerDay, getPendingSends, getAllPendingSends, getRateState, setQueueCaption, reorderQueueItem, rescheduleQueueItem } from '../utils/sendRateLimit.js';
 
 const router = Router();
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '-1002821903652';
@@ -377,7 +377,7 @@ router.post('/settings', (req, res) => {
 router.get('/queue/statuses', async (req, res) => {
   try {
     const policy = canSendNow();
-    const pending = getPendingSends();
+    const pending = getAllPendingSends();
     const rateState = getRateState();
     const timeline = buildQueueTimeline({
       now: Date.now(),

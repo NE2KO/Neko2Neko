@@ -68,19 +68,49 @@ export default function FilterPanel({
             <div className="sort-section">
               <div className="section-header">SORT BY</div>
               <div className="options-list">
-                {sortOptions.map(opt => (
-                  <div
-                    key={String(opt.key)}
-                    className={`option-item ${panelSortBy === opt.key ? 'selected' : ''}`}
-                    onClick={() => {
-                      setPanelSortBy(opt.key);
-                      setPanelSortOrder(opt.order || 'asc');
-                    }}
-                  >
-                    <div className="radio-custom"></div>
-                    <span className="option-label">{opt.label}</span>
-                  </div>
-                ))}
+                {sortOptions.map(opt => {
+                  if (opt.key === null) {
+                    return (
+                      <div
+                        key="none"
+                        className={`option-item ${panelSortBy === null ? 'selected' : ''}`}
+                        onClick={() => {
+                          setPanelSortBy(null);
+                          setPanelSortOrder('asc');
+                        }}
+                      >
+                        <div className="radio-custom"></div>
+                        <span className="option-label">{opt.label}</span>
+                      </div>
+                    );
+                  }
+                  return (
+                    <React.Fragment key={String(opt.key)}>
+                      <div
+                        className={`option-item ${panelSortBy === opt.key && panelSortOrder === 'asc' ? 'selected' : ''}`}
+                        onClick={() => {
+                          setPanelSortBy(opt.key);
+                          setPanelSortOrder('asc');
+                        }}
+                      >
+                        <div className="radio-custom"></div>
+                        <span className="option-label">{opt.label}</span>
+                        <svg className="option-arrow" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4l-8 10h16z" /></svg>
+                      </div>
+                      <div
+                        className={`option-item ${panelSortBy === opt.key && panelSortOrder === 'desc' ? 'selected' : ''}`}
+                        onClick={() => {
+                          setPanelSortBy(opt.key);
+                          setPanelSortOrder('desc');
+                        }}
+                      >
+                        <div className="radio-custom"></div>
+                        <span className="option-label">{opt.label}</span>
+                        <svg className="option-arrow" viewBox="0 0 24 24" fill="currentColor"><path d="M12 20l8-10H4z" /></svg>
+                      </div>
+                    </React.Fragment>
+                  );
+                })}
               </div>
             </div>
           )}

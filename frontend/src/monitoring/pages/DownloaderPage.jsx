@@ -138,8 +138,9 @@ export default function DownloaderPage() {
   const [customOutput, setCustomOutput] = useState(false);
   const [sortBy, setSortBy] = useState('created');
   const [sortAsc, setSortAsc] = useState(false);
-  const [bulkMode, setBulkMode] = useState(false);
-  const [maxConcurrent, setMaxConcurrentState] = useState(3);
+const [bulkMode, setBulkMode] = useState(false);
+const [maxConcurrent, setMaxConcurrentState] = useState(3);
+const [embedCover, setEmbedCover] = useState(false);
   const inputRef = useRef(null);
   const textareaRef = useRef(null);
 
@@ -149,9 +150,10 @@ export default function DownloaderPage() {
     if (!detectedData) {
       setQuality(currentSource.qualities.find(q => q.value !== 'audio')?.value || currentSource.qualities[0].value);
     }
-    setError(''); setDetectedData(null); setSelectedFormat(null);
-    setSelectedAudioId(null); setExpandedRes(null); setEditedTitle('');
-    setTwitterMode('single'); setTwitterInfo(null);
+  setError(''); setDetectedData(null); setSelectedFormat(null);
+  setSelectedAudioId(null); setExpandedRes(null); setEditedTitle('');
+  setTwitterMode('single'); setTwitterInfo(null);
+  setEmbedCover(false);
   }, [source]);
 
   useEffect(() => {
@@ -311,20 +313,22 @@ export default function DownloaderPage() {
             twitterAccount: urls[0].replace(/^@/, '').replace(/^https?:\/\/(?:www\.)?(?:x|twitter)\.com\//, '').replace(/\/.*$/, ''),
             quality, twitterCookiesPath: twitterCookiesPath || null, customOutput,
           };
-        } else if (detectedData) {
-          const titleParam = editedTitle ? { customTitle: editedTitle } : {};
-          if (selectedFormat) {
-            const fmt = [...Object.values(detectedData.video || {}).flat(), ...(detectedData.audio || [])].find(f => f.id === selectedFormat);
-            body = { url: urls[0], category: source, formatId: fmt?.hasAudio ? selectedFormat : `${selectedFormat}+bestaudio[ext=m4a]/bestaudio[ext=m4a]/best`, ...titleParam };
-          }
-          else if (selectedAudioId) body = { url: urls[0], category: source, formatId: selectedAudioId, ...titleParam };
-          else body = { url: urls[0], category: source, quality, ...titleParam };
-          if (source === 'instagram') body.twitterCookiesPath = twitterCookiesPath || null;
-        } else {
+         } else if (detectedData) {
+           const titleParam = editedTitle ? { customTitle: editedTitle } : {};
+           if (selectedFormat) {
+             const fmt = [...Object.values(detectedData.video || {}).flat(), ...(detectedData.audio || [])].find(f => f.id === selectedFormat);
+             body = { url: urls[0], category: source, formatId: fmt?.hasAudio ? selectedFormat : `${selectedFormat}+bestaudio[ext=m4a]/bestaudio[ext=m4a]/best`, ...titleParam };
+           }
+           else if (selectedAudioId) body = { url: urls[0], category: source, formatId: selectedAudioId, audioExtract: true, ...titleParam };
+           else body = { url: urls[0], category: source, quality, audioExtract: quality === 'audio', ...titleParam };
+           if (source === 'instagram') body.twitterCookiesPath = twitterCookiesPath || null;
+           if (source === 'youtube') body.youtubeCookiesPath = twitterCookiesPath || null;
+         } else {
           body = { url: urls[0], category: source, quality, twitterMode: 'single', twitterAccount: '', customOutput };
           if (source === 'twitter' || source === 'instagram') body.twitterCookiesPath = twitterCookiesPath || null;
-          if (source === 'youtube') body.youtubeCookiesPath = twitterCookiesPath || null;
+          if (source === 'youtube') { body.youtubeCookiesPath = twitterCookiesPath || null; }
         }
+        body.embedCover = embedCover;
         fetch('/api/download/start', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         }).then(r => r.json()).then(d => {
@@ -332,17 +336,19 @@ export default function DownloaderPage() {
           else if (d.cached) { setCachedMsg(d.message || 'Cache hit'); setTimeout(() => setCachedMsg(''), 3000); }
           fetchTasks();
         }).catch(() => { setError('Server error: restart backend'); });
-      } else {
-        const body = {
-          urls: extractUrls(url),
-          category: source,
-          quality,
-          twitterMode: 'single',
-          twitterAccount: '',
-          customOutput,
-        };
+       } else {
+         const body = {
+           urls: extractUrls(url),
+           category: source,
+           quality,
+           audioExtract: quality === 'audio',
+           twitterMode: 'single',
+           twitterAccount: '',
+           customOutput,
+         };
         if (source === 'twitter' || source === 'instagram') body.twitterCookiesPath = twitterCookiesPath || null;
-        if (source === 'youtube') body.youtubeCookiesPath = twitterCookiesPath || null;
+        if (source === 'youtube') { body.youtubeCookiesPath = twitterCookiesPath || null; }
+        body.embedCover = embedCover;
         fetch('/api/download/bulk', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         }).then(r => r.json()).then(d => {
@@ -751,21 +757,31 @@ export default function DownloaderPage() {
                 </div>
               </>
             )}
-            {source === 'instagram' && (
-              <div className="mt-3">
-                <span className="text-[10px] text-neutral-600 font-semibold uppercase tracking-wider mb-1.5 block">Cookies Path (optional)</span>
-                <input type="text" value={twitterCookiesPath}
-                  onChange={e => setTwitterCookiesPath(e.target.value)}
-                  placeholder="/home/CATIAA/homelab-media-server/cookies.txt"
-                  className="w-full bg-[#0d1117] text-neutral-300 text-sm px-3 py-2 rounded-lg border border-[#2a3340] focus:outline-none focus:border-cyan-500/30 placeholder:text-neutral-600" />
-                {twitterCookiesPath ? (
-                  <span className="text-[9px] text-neutral-400 mt-1 block">Saved: {twitterCookiesPath}</span>
-                ) : (
-                  <span className="text-[9px] text-neutral-600 mt-1 block">Diperlukan untuk konten age-restricted/private.</span>
-                )}
-              </div>
-            )}
-          </div>
+{source === 'instagram' && (
+  <div className="mt-3">
+    <span className="text-[10px] text-neutral-600 font-semibold uppercase tracking-wider mb-1.5 block">Cookies Path (optional)</span>
+    <input type="text" value={twitterCookiesPath}
+      onChange={e => setTwitterCookiesPath(e.target.value)}
+      placeholder="/home/CATIAA/homelab-media-server/cookies.txt"
+      className="w-full bg-[#0d1117] text-neutral-300 text-sm px-3 py-2 rounded-lg border border-[#2a3340] focus:outline-none focus:border-cyan-500/30 placeholder:text-neutral-600" />
+    {twitterCookiesPath ? (
+      <span className="text-[9px] text-neutral-400 mt-1 block">Saved: {twitterCookiesPath}</span>
+    ) : (
+      <span className="text-[9px] text-neutral-600 mt-1 block">Diperlukan untuk konten age-restricted/private.</span>
+    )}
+  </div>
+)}
+
+{source !== 'torrent' && (
+  <label className="flex items-center gap-2 cursor-pointer group mt-3">
+    <input type="checkbox" checked={embedCover}
+      onChange={e => setEmbedCover(e.target.checked)}
+      className="w-3.5 h-3.5 rounded border-neutral-600 bg-neutral-800 text-cyan-500 focus:ring-cyan-500/30 focus:ring-offset-0 cursor-pointer" />
+    <span className="text-[10px] text-neutral-500 font-semibold uppercase tracking-wider group-hover:text-neutral-300 transition-colors">Embed cover</span>
+    {embedCover && <span className="text-[9px] text-cyan-500/70">thumbnail dari sumber akan di-embed</span>}
+  </label>
+)}
+</div>
 
           {error && (
             <div className="text-[11px] text-red-400 mt-3 flex items-start gap-2 bg-red-500/5 rounded-lg px-3 py-2 border border-red-500/10">
