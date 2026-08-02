@@ -891,6 +891,7 @@ export function createTask(url, options = {}) {
   const validQ = QUALITY_MAP[category];
   if (!formatId && !validQ.includes(quality)) return { error: `Kualitas "${quality}" tidak valid` };
   if (audioExtract && !AUDIO_EXTRACT_FORMATS.includes(audioFormat)) return { error: `Format audio "${audioFormat}" tidak valid` };
+  if (audioExtract && embedCover && !['mp3', 'm4a', 'opus', 'flac'].includes(audioFormat)) return { error: `Embed cover tidak didukung untuk format audio ${audioFormat}. Gunakan mp3, m4a, opus, atau flac.` };
 
   let trimmed = (url || '').trim();
 
@@ -1742,7 +1743,12 @@ function spawnYtdlp(task) {
 }
 
 if (task.embedCover) {
-  args.push('--embed-thumbnail');
+  if (task.audioExtract) {
+    addLog(task, 'Embed cover untuk audio extract akan diproses setelah download');
+    args.push('--write-thumbnail');
+  } else {
+    args.push('--embed-thumbnail');
+  }
 }
 
 const outputTemplate = task.customTitle

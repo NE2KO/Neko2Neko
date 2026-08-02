@@ -6,6 +6,7 @@ let _audioRef = null;
 let _mvRef = null;
 let _bgRef = null;
 let _engineStateRef = null;
+let _videoOffsetRef = null;
 let _rvfcStatusRef = { mv: 'UNSUPPORTED', bg: 'UNSUPPORTED' };
 let _videoRemountCountRef = 0;
 let _replayStateRef = { active: false, frameIndex: 0, totalFrames: 0, lastFrame: null, complete: false, startTime: 0 };
@@ -18,6 +19,7 @@ export function registerAudioRef(ref) { _audioRef = ref; }
 export function registerMvRef(ref) { _mvRef = ref; }
 export function registerBgRef(ref) { _bgRef = ref; }
 export function registerEngineStateRef(mv, bg) { _engineStateRef = { mv, bg }; }
+export function registerVideoOffsetRef(ref) { _videoOffsetRef = ref; }
 export function registerRvfcStatusRef(ref) { _rvfcStatusRef = ref; }
 export function registerVideoRemountCount(count) { _videoRemountCountRef = count; }
 export function registerReplayStateRef(ref) { _replayStateRef = ref || _replayStateRef; }
@@ -45,9 +47,17 @@ function driftStats(history) {
   if (!Array.isArray(history) || history.length === 0) return null;
   const vals = history.filter(v => v != null && isFinite(v));
   if (vals.length === 0) return null;
-  let min = Infinity, max = -Infinity, sum = 0;
-  for (const v of vals) { if (v < min) min = v; if (v > max) max = v; sum += v; }
-  return { min, max, avg: sum / vals.length, n: vals.length };
+  const sorted = vals.slice().sort((a, b) => a - b);
+  const n = sorted.length;
+  const min = sorted[0];
+  const max = sorted[n - 1];
+  const sum = sorted.reduce((a, b) => a + b, 0);
+  const avg = sum / n;
+  const stdDev = Math.sqrt(sorted.reduce((s, v) => s + (v - avg) ** 2, 0) / n);
+  // Percentile = nearest-rank, so P99 over a large window is a genuine tail
+  // measure (unlike min/avg/max, which a single spike can fool).
+  const pct = (q) => sorted[Math.min(n - 1, Math.max(0, Math.ceil(q * n) - 1))];
+  return { min, max, avg, stdDev, p50: pct(0.5), p95: pct(0.95), p99: pct(0.99), n };
 }
 
 function pad(n, w = 5) {
@@ -143,7 +153,13 @@ const SyncOverlay = memo(function SyncOverlay({ onClose }) {
   const [visible, setVisible] = useState(false);
   const [driftHistoryMv, setDriftHistoryMv] = useState([]);
   const [driftHistoryBg, setDriftHistoryBg] = useState([]);
+  const [driftStatsMv, setDriftStatsMv] = useState(null);
+  const [driftStatsBg, setDriftStatsBg] = useState(null);
   const lastDriftRef = useRef({ mv: [], bg: [] });
+  // Long window (~90s at 100ms sampling) so P95/P99 are real tail measures
+  // instead of collapsing to max on a tiny buffer.
+  const lastStatsRef = useRef({ mv: [], bg: [] });
+  const STATS_WINDOW = 900;
   const rafFpsRef = useRef({ lastTime: 0, ema: 0, fps: 0 });
 
   useEffect(() => {
@@ -174,11 +190,17 @@ const SyncOverlay = memo(function SyncOverlay({ onClose }) {
         lastDriftRef.current.mv.push(mvStats.rawDrift);
         if (lastDriftRef.current.mv.length > GRAPH_WIDTH) lastDriftRef.current.mv.shift();
         setDriftHistoryMv([...lastDriftRef.current.mv]);
+        lastStatsRef.current.mv.push(mvStats.rawDrift);
+        if (lastStatsRef.current.mv.length > STATS_WINDOW) lastStatsRef.current.mv.shift();
+        setDriftStatsMv(driftStats(lastStatsRef.current.mv));
       }
       if (bgStats) {
         lastDriftRef.current.bg.push(bgStats.rawDrift);
         if (lastDriftRef.current.bg.length > GRAPH_WIDTH) lastDriftRef.current.bg.shift();
         setDriftHistoryBg([...lastDriftRef.current.bg]);
+        lastStatsRef.current.bg.push(bgStats.rawDrift);
+        if (lastStatsRef.current.bg.length > STATS_WINDOW) lastStatsRef.current.bg.shift();
+        setDriftStatsBg(driftStats(lastStatsRef.current.bg));
       }
       setTick(t => t + 1);
     }, 100);
@@ -200,8 +222,13 @@ const SyncOverlay = memo(function SyncOverlay({ onClose }) {
   const audioMs = Math.round((_audioRef?.current?.currentTime ?? 0) * 1000);
   const mvMs = Math.round((_mvRef?.current?.getCurrentTime?.() ?? 0) * 1000);
   const bgMs = Math.round((_bgRef?.current?.currentTime ?? 0) * 1000);
-  const audioMvDrift = mvMs - audioMs;
-  const audioBgDrift = bgMs - audioMs;
+  // videoOffset is intentional (per-track offset from activeFile). The engine
+  // targets audio.currentTime + offset, so the real sync error is measured
+  // against that target — NOT the raw difference, which a large offset makes
+  // look like a 15s failure. The raw times are still shown above for reference.
+  const offsetMs = Math.round((_videoOffsetRef?.current ?? 0) * 1000);
+  const audioMvDrift = mvMs - (audioMs + offsetMs);
+  const audioBgDrift = bgMs - (audioMs + offsetMs);
   const mvBgDrift = bgMs - mvMs;
   // Determine if each engine is within the 10ms sync target (the scale the
   // user wants kept under). Frame period is informational; the target is what
@@ -265,9 +292,9 @@ const SyncOverlay = memo(function SyncOverlay({ onClose }) {
         <span style={{ color: driftColor(bg?.rawDrift) }}>BG {pad(bgMs)}ms</span>
       </div>
       <div style={{ ...S.timeRow, color: '#888', fontSize: 12, marginTop: -2, fontWeight: 500 }}>
-        <span style={{ color: '#666' }}>Target</span>
-        <span style={{ color: '#4ade80' }}>0ms</span>
-        <span style={{ color: '#4ade80' }}>0ms</span>
+        <span style={{ color: '#666' }}>Offset</span>
+        <span style={{ color: '#4ade80' }}>+{pad(offsetMs)}ms</span>
+        <span style={{ color: '#4ade80' }}>+{pad(offsetMs)}ms</span>
       </div>
       <div style={{ ...S.timeRow, color: '#888', fontSize: 12, marginTop: 1, fontWeight: 500 }}>
         <span style={{ color: '#666' }}>Δ Audio↔MV</span>
@@ -286,20 +313,32 @@ const SyncOverlay = memo(function SyncOverlay({ onClose }) {
         {triangleConsistency.outlier && <span style={{ color: '#f87171', marginLeft: 6 }}>outlier: {triangleConsistency.outlier}</span>}
       </div>
       {(() => {
-        const mvS = driftStats(driftHistoryMv);
-        const bgS = driftStats(driftHistoryBg);
-        const line = (label, st) => st ? (
-          <div style={{ fontSize: 11, color: '#888', display: 'flex', gap: 8, marginTop: 1 }}>
+        const mvS = driftStatsMv;
+        const bgS = driftStatsBg;
+        const row1 = (label, st) => st ? (
+          <div style={{ fontSize: 11, color: '#888', display: 'flex', gap: 7, marginTop: 1 }}>
             <span style={{ color: '#666', width: 26, flexShrink: 0 }}>{label}</span>
             <span>min <span style={{ color: driftColor(st.min) }}>{fmtMs(st.min)}</span>ms</span>
             <span>avg <span style={{ color: driftColor(st.avg) }}>{fmtMs(st.avg)}</span>ms</span>
-            <span>max <span style={{ color: driftColor(st.max) }}>{fmtMs(st.max)}</span>ms</span>
+            <span>&sigma; <span style={{ color: (st.stdDev ?? 99) > 12 ? '#f87171' : '#bbb' }}>{fmtVal(st.stdDev, 1)}</span>ms</span>
+          </div>
+        ) : null;
+        const row2 = (label, st) => st ? (
+          <div style={{ fontSize: 11, color: '#888', display: 'flex', gap: 7, marginTop: 1, paddingLeft: 26 }}>
+            <span style={{ color: '#666' }}>P95</span>
+            <span style={{ color: (st.p95 ?? 99) > 10 ? '#facc15' : '#4ade80', width: 44, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmtMs(st.p95)}ms</span>
+            <span style={{ color: '#666' }}>P99</span>
+            <span style={{ color: (st.p99 ?? 99) > 20 ? '#f87171' : '#facc15', width: 44, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmtMs(st.p99)}ms</span>
+            <span style={{ color: '#666' }}>worst</span>
+            <span style={{ color: driftColor(st.max), width: 56, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmtMs(st.max)}ms</span>
           </div>
         ) : null;
         return mvS || bgS ? (
           <div style={{ marginTop: 1, marginBottom: 3 }}>
-            {line('MV', mvS)}
-            {line('BG', bgS)}
+            {row1('MV', mvS)}
+            {row2('MV', mvS)}
+            {row1('BG', bgS)}
+            {row2('BG', bgS)}
           </div>
         ) : null;
       })()}
@@ -324,8 +363,8 @@ const SyncOverlay = memo(function SyncOverlay({ onClose }) {
           <Row label="Candidate" value={mvState?.stableCandidateSince ? `${fmtMs(performance.now() - mvState.stableCandidateSince)}ms` : '\u2014'} />
           <Row label="Sigma" value={`${fmtMs(mv?.driftStdDev)}ms`} valueColor={(mv?.driftStdDev ?? 0) > 12 ? '#f87171' : '#bbb'} />
           <Row label="SeekPend" value={mvState?.seekPending ? 'YES' : 'no'} valueColor={mvState?.seekPending ? '#facc15' : '#bbb'} />
-          <Row label="SoftPend" value={mvState?.softSeekPendingSince ? `${fmtMs(performance.now() - mvState.softSeekPendingSince)}ms` : '\u2014'} />
-          <Row label="Backoff" value={`${fmtVal(mvState?.softSeekBackoffMultiplier ?? 1, 1)}x`} valueColor={(mvState?.softSeekBackoffMultiplier ?? 1) > 4 ? '#f87171' : '#bbb'} />
+          <Row label="LastSeek" value={mvState?.lastHardSeekTime ? `${fmtMs(performance.now() - mvState.lastHardSeekTime)}ms` : '\u2014'} />
+          <Row label="HardArm" value={mvState?.hardSeekFutileArmed ? 'YES' : 'no'} valueColor={mvState?.hardSeekFutileArmed ? '#fb923c' : '#bbb'} />
           <Row label="Grace" value={mvState?.graceUntil ? `${Math.max(0, fmtMs(mvState.graceUntil - performance.now()))}ms` : '\u2014'} />
           <Row label="Hold" value={mvState?.holdUntil ? `${Math.max(0, fmtMs(mvState.holdUntil - performance.now()))}ms` : '\u2014'} valueColor={mvState?.holdUntil ? '#a78bfa' : '#555'} />
         </>}
@@ -346,8 +385,8 @@ const SyncOverlay = memo(function SyncOverlay({ onClose }) {
           <Row label="Candidate" value={bgState?.stableCandidateSince ? `${fmtMs(performance.now() - bgState.stableCandidateSince)}ms` : '\u2014'} />
           <Row label="Sigma" value={`${fmtMs(bg?.driftStdDev)}ms`} valueColor={(bg?.driftStdDev ?? 0) > 12 ? '#f87171' : '#bbb'} />
           <Row label="SeekPend" value={bgState?.seekPending ? 'YES' : 'no'} valueColor={bgState?.seekPending ? '#facc15' : '#bbb'} />
-          <Row label="SoftPend" value={bgState?.softSeekPendingSince ? `${fmtMs(performance.now() - bgState.softSeekPendingSince)}ms` : '\u2014'} />
-          <Row label="Backoff" value={`${fmtVal(bgState?.softSeekBackoffMultiplier ?? 1, 1)}x`} valueColor={(bgState?.softSeekBackoffMultiplier ?? 1) > 4 ? '#f87171' : '#bbb'} />
+          <Row label="LastSeek" value={bgState?.lastHardSeekTime ? `${fmtMs(performance.now() - bgState.lastHardSeekTime)}ms` : '\u2014'} />
+          <Row label="HardArm" value={bgState?.hardSeekFutileArmed ? 'YES' : 'no'} valueColor={bgState?.hardSeekFutileArmed ? '#fb923c' : '#bbb'} />
           <Row label="Grace" value={bgState?.graceUntil ? `${Math.max(0, fmtMs(bgState.graceUntil - performance.now()))}ms` : '\u2014'} />
           <Row label="Hold" value={bgState?.holdUntil ? `${Math.max(0, fmtMs(bgState.holdUntil - performance.now()))}ms` : '\u2014'} valueColor={bgState?.holdUntil ? '#a78bfa' : '#555'} />
         </>}
@@ -375,7 +414,6 @@ const SyncOverlay = memo(function SyncOverlay({ onClose }) {
         mvContent={<div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1px 6px', fontFamily: 'monospace', fontSize: 12 }}>
           <span style={{ color: '#4ade80' }}>LOCK:{pad(mv?.decisions?.lock ?? 0, 4)}</span>
           <span style={{ color: '#60a5fa' }}>RATE:{pad(mv?.decisions?.rate ?? 0, 4)}</span>
-          <span style={{ color: '#facc15' }}>SOFT:{pad(mv?.decisions?.soft ?? 0, 4)}</span>
           <span style={{ color: '#f87171' }}>HARD:{pad(mv?.decisions?.hard ?? 0, 4)}</span>
           <span style={{ color: '#888' }}>NOOP:{pad(mv?.decisions?.noop ?? 0, 4)}</span>
           <span style={{ color: '#fb923c' }}>FUTL:{pad(mv?.decisions?.futile ?? 0, 4)}</span>
@@ -384,7 +422,6 @@ const SyncOverlay = memo(function SyncOverlay({ onClose }) {
         bgContent={<div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1px 6px', fontFamily: 'monospace', fontSize: 12 }}>
           <span style={{ color: '#4ade80' }}>LOCK:{pad(bg?.decisions?.lock ?? 0, 4)}</span>
           <span style={{ color: '#60a5fa' }}>RATE:{pad(bg?.decisions?.rate ?? 0, 4)}</span>
-          <span style={{ color: '#facc15' }}>SOFT:{pad(bg?.decisions?.soft ?? 0, 4)}</span>
           <span style={{ color: '#f87171' }}>HARD:{pad(bg?.decisions?.hard ?? 0, 4)}</span>
           <span style={{ color: '#888' }}>NOOP:{pad(bg?.decisions?.noop ?? 0, 4)}</span>
           <span style={{ color: '#fb923c' }}>FUTL:{pad(bg?.decisions?.futile ?? 0, 4)}</span>
@@ -396,15 +433,11 @@ const SyncOverlay = memo(function SyncOverlay({ onClose }) {
         <div style={S.sectionTitle}>EXECUTED SEEKS</div>
         {['mv', 'bg'].map(eng => {
           const st = eng === 'mv' ? mv?.seekTelemetry : bg?.seekTelemetry;
-          const soft = st?.soft;
           const hard = st?.hard;
-          const softLabel = soft?.count > 0
-            ? `${soft.count}${soft.superseded > 0 ? ` (${soft.effective} eff, ${soft.superseded} sup)` : ''} ${soft.avgDrift}ms${soft.recovery ? ` ~${soft.recovery.p50Ms}ms` : ''}`
-            : '0';
           const hardLabel = hard?.count > 0
             ? `${hard.count}${hard.superseded > 0 ? ` (${hard.effective} eff, ${hard.superseded} sup)` : ''} ${hard.avgDrift}ms${hard.recovery ? ` ~${hard.recovery.p50Ms}ms` : ''}`
             : '0';
-          return <Row key={eng} label={eng.toUpperCase()} value={`Soft: ${softLabel} \u00b7 Hard: ${hardLabel}`} />;
+          return <Row key={eng} label={eng.toUpperCase()} value={`Hard: ${hardLabel}`} />;
         })}
       </div>
 
@@ -440,7 +473,7 @@ const SyncOverlay = memo(function SyncOverlay({ onClose }) {
             {decision ? (
               <div style={{ fontSize: 10, color: '#bbb', display: 'flex', gap: 4, alignItems: 'center', marginBottom: 1 }}>
                 <span style={{ color: '#666', width: 50 }}>Action</span>
-                <span style={{ color: decision.actionRequest?.type === 'hardSeek' ? '#f87171' : decision.actionRequest?.type === 'softSeek' ? '#facc15' : decision.actionRequest?.type === 'hold' ? '#888' : '#4ade80', width: 60 }}>
+                <span style={{ color: decision.actionRequest?.type === 'hardSeek' ? '#f87171' : decision.actionRequest?.type === 'hold' ? '#888' : '#4ade80', width: 60 }}>
                   {decision.actionRequest?.type?.toUpperCase() || '—'}
                 </span>
                 <span style={{ color: '#666', width: 40 }}>Conf</span>
@@ -458,17 +491,20 @@ const SyncOverlay = memo(function SyncOverlay({ onClose }) {
         {['mv', 'bg'].map(eng => {
           const st = eng === 'mv' ? mv : bg;
           const blocked = st?.confidenceBlockedBy ?? 'decoder';
-          const opConf = st?.compositeConfidence ?? 0;
-          const biasConf = st?.biasConfidence ?? 0;
+          const opConf = (st?.compositeConfidence ?? 0) / 30 * 100;
+          const biasConf = (st?.biasConfidence ?? 0) / 10 * 100;
           const blockedLabel = blocked ? blocked.charAt(0).toUpperCase() + blocked.slice(1) : '—';
+          const pct = (v) => Math.round(((v ?? 0) / 30) * 100);
+          const biasPct = (v) => Math.round(((v ?? 0) / 10) * 100);
+          const confColor = (v) => v >= 70 ? '#4ade80' : v >= 40 ? '#facc15' : '#f87171';
           return <div key={eng} style={{ marginBottom: 2 }}>
             <div style={{ fontSize: 11, color: '#a78bfa', letterSpacing: 1, marginBottom: 1 }}>{eng.toUpperCase()}</div>
-            <Row label="Op" value={`${Math.round(opConf)}% [${blockedLabel}]`} valueColor={opConf >= 80 ? '#4ade80' : opConf >= 50 ? '#facc15' : '#f87171'} />
-            <Row label="Bias" value={`${Math.round(biasConf)}%`} valueColor={biasConf >= 8 ? '#4ade80' : biasConf >= 4 ? '#facc15' : '#f87171'} />
-            <Row label="Decoder" value={`${st?.decoderConfidence ?? 0}`} valueColor={(st?.decoderConfidence ?? 0) >= 25 ? '#4ade80' : '#bbb'} />
-            <Row label="Render" value={`${st?.renderConfidence ?? 0}`} valueColor={(st?.renderConfidence ?? 0) >= 25 ? '#4ade80' : '#bbb'} />
-            <Row label="Scheduler" value={`${st?.schedulerConfidence ?? 0}`} valueColor={(st?.schedulerConfidence ?? 0) >= 25 ? '#4ade80' : '#bbb'} />
-            <Row label="Clock" value={`${st?.clockConfidence ?? 0}`} valueColor={(st?.clockConfidence ?? 0) >= 25 ? '#4ade80' : '#bbb'} />
+            <Row label="Op" value={`${Math.round(opConf)}% [${blockedLabel}]`} valueColor={confColor(opConf)} />
+            <Row label="Bias" value={`${biasPct(st?.biasConfidence)}%`} valueColor={biasConf >= 80 ? '#4ade80' : biasConf >= 40 ? '#facc15' : '#f87171'} />
+            <Row label="Decoder" value={`${pct(st?.decoderConfidence)}%`} valueColor={confColor(pct(st?.decoderConfidence))} />
+            <Row label="Render" value={`${pct(st?.renderConfidence)}%`} valueColor={confColor(pct(st?.renderConfidence))} />
+            <Row label="Scheduler" value={`${pct(st?.schedulerConfidence)}%`} valueColor={confColor(pct(st?.schedulerConfidence))} />
+            <Row label="Clock" value={`${pct(st?.clockConfidence)}%`} valueColor={confColor(pct(st?.clockConfidence))} />
           </div>;
         })}
       </div>
@@ -491,8 +527,9 @@ const SyncOverlay = memo(function SyncOverlay({ onClose }) {
           return <div key={eng} style={{ marginBottom: 2 }}>
             <div style={{ fontSize: 11, color: '#a78bfa', letterSpacing: 1, marginBottom: 1 }}>{eng.toUpperCase()}</div>
             <Row label="Trigger" value={cur?.trigger ?? '—'} />
-            <Row label="Disrupts" value={String(cur ? cur.disruptions.length : (s?.total ?? 0))} />
-            <Row label="Ticks" value={String(cur?.tickCount ?? (last?.tickCount ?? 0))} />
+            <Row label="Age" value={cur?.startTime ? `${fmtMs(performance.now() - cur.startTime)}ms` : '—'} valueColor={(cur?.disruptions?.length ?? 0) > 0 ? '#facc15' : '#bbb'} />
+            <Row label="Disrupts" value={String(cur?.disruptions?.length ?? 0)} valueColor={(cur?.disruptions?.length ?? 0) > 0 ? '#f87171' : '#4ade80'} />
+            <Row label="Total" value={String(s?.total ?? 0)} />
             <Row label="Last" value={last ? `${last.trigger} ${fmtMs(last.windowDuration)}ms ${last.gateOpened ? 'OPEN' : 'FAIL'}${last.timeToGateOpen != null ? ` (${fmtMs(last.timeToGateOpen)}ms)` : ''}` : '—'} />
           </div>;
         })}

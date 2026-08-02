@@ -6,7 +6,7 @@ import QueuePanel from './QueuePanel';
 import LyricsDisplay from './LyricsDisplay';
 import MetadataEditor from './MetadataEditor';
 import CachedVideoPlayer from './CachedVideoPlayer';
-import SyncOverlay, { registerSyncCore, registerAudioRef, registerMvRef, registerBgRef, registerEngineStateRef, registerRvfcStatusRef, registerVideoRemountCount, registerReplayStateRef, registerRecordingState, registerAnalyzerEvidence, registerDecisionOutput } from './SyncOverlay';
+import SyncOverlay, { registerSyncCore, registerAudioRef, registerMvRef, registerBgRef, registerEngineStateRef, registerVideoOffsetRef, registerRvfcStatusRef, registerVideoRemountCount, registerReplayStateRef, registerRecordingState, registerAnalyzerEvidence, registerDecisionOutput } from './SyncOverlay';
 import NetworkImage from './NetworkImage';
 import SpeakerOutputButton from './SpeakerOutputButton';
 import usePlaybackStore from '../store/playbackStore';
@@ -777,6 +777,11 @@ log('scheduler_stall', looping ? 'bg' : 'mv', {
               const actionRequest = decision.actionRequest;
               if (actionRequest && actionRequest.type === 'hold' && actionRequest.params?.holdMs > 0) {
                 state.holdUntil = now + actionRequest.params.holdMs;
+              }
+              if (actionRequest && actionRequest.type === 'hold') {
+                if (syncCore) syncCore.recordDecision(engineName, 'LOCK');
+              } else if (actionRequest && actionRequest.type === 'noop') {
+                if (syncCore) syncCore.recordDecision(engineName, 'NOOP');
               }
               if (actionRequest && actionRequest.type !== 'noop' && actionRequest.type !== 'hold') {
                     if (actionRequest.type === 'hardSeek' && state.lastHardSeekTime && now - state.lastHardSeekTime < 1000) {
@@ -2265,7 +2270,11 @@ const bgEngine = useMemo(() => createVideoSyncEngine({
             bgSeekStartedAtRef.current = performance.now();
             return;
         }
-        if (!bg.paused) bg.pause();
+        // Do NOT pause before the seek — match MV's forceSeek. An explicit
+        // pause drops BG to a low readyState and adds a pause→play recovery
+        // cycle, so BG's seek lands (and resumes) visibly later than MV's.
+        // Setting currentTime while playing pauses internally and resumes on
+        // seeked, exactly like the main video.
         bg.currentTime = target;
         bgSeekInProgressRef.current = true;
         bgSeekStartedAtRef.current = performance.now();
@@ -2668,6 +2677,14 @@ useEffect(() => {
         const now = audio.currentTime;
         syncLog('seeked', 'audio', { currentTime: Math.round(now * 1000) });
 
+        // While the user is scrubbing the progress bar, handleScrubChange owns
+        // the video position (paused preview). Do NOT re-anchor with play:true
+        // here — it un-pauses the video and lets it run ahead of the drag, and
+        // then handleSeekSync yanks it back to the exact target on release
+        // (the visible "plays 100→102, pulled back to 100"). Skip until the
+        // scrub ends.
+        if (scrubbingRef.current) return;
+
         // If this seek was triggered by user interaction (progress bar / skip),
         // handleSeekSync already anchored both engines. But always ensure BG
         // is at the correct position — BG seek can silently fail if
@@ -2899,19 +2916,33 @@ const handleSeekSync = useCallback((seconds) => {
     scrubbingRef.current = false;
     setStorePosition(seconds);
     const target = seconds + (videoOffsetRef.current || 0);
-    syncLog('seek', 'mv', { target });
+    const currentVideoTime = videoRef.current?.getCurrentTime?.() ?? 0;
+    const diff = target - currentVideoTime;
+    const playing = usePlaybackStore.getState().isPlaying;
+    syncLog('seek', 'mv', { target, current: currentVideoTime.toFixed(3), diff: diff.toFixed(3) });
+    // Seamless seek: after a scrub the video is already parked at/near the
+    // target (handleScrubChange tracked it). Force-seeking it back to the
+    // exact target after it landed (and possibly advanced a few frames) is a
+    // visible yank back. Skip the hard re-anchor when within tolerance; resume
+    // playback and let SET_RATE absorb the small residual drift invisibly.
+    // Genuine jumps still hard-seek.
+    if (Math.abs(diff) <= 0.5) {
+        if (playing) mvEngine.resume();
+        if (youtubeId) {
+            const bgCurrent = bgVideoRef.current?.currentTime ?? 0;
+            if (Math.abs(target - bgCurrent) > 0.5) {
+                try { bgEngine.anchor({ play: true, target }); } catch (_) {}
+            }
+        }
+        return;
+    }
     mvEngine.anchor({ play: true, target });
     if (youtubeId) {
-        const currentVideoTime = videoRef.current?.getCurrentTime?.() ?? 0;
-        const isBackward = target < currentVideoTime;
-        const isLargeBackward = isBackward && Math.abs(target - currentVideoTime) > 0.5;
-        if (isLargeBackward) {
-            setTimeout(() => {
-                try { bgEngine.anchor({ play: true, target }); } catch (_) {}
-            }, 150);
-        } else {
-            try { bgEngine.anchor({ play: true, target }); } catch (_) {}
-        }
+        // Issue BG's seek in the SAME tick as MV so both start together and
+        // land as close together as their sources allow. The old 150ms delay
+        // on large backward seeks made BG start later and finish visibly after
+        // MV (MV lands + resumes, BG still seeking).
+        try { bgEngine.anchor({ play: true, target }); } catch (_) {}
     }
 }, [mvEngine, bgEngine, setStorePosition]);
 
@@ -3117,6 +3148,14 @@ const handleSeekSync = useCallback((seconds) => {
           if (syncCore && video) {
             syncCore.setVideoSrc('mv', video.src || video.currentSrc);
             syncCore.recordVideoLifecycleEvent('mv', 'loadedmetadata', video);
+          }
+          // Position the video at the offset target the moment it loads, so the
+          // FIRST presented frame is the offset frame — not frame 00:00 (which
+          // briefly flashes when entering video mode before the engine's first
+          // anchor lands). Only when the video is still parked at the start.
+          if (video && (video.currentTime || 0) < 0.05) {
+            const t = (audioRef.current?.currentTime ?? 0) + (videoOffsetRef.current || 0);
+            if (t > 0.05) video.forceSeek?.(t);
           }
           syncLog('loadedmetadata', 'mv', {});
         }, []);
@@ -3634,6 +3673,7 @@ const handleSeekSync = useCallback((seconds) => {
     registerMvRef(videoRef);
     registerBgRef(bgVideoRef);
     registerEngineStateRef(mvEngine.state, bgEngine.state);
+    registerVideoOffsetRef(videoOffsetRef);
     registerRvfcStatusRef(rvfcStatusRef);
     registerVideoRemountCount(videoRemountCountRef.current);
     registerReplayStateRef(replayStateRef);
