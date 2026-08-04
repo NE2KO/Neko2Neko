@@ -1,5 +1,11 @@
 # Media Vault
 
+![Node](https://img.shields.io/badge/Node-%3E%3D18-green)
+![React](https://img.shields.io/badge/React-18.3.1-blue)
+![SQLite](https://img.shields.io/badge/SQLite-WAL-orange)
+
+Self-hosted media server — stream, download, manage, and monitor from one dashboard.
+
 > ## ⚠️ IMPORTANT — Music Menu: DO NOT MODIFY THE SYNC ENGINE CARELESSLY
 >
 > Do not touch `frontend/src/components/Music.jsx` or its sync pipeline (`frontend/src/utils/decision/*`, `frontend/src/utils/memory/*`, `frontend/src/utils/syncCore.js`) unless you understand the whole control loop first.
@@ -23,58 +29,26 @@
 
 > **Hardware Note:** This platform is specifically designed for AMD-based laptops. The Monitoring menu uses nbfc and ryzenadj which are hardware-specific and do not support Intel or NVIDIA systems. Other menus are hardware-agnostic.
 
-## Tech Stack Overview
-
-| Layer | Technology | Version | Description |
-|-------|------------|---------|-------------|
-| **Runtime** | Node.js | >=18 | Backend runtime (ESM) |
-| **Framework** | Express | ^4.21.0 | HTTP framework |
-| **Database** | SQLite | (WAL) | better-sqlite3 driver, 80MB cache, mmap 4GB |
-| **Frontend** | React | ^18.3.1 | UI framework |
-| **Bundler** | Vite | ^5.4.8 | Development server & bundler |
-| **Styling** | TailwindCSS | ^3.4.13 | Utility CSS + tailwindcss-animate |
-| **State** | Zustand | ^5.0.13 | State management |
-| **Video Playback** | hls.js | ^1.5.17 | Adaptive HLS player |
-| **Charts** | Recharts | ^3.8.1 | Monitoring charts & gauges |
-| **Icons** | Lucide React | ^1.16.0 | Icon set |
-| **Animation** | Framer Motion | ^12.40.0 | UI animations |
-| **Media Processing** | FFmpeg | - | Thumbnail, HLS, transcode, remux |
-| **Codec Probing** | FFprobe | - | Metadata & codec detection |
-| **Messaging - WhatsApp** | whatsapp-web.js | ^1.34.7 | WhatsApp Web API |
-| **Messaging - Telegram** | node-telegram-bot-api | ^1.1.0 | Telegram send + bot downloader |
-| **Downloader - Video** | yt-dlp | - | YouTube, Instagram download |
-| **Downloader - Images** | gallery-dl | - | TikTok, Twitter/X, Instagram galleries |
-| **Downloader - Torrent** | aria2c | - | Torrent & parallel download |
-| **Mobile Transfer** | ADB | - | Android file transfer |
-
----
-
 | Information | Detail |
 |-------------|--------|
 | **Version** | backend v1.0.0 · frontend v1.0.0 · whatsapp-bot v1.0.0 |
 | **Documentation** | See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical reference |
 
----
-
 ## Table of Contents
 
-| Section | Link |
-|---------|------|
-| Overview | [1](#1-overview) |
-| Main Features | [2](#2-main-features) |
-| Tech Stack | [3](#3-tech-stack) |
-| External Tools | [4](#4-external-tools) |
-| Project Structure | [5](#5-project-structure) |
-| Git Ignore | [5.5](#55-git-ignore) |
-| API Endpoints | [6](#6-api-endpoints) |
-| Installation | [7](#7-installation) |
-| Development | [8](#8-development) |
-| Future Ideas | [9](#9-future-ideas) |
-| Contributing | [10](#10-contributing) |
+- [About](#about)
+- [Features](#features)
+- [Tech Stack](#tech-stack)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Project Structure](#project-structure)
+- [API Reference](#api-reference)
+- [Development](#development)
+- [Codebase Metrics](#codebase-metrics)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
 
----
-
-## 1. Overview
+## About
 
 > **Story Behind the Menus:** This platform was built by various free AI models, with direct review by someone who is just bored and not particularly skilled at coding. Each menu was created to solve personal workflow problems.
 
@@ -92,9 +66,7 @@ Media Vault is a self-hosted media server born from the need to access media fil
 
 **Technology Stack:** Node.js, Express, SQLite, React, FFmpeg, HLS streaming, waveform visualization.
 
----
-
-## 2. Main Features
+## Features
 
 | Menu | Status | Description | Technology Used |
 |------|--------|-------------|---------------|
@@ -102,7 +74,7 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | Library Management | Optional | Auto-scan, full-text search, thumbnail generation | better-sqlite3 WAL, incremental scanning |
 | Playlists | Optional | XSPF import, full CRUD, drag-reorder | XSPF parser, folder-based playlists |
 | Metadata Editing | Optional | Read/write audio tags, cover art, lyrics | FFprobe, MusicBrainz, LRCLIB |
-| Monitoring | Optional | System stats, fan/clock control (Linux only, AMD-focused, under development) | dockerode, nbfc, ryzenadj, WebSocket (real-time) |
+| Monitoring | Optional | System stats, fan/clock control (Linux only, AMD-focused, under development) | nbfc, ryzenadj, WebSocket (real-time) |
 | Downloader | Optional | Download from YouTube, TikTok, Instagram, Twitter/X, torrent, gallery-dl; send link to Telegram bot for auto-download with default settings (1080p, h264) or custom parameters | yt-dlp, gallery-dl, aria2c, Telegram bot |
 | ADB Transfer | Optional | Push/pull files Android <-> laptop (concurrent workers, no overhead from file managers) | ADB, concurrent workers |
 | Scrcpy Monitor | Optional | Remote phone screen viewing via external scrcpy window (zero overhead) | node-pty shell execution |
@@ -112,11 +84,9 @@ Media Vault is a self-hosted media server born from the need to access media fil
 
 > **Note:** All menus are still actively worked on and under development. New menus may be added in the future.
 
----
+## Tech Stack
 
-## 3. Tech Stack
-
-### 3.1 Backend Dependencies
+### Backend Dependencies
 
 | Package | Version | Purpose |
 |---------|---------|---------|
@@ -134,7 +104,7 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | uuid | ^10.0.0 | ID generation |
 | ws | ^8.21.0 | WebSocket server |
 
-### 3.2 Frontend Dependencies
+### Frontend Dependencies
 
 | Package | Version | Purpose |
 |---------|---------|---------|
@@ -153,9 +123,15 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | tailwindcss-animate | ^1.0.7 | Tailwind animations |
 | zustand | ^5.0.13 | State management |
 
----
+### WhatsApp Bot Dependencies
 
-## 4. External Tools
+| Package | Version | Purpose |
+|---------|---------|---------|
+| better-sqlite3 | ^12.9.0 | SQLite wrapper |
+| qrcode-terminal | ^0.12.0 | Terminal QR display |
+| whatsapp-web.js | ^1.34.7 | WhatsApp Web API |
+
+## External Tools
 
 | Binary | Purpose |
 |--------|---------|
@@ -166,18 +142,60 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | aria2c | Torrent download |
 | adb | Android transfer |
 
----
+## Prerequisites
 
-## 5. Project Structure
+| Requirement | Version | Purpose |
+|-------------|---------|---------|
+| Node.js | >= 18 | Runtime |
+| ffmpeg / ffprobe | any recent | Transcode, thumbnails, HLS |
+| yt-dlp | latest | Video download |
+| gallery-dl | latest | Gallery download |
+| aria2c | latest | Torrent / parallel |
+| adb | latest | Android transfer |
+| nbfc / ryzenadj | — | AMD-only fan/clock control |
 
-### 5.1 Backend
+## Quick Start
+
+```bash
+# 1. Clone
+git clone <repo-url>
+cd homelab-media-server
+
+# 2. Backend
+cd backend && npm install
+cp ../.env.example ../credentials/.env   # edit as needed
+npm start
+
+# 3. Frontend (dev only)
+cd frontend && npm install && npm run dev
+```
+
+> **Note:** In production, the frontend is served statically by the backend. Vite is for development only.
+
+## Project Structure
+
+```
+homelab-media-server/
+├── backend/          # Express API + media processing
+├── frontend/         # React 18 SPA
+├── whatsapp-bot/     # WhatsApp integration
+├── data/             # media.db, download tasks, thumbnails
+├── cache/            # HLS, remux, transcode cache
+├── logs/             # Rotating logs
+├── credentials/      # .env, auth files (gitignored)
+└── docs/             # Documentation archives
+```
+
+### Backend
 
 | Path | Description |
 |------|-------------|
-| `backend/` | Express API, SQLite, media processing |
 | `backend/src/server.js` | Entry point, Express, lifecycle |
 | `backend/src/db.js` | SQLite database, FTS, settings |
-| `backend/src/routes/` | (18 route modules) |
+| `backend/src/routes/` | 18 route modules |
+| `backend/src/monitor/` | System metrics |
+| `backend/src/utils/` | Helpers (watcher, downloader, upload) |
+| `backend/src/middleware/` | Route guards |
 
 | Route Module | Description |
 |--------------|-------------|
@@ -200,29 +218,21 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | `videoCache.js` | Video cache management |
 | `whatsapp.js` | WhatsApp bridge |
 
-| Path | Description |
-|------|-------------|
-| `backend/src/monitor/` | System metrics |
-| `backend/src/utils/` | Helpers (watcher, downloader, upload) |
-| `backend/src/middleware/` | Route guards |
-
-### 5.2 Frontend
+### Frontend
 
 | Path | Description |
 |------|-------------|
-| `frontend/` | React 18 SPA (Vite + TailwindCSS) |
 | `frontend/src/App.jsx` | Main application |
 | `frontend/src/main.jsx` | Vite entry |
-| `frontend/src/components/` | (40+ components) |
-| `frontend/src/store/` | Zustand stores (6 files) |
-| `frontend/src/hooks/` | Custom hooks (5 files) |
+| `frontend/src/components/` | 40+ components |
+| `frontend/src/store/` | Zustand stores |
+| `frontend/src/hooks/` | Custom hooks |
 | `frontend/src/utils/` | Utility functions |
 
-### 5.3 WhatsApp Bot
+### WhatsApp Bot
 
 | Path | Description |
 |------|-------------|
-| `whatsapp-bot/` | WhatsApp integration |
 | `whatsapp-bot/src/index.js` | Entry point |
 | `whatsapp-bot/src/connection.js` | WhatsApp connection |
 | `whatsapp-bot/src/listener.js` | Message handler |
@@ -230,7 +240,7 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | `whatsapp-bot/src/db.js` | SQLite wrapper |
 | `whatsapp-bot/src/utils.js` | Utilities |
 
-### 5.4 Data Directories
+### Data Directories
 
 | Path | Description |
 |------|-------------|
@@ -238,23 +248,10 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | `cache/` | HLS, remux, transcode cache |
 | `logs/` | Rotating logs |
 | `credentials/` | `.env`, auth files, WhatsApp sessions |
-| `Docker/` | docker-compose.yml for monitoring (optional) |
 
-### 5.5 Git Ignore
+## API Reference
 
-The `.gitignore` excludes sensitive and generated files:
-- `credentials/.env`, cookies.txt, wwebjs_auth/cache - authentication & sessions
-- `logs/`, `cache/`, `backup/` - runtime data
-- Database files (`*.db`, `media.db`)
-- `node_modules/` - dependencies
-- `*.log`, `*.tmp` - logs and temp files
-- `*.local`, `.vscode/` - editor/IDE files
-
----
-
-## 6. API Endpoints
-
-### Files & Search (`/api/files`, `/api/search`)
+**Files & Search** (`/api/files`, `/api/search`)
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
@@ -268,7 +265,7 @@ The `.gitignore` excludes sensitive and generated files:
 | GET | `/api/search` | FTS file search + folder search |
 | GET | `/api/search/suggest` | Autocomplete name suggestions |
 
-### Streaming & Playback (`/stream`)
+**Streaming & Playback** (`/stream`)
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
@@ -279,7 +276,7 @@ The `.gitignore` excludes sensitive and generated files:
 | GET | `/stream/video/:id/faststart` | Re-mux with +faststart |
 | GET | `/stream/audio/:id` | Audio stream with ranges |
 
-### Monitoring (`/api/monitoring`)
+**Monitoring** (`/api/monitoring`)
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
@@ -287,10 +284,9 @@ The `.gitignore` excludes sensitive and generated files:
 | GET | `/api/monitoring/overview` | Combined overview |
 | GET | `/api/monitoring/history` | Historical metrics |
 | GET | `/api/monitoring/disk-io/*` | Disk I/O stats |
-| POST | `/api/monitoring/docker/*` | Container control |
 | POST | `/api/monitoring/system/power` | Host power control |
 
-### Downloader (`/api/download`)
+**Downloader** (`/api/download`)
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
@@ -301,7 +297,7 @@ The `.gitignore` excludes sensitive and generated files:
 | POST | `/api/download/:id/cancel` | Cancel task |
 | POST | `/api/download/:id/retry` | Retry failed task |
 
-### Playlists (`/api/playlists`)
+**Playlists** (`/api/playlists`)
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
@@ -312,7 +308,7 @@ The `.gitignore` excludes sensitive and generated files:
 | PUT | `/api/playlists/:id/tracks` | Add tracks |
 | DELETE | `/api/playlists/:id/tracks/:trackId` | Remove track |
 
-### Metadata (`/api/metadata`)
+**Metadata** (`/api/metadata`)
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
@@ -321,7 +317,7 @@ The `.gitignore` excludes sensitive and generated files:
 | PUT | `/api/metadata/:id/cover/upload` | Embed cover art |
 | GET | `/api/metadata/:id/lyrics` | Get lyrics |
 
-### Services (`/api/services`)
+**Services** (`/api/services`)
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
@@ -329,7 +325,7 @@ The `.gitignore` excludes sensitive and generated files:
 | POST | `/api/services/:name/start` | Start service |
 | POST | `/api/services/:name/stop` | Stop service |
 
-### ADB Transfer (`/api/adb`)
+**ADB Transfer** (`/api/adb`)
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
@@ -339,28 +335,21 @@ The `.gitignore` excludes sensitive and generated files:
 | GET | `/api/adb/jobs` | Transfer jobs |
 | GET | `/api/adb/jobs/:id/progress` | SSE progress |
 
----
+> For the complete API specification, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## 7. Installation
+## Development
 
-| Step | Command | Description |
-|------|---------|-------------|
-| 1 | `git clone <repo-url>` | Clone repo |
-| 2 | `cd backend && npm install && npm start` | Run backend |
-| 3 | `cd frontend && npm install && npm run dev` | Run frontend |
+| Package | Command | Description |
+|---------|---------|-------------|
+| backend | `npm start` | Start server |
+| backend | `npm run dev` | Auto-reload mode |
+| backend | `npm run debug` | Debug mode |
+| frontend | `npm run dev` | Vite dev server |
+| frontend | `npm run build` | Production build |
+| whatsapp-bot | `npm start` | Start bot |
+| whatsapp-bot | `npm run dev` | Auto-reload mode |
 
----
-
-## 8. Development
-
-| Command | Description |
-|---------|-------------|
-| `npm run dev` (backend) | Auto-reload mode |
-| `npm run dev` (frontend) | Vite dev server |
-| `npm run debug` (backend) | Debug mode |
-| `npm run build` (frontend) | Production build |
-
----
+> **Note:** `backend/`, `frontend/`, and `whatsapp-bot/` are independent packages (not a monorepo).
 
 ## Codebase Metrics
 
@@ -373,18 +362,21 @@ The `.gitignore` excludes sensitive and generated files:
 
 > Note: Lines of code approximate. Does not include `node_modules`, `cache/`, `logs/`, or `data/`.
 
----
+## Future Ideas
 
-## 9. Future Ideas
+- **Authentication System**: Desain auth masih dipertimbangkan — mulai dari user login, multi-user, hingga recovery jika user kehilangan password.
+- **Kontrol Jarak Jauh via Stream Web (GSR-inspired)**: Direct frame copying dari GPU block encoder untuk zero-overhead screen capture.
 
-- **Authentication System**: User accounts with login/registration, API token management, role-based permissions
+## Documentation
 
-- **GPU Screen Recording (GSR-inspired)**: Reinspired from GSR app which uses direct frame copying from GPU block encoder. This approach copies encoded frames instead of re-rendering each frame, resulting in zero-overhead screen capture. Ideal for smooth streaming even on low-end iGPU systems (e.g., 2CU).
-
----
+| File | Description |
+|------|-------------|
+| [README.md](README.md) | This file — project overview and quick start |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Full technical reference (system architecture, DB schema, API routes, subsystems, monitoring, deployment) |
+| `docs/` | Notes, ideas, and archived documentation |
 
 ## Contributing
 
-- See [ARCHITECTURE.md](ARCHITECTURE.md) for technical details
+- Read [ARCHITECTURE.md](ARCHITECTURE.md) for technical details
 - Use `npm run dev` in each directory
 - Report issues on GitHub
