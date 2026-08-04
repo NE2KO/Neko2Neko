@@ -13,6 +13,7 @@ import usePlaybackStore from '../store/playbackStore';
 import { useIsFavorite } from '../store/favoritesStore';
 import { applySink, getStoredDevice } from '../utils/audioOutput';
 import { cancelSendQueueItem, retrySendQueueItem, removeSendQueueItem } from '../utils/api';
+import { safeParseTrackFilter, safeParseTrackSearchQuery, applyTrackFilter, applyTrackSearch } from '../utils/trackFilter';
 import { SharedSyncCore } from '../utils/syncCore';
 import { buildSensorSnapshot, validateAndAttach, logSensorSnapshot } from '../utils/sensor';
 import { evaluateDriftAnalyzer, evaluatePipelineAnalyzer, evaluateSchedulerAnalyzer, evaluateDecoderAnalyzer, evaluateConsistencyAnalyzer } from '../utils/analyzers';
@@ -1830,10 +1831,11 @@ useEffect(() => {
   const hasPlaylist = playlistFiles.length > 0;
   const carouselFiles = useMemo(() => {
     const base = hasPlaylist ? playlistFiles : folderFiles;
+    const filtered = applyTrackSearch(applyTrackFilter(base, safeParseTrackFilter()), safeParseTrackSearchQuery());
     if (!hasPlaylist && favoriteOnly) {
-      return base.filter(f => f.is_favorite === 1);
+      return filtered.filter(f => f.is_favorite === 1);
     }
-    return base;
+    return filtered;
   }, [hasPlaylist, playlistFiles, folderFiles, favoriteOnly]);
   const activeFile = hasPlaylist
     ? (playlistFiles[storeCurrentTrackIndex] || playlistFiles[0])
@@ -1986,16 +1988,17 @@ useEffect(() => {
 
     if (isSameTrack) {
       setIsLoading(false);
+      let mounted = true;
       const device = getStoredDevice();
       const deviceId = device && device.deviceId ? device.deviceId : '';
       if (deviceId !== lastAppliedSinkIdRef.current) {
         lastAppliedSinkIdRef.current = deviceId;
         applySink(audio, device).then(() => {
-          if (isPlaying && audio.paused) audio.play().catch(() => {});
+          if (mounted && usePlaybackStore.getState().isPlaying && audio.paused) audio.play().catch(() => {});
         }).catch(() => {
           lastAppliedSinkIdRef.current = null;
         });
-      } else if (isPlaying && audio.paused) {
+      } else if (usePlaybackStore.getState().isPlaying && audio.paused) {
         audio.play().catch(() => {});
       }
       const onPlay = () => play();
@@ -2003,6 +2006,7 @@ useEffect(() => {
       audio.addEventListener('play', onPlay);
       audio.addEventListener('pause', onPause);
       return () => {
+        mounted = false;
         audio.removeEventListener('play', onPlay);
         audio.removeEventListener('pause', onPause);
       };
@@ -2020,10 +2024,14 @@ useEffect(() => {
 
     let sinkReady = false;
     let canPlayFired = false;
+    let cancelled = false;
     const tryPlay = () => {
+      if (cancelled) return;
       audio.play().then(() => {
+        if (cancelled) return;
         setIsLoading(false);
       }).catch((err) => {
+        if (cancelled) return;
         setIsLoading(false);
         if (err?.name === 'NotAllowedError') {
           setAutoPlayPending(true);
@@ -2031,9 +2039,20 @@ useEffect(() => {
       });
     };
     // Fire play only once BOTH the sink is applied AND the audio can play
-    // (race-free regardless of which event lands last).
+    // (race-free regardless of which event lands last). Never auto-play after
+    // the player has been left (unmount): a reload that quickly backs out to
+    // the playlist must not start the audio with no player on screen, and the
+    // resume only applies while the store still wants playback. When playback
+    // isn't wanted (e.g. reload while paused), still clear the loading state so
+    // the cover doesn't spin forever until the next track.
     const maybePlay = () => {
-      if (sinkReady && (canPlayFired || audio.readyState >= 3)) tryPlay();
+      if (cancelled) return;
+      if (!sinkReady || !(canPlayFired || audio.readyState >= 3)) return;
+      if (usePlaybackStore.getState().isPlaying) {
+        tryPlay();
+      } else {
+        setIsLoading(false);
+      }
     };
     audio.addEventListener('canplay', () => { canPlayFired = true; maybePlay(); }, { once: true });
     applySink(audio, getStoredDevice()).then(() => { sinkReady = true; maybePlay(); });
@@ -2041,6 +2060,7 @@ useEffect(() => {
     const onPlay = () => play();
     const onPause = () => pause();
     const onError = () => {
+      if (cancelled) return;
       setIsLoading(false);
       setError('Format tidak didukung browser');
     };
@@ -2050,6 +2070,7 @@ useEffect(() => {
     audio.addEventListener('error', onError);
 
     return () => {
+      cancelled = true;
       audio.removeEventListener('canplay', tryPlay);
       audio.removeEventListener('play', onPlay);
       audio.removeEventListener('pause', onPause);
@@ -3908,6 +3929,7 @@ const handleSeekSync = useCallback((seconds) => {
                  onToggleFavorite={onFavoriteToggle}
                  contextLabel={carouselContextLabel}
                  itemSize="lg"
+                 hidden={manualHidden}
                  restoreScrollKey={hasPlaylist ? `playlist-${playlistTitle || 'unknown'}` : file ? `folder-${file.dir_path || 'root'}` : null}
                />
             </div>

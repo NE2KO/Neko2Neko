@@ -139,8 +139,14 @@ export default function DownloaderPage() {
   const [sortBy, setSortBy] = useState('created');
   const [sortAsc, setSortAsc] = useState(false);
 const [bulkMode, setBulkMode] = useState(false);
+const [playlistMode, setPlaylistMode] = useState(false);
+const [playlistData, setPlaylistData] = useState(null);
+const [playlistLoading, setPlaylistLoading] = useState(false);
+const [selectedPlaylistItems, setSelectedPlaylistItems] = useState(new Set());
+const [playlistError, setPlaylistError] = useState('');
 const [maxConcurrent, setMaxConcurrentState] = useState(3);
 const [embedCover, setEmbedCover] = useState(false);
+const [playlistAudioMode, setPlaylistAudioMode] = useState(false);
   const inputRef = useRef(null);
   const textareaRef = useRef(null);
 
@@ -154,6 +160,7 @@ const [embedCover, setEmbedCover] = useState(false);
   setSelectedAudioId(null); setExpandedRes(null); setEditedTitle('');
   setTwitterMode('single'); setTwitterInfo(null);
   setEmbedCover(false);
+  if (source !== 'youtube') { setPlaylistMode(false); setPlaylistData(null); setSelectedPlaylistItems(new Set()); setPlaylistError(''); setPlaylistAudioMode(false); }
   }, [source]);
 
   useEffect(() => {
@@ -288,6 +295,82 @@ const [embedCover, setEmbedCover] = useState(false);
     setTwitterDetecting(false);
   };
 
+  const fetchPlaylist = async () => {
+    const targetUrl = url.trim();
+    if (!targetUrl) return;
+    setPlaylistLoading(true); setPlaylistError(''); setPlaylistData(null); setSelectedPlaylistItems(new Set());
+    try {
+      const ac = new AbortController();
+      const timeoutId = setTimeout(() => ac.abort(), 100000);
+      const r = await fetch('/api/download/playlist', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: targetUrl, youtubeCookiesPath: twitterCookiesPath || null }),
+        signal: ac.signal,
+      });
+      clearTimeout(timeoutId);
+      const text = await r.text();
+      let d;
+      try { d = JSON.parse(text); } catch { throw new Error('Server returned invalid response'); }
+      if (d.error) setPlaylistError(d.error);
+      else if (d.items && d.items.length > 0) {
+        setPlaylistData(d);
+        const all = new Set(d.items.map(it => it.url));
+        setSelectedPlaylistItems(all);
+      } else setPlaylistError('Playlist kosong atau tidak dapat dibaca');
+    } catch (e) {
+      if (e.name === 'AbortError') setPlaylistError('Request timeout — periksa koneksi internet');
+      else setPlaylistError(e.message || 'Gagal memuat playlist');
+    }
+    setPlaylistLoading(false);
+  };
+
+  const togglePlaylistMode = () => {
+    const next = !playlistMode;
+    setPlaylistMode(next);
+    if (!next) { setPlaylistData(null); setSelectedPlaylistItems(new Set()); setPlaylistError(''); }
+  };
+
+  const togglePlaylistItem = (itemUrl) => {
+    setSelectedPlaylistItems(prev => {
+      const next = new Set(prev);
+      if (next.has(itemUrl)) next.delete(itemUrl);
+      else next.add(itemUrl);
+      return next;
+    });
+  };
+
+  const toggleAllPlaylistItems = (selectAll) => {
+    if (!playlistData?.items?.length) return;
+    if (selectAll) setSelectedPlaylistItems(new Set(playlistData.items.map(it => it.url)));
+    else setSelectedPlaylistItems(new Set());
+  };
+
+  const downloadSelectedPlaylistItems = async () => {
+    if (!playlistData?.items?.length) return;
+    const urls = playlistData.items.filter(it => selectedPlaylistItems.has(it.url)).map(it => it.url);
+    if (urls.length === 0) return;
+    setError('');
+    setPlaylistData(null); setSelectedPlaylistItems(new Set()); setPlaylistMode(false);
+    try {
+      const body = {
+        urls,
+        category: 'youtube',
+        quality: playlistAudioMode ? 'audio' : quality,
+        audioExtract: playlistAudioMode,
+        audioFormat: playlistAudioMode ? 'mp3' : undefined,
+        youtubeCookiesPath: twitterCookiesPath || null,
+        embedCover,
+      };
+      const r = await fetch('/api/download/bulk', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const d = await r.json();
+      const errors = (d.results || []).filter(r => r.error);
+      if (errors.length > 0) setError(`${errors.length} URL gagal: ${errors[0].error}`);
+      fetchTasks();
+    } catch (e) { setError('Server error: restart backend'); }
+  };
+
   const startDownload = async () => {
     if (!url.trim()) return;
     setError('');
@@ -333,6 +416,7 @@ const [embedCover, setEmbedCover] = useState(false);
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         }).then(r => r.json()).then(d => {
           if (d.error) setError(d.error);
+          else if (d.skipped) setError(d.reason || 'Sudah di-download sebelumnya (anti-double)');
           else if (d.cached) { setCachedMsg(d.message || 'Cache hit'); setTimeout(() => setCachedMsg(''), 3000); }
           fetchTasks();
         }).catch(() => { setError('Server error: restart backend'); });
@@ -498,6 +582,16 @@ const [embedCover, setEmbedCover] = useState(false);
             <div className="flex gap-2 items-end">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1.5">
+                  {source === 'youtube' && (
+                    <button onClick={() => setPlaylistMode(!playlistMode)}
+                      className={`flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-md font-medium transition-all ${
+                        playlistMode
+                          ? 'bg-red-500/10 text-red-400 border border-red-500/20'
+                          : 'text-neutral-600 border border-transparent hover:text-neutral-400'
+                      }`}>
+                      <List size={10} /> Playlist
+                    </button>
+                  )}
                   {(
                     <button onClick={() => setBulkMode(!bulkMode)}
                       className={`flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-md font-medium transition-all ${
@@ -510,6 +604,9 @@ const [embedCover, setEmbedCover] = useState(false);
                   )}
                   {bulkMode && urlLines > 0 && (
                     <span className="text-[10px] text-cyan-400/70 font-mono">{urlLines} URL{urlLines !== 1 ? 's' : ''}</span>
+                  )}
+                  {playlistMode && playlistData && (
+                    <span className="text-[10px] text-red-400/70 font-mono">{playlistData.items.length} items</span>
                   )}
                 </div>
                 {bulkMode ? (
@@ -541,11 +638,18 @@ const [embedCover, setEmbedCover] = useState(false);
                   </button>
                 )}
               </div>
-              {source === 'youtube' && url.trim() && !bulkMode && (
+              {source === 'youtube' && url.trim() && !bulkMode && !playlistMode && (
                 <button onClick={detectFormats} disabled={detecting}
                   className="flex items-center gap-1.5 px-3 py-2.5 rounded-lg text-xs font-medium transition-all duration-200 text-neutral-500 border border-[#2a3340] bg-[#0d1117] hover:border-neutral-600 hover:text-neutral-300 active:scale-[0.97] flex-shrink-0">
                   {detecting ? <Loader size={13} className="animate-spin" /> : <Radio size={13} />}
                   <span className="hidden sm:inline">Detect</span>
+                </button>
+              )}
+              {source === 'youtube' && url.trim() && !bulkMode && playlistMode && (
+                <button onClick={fetchPlaylist} disabled={playlistLoading}
+                  className="flex items-center gap-1.5 px-3 py-2.5 rounded-lg text-xs font-medium transition-all duration-200 text-red-400 border border-red-500/20 bg-[#0d1117] hover:border-red-500/40 hover:text-red-300 active:scale-[0.97] flex-shrink-0">
+                  {playlistLoading ? <Loader size={13} className="animate-spin" /> : <List size={13} />}
+                  <span className="hidden sm:inline">Fetch Playlist</span>
                 </button>
               )}
               {source === 'twitter' && url.trim() && !bulkMode && (
@@ -555,15 +659,114 @@ const [embedCover, setEmbedCover] = useState(false);
                   <span className="hidden sm:inline">Detect</span>
                 </button>
               )}
-              <button onClick={startDownload} disabled={!url.trim() || (source === 'youtube' && !detectedData && !bulkMode)}
+              <button onClick={startDownload} disabled={!url.trim() || (source === 'youtube' && !detectedData && !bulkMode && !playlistMode)}
                 className="flex items-center gap-1.5 px-5 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-30 bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 hover:bg-cyan-500/20 active:scale-[0.97] flex-shrink-0">
                 <Download size={15} />
                 <span className="hidden sm:inline">{bulkMode && urlLines > 1 ? `Download ${urlLines}` : 'Download'}</span>
               </button>
             </div>
 
+            {playlistMode && (
+              <div className="mt-3 bg-[#111418] border border-[#1e2530] rounded-xl overflow-hidden">
+                <div className="p-3 md:p-4 flex items-center gap-3 flex-wrap">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-semibold text-neutral-200 truncate">
+                      {playlistData ? playlistData.title : 'Playlist Browser'}
+                    </div>
+                    <div className="text-[10px] text-neutral-500 mt-0.5">
+                      {playlistData ? `${playlistData.items.length} items` : 'Paste URL lalu klik Fetch Playlist'}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    {playlistData && (
+                      <>
+                        <button onClick={() => toggleAllPlaylistItems(true)} className="px-2 py-1 text-[10px] rounded border border-neutral-800 text-neutral-500 hover:text-neutral-200 hover:border-neutral-700">All</button>
+                        <button onClick={() => toggleAllPlaylistItems(false)} className="px-2 py-1 text-[10px] rounded border border-neutral-800 text-neutral-500 hover:text-neutral-200 hover:border-neutral-700">None</button>
+                      </>
+                    )}
+                    {playlistData && selectedPlaylistItems.size > 0 && (
+                      <button onClick={downloadSelectedPlaylistItems} className="px-3 py-1.5 text-[11px] rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 font-medium transition-all">
+                        Download Selected ({selectedPlaylistItems.size})
+                      </button>
+                    )}
+                    <button onClick={togglePlaylistMode} className="p-1.5 text-neutral-600 hover:text-neutral-300 rounded-lg hover:bg-neutral-800/50 transition-colors" title="Close playlist">
+                      <X size={14} />
+                    </button>
+                  </div>
+                </div>
+
+                {playlistData && (
+                  <div className="px-3 md:px-4 pb-3 flex items-center gap-3 flex-wrap border-b border-[#1e2530]">
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => setPlaylistAudioMode(false)} className={`px-2.5 py-1 text-[10px] rounded-md font-medium transition-all ${!playlistAudioMode ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20' : 'text-neutral-500 border border-transparent hover:text-neutral-300'}`}>Video</button>
+                      <button onClick={() => setPlaylistAudioMode(true)} className={`px-2.5 py-1 text-[10px] rounded-md font-medium transition-all ${playlistAudioMode ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'text-neutral-500 border border-transparent hover:text-neutral-300'}`}>Audio</button>
+                    </div>
+                    <label className="flex items-center gap-1.5 cursor-pointer group">
+                      <input type="checkbox" checked={embedCover} onChange={e => setEmbedCover(e.target.checked)} className="w-3.5 h-3.5 rounded border-neutral-600 bg-neutral-800 text-cyan-500 focus:ring-cyan-500/30 focus:ring-offset-0 cursor-pointer" />
+                      <span className="text-[10px] text-neutral-500 font-semibold uppercase tracking-wider group-hover:text-neutral-300 transition-colors">Embed Cover</span>
+                    </label>
+                  </div>
+                )}
+
+                {playlistError && (
+                  <div className="mx-3 md:mx-4 mb-3 text-[11px] text-red-400 flex items-start gap-2 bg-red-500/5 rounded-lg px-3 py-2 border border-red-500/10">
+                    <X size={12} className="flex-shrink-0 mt-0.5" />
+                    <span className="leading-relaxed">{playlistError}</span>
+                  </div>
+                )}
+
+                {playlistLoading && (
+                  <div className="p-3 md:p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                    {Array.from({ length: 10 }).map((_, i) => (
+                      <div key={i} className="rounded-xl overflow-hidden bg-neutral-800/30 border border-[#1e2530]">
+                        <div className="w-full aspect-video bg-neutral-800 animate-pulse" />
+                        <div className="p-2 space-y-2">
+                          <div className="h-3 bg-neutral-800 rounded animate-pulse w-full" />
+                          <div className="h-2.5 bg-neutral-800 rounded animate-pulse w-2/3" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {!playlistLoading && playlistData?.items?.length > 0 && (
+                  <div className="p-3 md:p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 max-h-[60vh] overflow-y-auto">
+                    {playlistData.items.slice(0, 200).map((item, idx) => {
+                      const checked = selectedPlaylistItems.has(item.url);
+                      const dur = fmtDuration(item.duration);
+                      return (
+                        <button key={item.url + idx} onClick={() => togglePlaylistItem(item.url)} className={`text-left rounded-xl overflow-hidden border transition-all duration-150 hover:border-neutral-600 ${checked ? 'bg-cyan-500/5 border-cyan-500/25' : 'bg-[#0d1117] border-[#1e2530]'}`}>
+                          <div className="relative w-full aspect-video bg-neutral-900">
+                            {item.thumbnail ? (
+                              <img src={item.thumbnail} alt={item.title} className="w-full h-full object-cover" loading="lazy" onError={(e) => { e.target.style.display = 'none'; }} />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center"><Image size={20} className="text-neutral-700" /></div>
+                            )}
+                            <div className="absolute top-1.5 left-1.5 text-[9px] px-1.5 py-0.5 rounded bg-black/70 text-neutral-300 font-mono font-semibold">#{item.index || idx + 1}</div>
+                            {dur && <div className="absolute bottom-1.5 right-1.5 text-[10px] px-1.5 py-0.5 rounded bg-black/80 text-white font-mono font-semibold">{dur}</div>}
+                            <div className={`absolute top-1.5 right-1.5 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all ${checked ? 'bg-red-500 border-red-500' : 'bg-black/50 border-neutral-500'}`}>
+                              {checked && <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="w-3 h-3 text-white"><path d="M5 12l5 5L20 7" /></svg>}
+                            </div>
+                          </div>
+                          <div className="p-2">
+                            <div className={`text-[11px] leading-snug line-clamp-2 ${checked ? 'text-cyan-300' : 'text-neutral-300'}`}>{item.title}</div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {!playlistLoading && playlistData?.truncated && (
+                  <div className="mx-3 md:mx-4 mb-3 text-[10px] text-yellow-400 bg-yellow-500/5 rounded-lg px-3 py-2 border border-yellow-500/10">
+                    Playlist besar — menampilkan 200 item pertama. Pilih yang dibutuhkan, lalu download.
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* DETECTED FORMAT PICKER (YouTube only) */}
-            {source === 'youtube' && hasDetection ? (
+            {source === 'youtube' && hasDetection && !playlistMode ? (
               <div className="mt-1 space-y-3" data-debug-id="3.1.6.2" data-debug-name="QualitySelector" data-debug-type="other">
                 {Object.keys(detectedData.video).length > 0 && (
                   <div>

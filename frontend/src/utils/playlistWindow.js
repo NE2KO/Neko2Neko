@@ -20,8 +20,16 @@ export function buildPlaylistWindow(items, selectedId, radius = 125) {
 
   const total = items.length;
   const half = Math.min(radius, Math.floor(total / 2));
-  const start = Math.max(0, currentIndex - half);
-  const end = Math.min(total, currentIndex + half + 1);
+  let start = Math.max(0, currentIndex - half);
+  let end = Math.min(total, currentIndex + half + 1);
+  // Expand toward the opposite edge when near start/end so the full array (or a
+  // full 2*radius+1 window) is included instead of a truncated one.
+  const windowLen = end - start;
+  if (start === 0 && windowLen < half * 2 + 1) {
+    end = Math.min(total, start + half * 2 + 1);
+  } else if (end === total && windowLen < half * 2 + 1) {
+    start = Math.max(0, end - half * 2 - 1);
+  }
 
   return {
     window: items.slice(start, end),

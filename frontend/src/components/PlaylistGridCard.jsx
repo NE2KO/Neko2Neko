@@ -2,6 +2,26 @@ import React, { memo, useCallback, useState } from 'react';
 import { Heart } from 'lucide-react';
 import { toggleFavorite } from '../utils/api';
 
+const CARD_ANIM_STYLE = `
+  @keyframes playlistCardIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .playlist-card-in {
+    animation: playlistCardIn 0.25s ease;
+  }
+`;
+
+let animStyleInjected = false;
+function injectCardAnimStyles() {
+  if (animStyleInjected) return;
+  animStyleInjected = true;
+  const s = document.createElement('style');
+  s.textContent = CARD_ANIM_STYLE;
+  document.head.appendChild(s);
+}
+injectCardAnimStyles();
+
 const ThumbnailImage = memo(({ src, alt }) => {
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -38,10 +58,13 @@ const ThumbnailImage = memo(({ src, alt }) => {
   );
 });
 
-const PlaylistGridCard = memo(({ item, onSelect, onDelete, onToggleFavorite, typeLabel = 'PLAYLIST', itemWidth, cardHeight, _rawItem, isSelected, isDeleting }) => {
+const PlaylistGridCard = memo(({ item, onSelect, onDelete, onToggleFavorite, typeLabel = 'PLAYLIST', itemWidth, cardHeight, _rawItem, isSelected, isDeleting, isLeaving, isEntering, slideX = 0, slideY = 0, selectMode }) => {
   const { title, subtitle, thumbnailUrl, isFavorite } = item;
   const [localFav, setLocalFav] = useState(null);
   const isFav = localFav !== null ? localFav : isFavorite;
+
+  const hasSlide = slideX !== 0 || slideY !== 0;
+  const slideTransform = hasSlide ? `translate(${slideX}px, ${slideY}px)` : undefined;
 
   const handleClick = () => {
     onSelect?.(_rawItem);
@@ -66,13 +89,22 @@ const PlaylistGridCard = memo(({ item, onSelect, onDelete, onToggleFavorite, typ
   }, [_rawItem, isFav]);
 
   return (
-    <div style={{ width: itemWidth, height: cardHeight, contentVisibility: 'auto', containIntrinsicSize: `${itemWidth}px ${cardHeight}px` }} className="flex flex-col flex-shrink-0 select-none">
+    <div
+      style={{
+        width: itemWidth,
+        height: cardHeight,
+        contentVisibility: hasSlide ? 'visible' : 'auto',
+        containIntrinsicSize: `${itemWidth}px ${cardHeight}px`,
+        ...(hasSlide ? { transform: slideTransform, willChange: 'transform', transition: 'transform 200ms ease' } : {}),
+      }}
+      className="flex flex-col flex-shrink-0 select-none"
+    >
       <div
         onClick={handleClick}
         onContextMenu={handleContextMenu}
         className={`group relative rounded-xl overflow-hidden bg-neutral-900 border w-full h-full cursor-pointer flex flex-col flex-shrink-0 select-none transition-[border-color,opacity,transform] duration-200 ${
           isSelected ? 'border-sky-500 ring-2 ring-sky-500/40' : 'border-neutral-800/80'
-        } ${isDeleting ? 'opacity-0 scale-90' : ''}`}
+        } ${isDeleting ? 'opacity-0 scale-90' : ''} ${isLeaving ? 'opacity-0' : ''} ${isEntering ? 'playlist-card-in' : ''} ${selectMode ? (isSelected ? 'opacity-100 scale-100' : 'opacity-40 scale-90') : ''}`}
         style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
       >
         <div className="w-full flex-1 min-h-0 bg-black/40 flex items-center justify-center overflow-hidden relative">
@@ -126,7 +158,12 @@ const PlaylistGridCard = memo(({ item, onSelect, onDelete, onToggleFavorite, typ
     && prev.itemWidth === next.itemWidth
     && prev.cardHeight === next.cardHeight
     && prev.isSelected === next.isSelected
-    && prev.isDeleting === next.isDeleting;
+    && prev.isDeleting === next.isDeleting
+    && prev.isLeaving === next.isLeaving
+    && prev.isEntering === next.isEntering
+    && prev.slideX === next.slideX
+    && prev.slideY === next.slideY
+    && prev.selectMode === next.selectMode;
 });
 
 export { PlaylistGridCard };

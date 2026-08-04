@@ -23,6 +23,7 @@ import metadataRouter from './routes/metadata.js';
 import scrcpyRouter from './routes/scrcpy.js';
 import sendRouter, { startSendScheduler } from './routes/send.js';
 import { initTelegramInbound } from './utils/telegramBot.js';
+import { initTelegramAudioBot } from './utils/telegramAudioBot.js';
 import videoCacheRouter from './routes/videoCache.js';
 import { setupWhatsAppRoutes, markListenerStarted, pushLog } from './routes/whatsapp.js';
 import { trackRequest } from './monitor/webStats.js';
@@ -111,6 +112,7 @@ app.use('/api/video-cache', videoCacheRouter);
 setupWhatsAppRoutes(app);
 
 try { initTelegramInbound(); } catch (e) { console.warn('[startup] telegram inbound init failed:', e.message); }
+try { initTelegramAudioBot(); } catch (e) { console.warn('[startup] telegram audio bot init failed:', e.message); }
 try { startSendScheduler(); } catch (e) { console.warn('[startup] send scheduler init failed:', e.message); }
 
 // Folder lookup (used by frontend fetchFolderById)
@@ -291,7 +293,7 @@ const server = tlsCredentials ? createHttpsServer(tlsCredentials, app) : createH
 server.keepAliveTimeout = 5000;
 server.headersTimeout = 10000;
 server.maxConnections = 100;
-server.timeout = 15000;
+server.timeout = 120000;
 
 app.set('trust proxy', 1);
 

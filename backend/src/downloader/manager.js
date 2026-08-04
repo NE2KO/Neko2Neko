@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { debouncedRescan } from '../utils/watcher.js';
 import { YTDLP_RESILIENT_ARGS, YTDLP_USER_AGENT } from '../utils/ytdlp.js';
 import { get } from '../utils/runtimeSettings.js';
+import { embedCover } from '../utils/metadataWriter.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TASKS_FILE = path.join(__dirname, '../../data/download-tasks.json');
@@ -778,7 +779,19 @@ function saveDownloadedArchive() {
 
 function isAlreadyDownloaded(url, category) {
   const k = canonicalVideoKey(url, category);
-  return k ? downloadedArchive.has(k) : false;
+  if (!k || !downloadedArchive.has(k)) return false;
+  const n = category === 'instagram' ? normalizeUrl(url) : url.trim().toLowerCase();
+  for (const t of tasks.values()) {
+    if (t.status !== 'completed') continue;
+    if (t.category !== category) continue;
+    const existing = category === 'instagram' ? normalizeUrl(t.url) : t.url.trim().toLowerCase();
+    if (existing === n) return true;
+  }
+  // Stale entry: task yang mencatat URL ini sudah dihapus dari daftar,
+  // jadi izinkan re-download dan bersihkan dari archive.
+  downloadedArchive.delete(k);
+  saveDownloadedArchive();
+  return false;
 }
 
 function recordDownloaded(url, category) {
@@ -875,7 +888,7 @@ export function createTask(url, options = {}) {
   const quality = options.quality || 'best';
   const formatId = options.formatId || '';
   const audioExtract = !!options.audioExtract;
-  const audioFormat = options.audioFormat || 'mp3';
+  const audioFormat = options.audioFormat ? options.audioFormat.toLowerCase() : '';
   const audioBitrate = options.audioBitrate || 'best';
   const twitterMode = options.twitterMode || 'single';
   const twitterAccount = (options.twitterAccount || '').replace(/^@/, '').trim();
@@ -890,8 +903,8 @@ export function createTask(url, options = {}) {
 
   const validQ = QUALITY_MAP[category];
   if (!formatId && !validQ.includes(quality)) return { error: `Kualitas "${quality}" tidak valid` };
-  if (audioExtract && !AUDIO_EXTRACT_FORMATS.includes(audioFormat)) return { error: `Format audio "${audioFormat}" tidak valid` };
-  if (audioExtract && embedCover && !['mp3', 'm4a', 'opus', 'flac'].includes(audioFormat)) return { error: `Embed cover tidak didukung untuk format audio ${audioFormat}. Gunakan mp3, m4a, opus, atau flac.` };
+  if (audioExtract && audioFormat && !AUDIO_EXTRACT_FORMATS.includes(audioFormat)) return { error: `Format audio "${audioFormat}" tidak valid` };
+  if (audioExtract && embedCover && audioFormat && !['mp3', 'm4a', 'opus', 'ogg', 'flac'].includes(audioFormat)) return { error: `Embed cover tidak didukung untuk format audio ${audioFormat}. Gunakan mp3, m4a, opus, ogg, atau flac.` };
 
   let trimmed = (url || '').trim();
 
@@ -992,7 +1005,7 @@ export function createBulkTasks(urls, options = {}) {
     const taskOptions = { ...options, category: cat };
     if (options.botMode) {
       taskOptions.viaBot = true;
-      if (cat === 'youtube') taskOptions.formatId = BOT_YT_FORMAT;
+      if (cat === 'youtube' && !options.audioExtract) taskOptions.formatId = BOT_YT_FORMAT;
     }
     results.push(createTask(u, taskOptions));
   }
@@ -1018,6 +1031,10 @@ export function removeTask(id) {
   if (!t) return { error: 'Task tidak ditemukan' };
   if (t.process) { try { t.process.kill('SIGTERM'); } catch {} t.process = null; }
   cleanupDownloadWorkDir(t);
+  if (t.url) {
+    const k = canonicalVideoKey(t.url, t.category);
+    if (k) { downloadedArchive.delete(k); saveDownloadedArchive(); }
+  }
   tasks.delete(id); savePersistentTasks(); processQueue();
   return { success: true };
 }
@@ -1204,6 +1221,93 @@ export function getAvailableFormats(url, category = 'youtube', options = {}) {
     const msg = mapYtdlpError(e.stderr || e.message || '');
     return { error: msg };
   }
+}
+
+export function getPlaylistInfo(url, cookiesPath = '') {
+  return new Promise((resolve) => {
+    const validationError = validateUrl(url);
+    if (validationError) return resolve({ error: validationError });
+
+    const args = [
+      '--dump-json', '--flat-playlist', '--no-download', '--no-warnings',
+      '--retries', '5', '--extractor-retries', '3', '--socket-timeout', '30',
+      '--user-agent', YTDLP_USER_AGENT,
+    ];
+    if (cookiesPath) args.push('--cookies', cookiesPath);
+    args.push(url);
+
+    let errOut = '';
+    let killed = false;
+    const MAX_ITEMS = 200;
+    const timeoutMs = 120000;
+    const timeoutId = setTimeout(() => {
+      killed = true;
+      try { proc.kill('SIGTERM'); } catch {}
+      resolve({ error: 'Request timeout — periksa koneksi internet atau playlist terlalu besar' });
+    }, timeoutMs);
+
+    const items = [];
+    let playlistTitle = '';
+    let buffer = '';
+
+    let proc;
+    try {
+      proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+      clearTimeout(timeoutId);
+      return resolve({ error: `Gagal menjalankan yt-dlp: ${e.message}` });
+    }
+
+    proc.stdout.on('data', (data) => {
+      buffer += data.toString();
+      let idx;
+      while ((idx = buffer.indexOf('\n')) >= 0 && items.length < MAX_ITEMS) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        if (!line) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (!entry.url && !entry.webpage_url) continue;
+          if (!playlistTitle && entry.title) playlistTitle = entry.title;
+          const thumb = entry.thumbnail
+            || (entry.thumbnails && entry.thumbnails.length > 0 ? entry.thumbnails[entry.thumbnails.length - 1].url : null)
+            || null;
+          items.push({
+            url: entry.url || entry.webpage_url || '',
+            title: entry.title || `Video ${items.length + 1}`,
+            thumbnail: thumb,
+            duration: entry.duration || 0,
+            index: entry.playlist_index || items.length + 1,
+          });
+        } catch {}
+      }
+      if (items.length >= MAX_ITEMS) {
+        try { proc.kill('SIGTERM'); } catch {}
+      }
+    });
+
+    proc.stderr.on('data', (data) => { errOut += data.toString(); });
+
+    proc.on('close', (code) => {
+      clearTimeout(timeoutId);
+      if (killed) return;
+      if (code !== 0 && items.length === 0) {
+        const msg = errOut.slice(-300).trim();
+        if (code === 127 || /not found/i.test(msg)) return resolve({ error: 'yt-dlp binary tidak ditemukan' });
+        if (/JSON/i.test(msg)) return resolve({ error: 'Format data tidak valid, kemungkinan playlist private. Coba cek cookies.' });
+        return resolve({ error: mapYtdlpError(msg) });
+      }
+      if (items.length === 0) return resolve({ error: 'Tidak ada video yang ditemukan di playlist ini' });
+      const result = { title: playlistTitle || 'Playlist', items };
+      if (items.length >= MAX_ITEMS) result.truncated = true;
+      resolve(result);
+    });
+
+    proc.on('error', (err) => {
+      clearTimeout(timeoutId);
+      if (!killed && items.length === 0) resolve({ error: `Gagal menjalankan yt-dlp: ${err.message}` });
+    });
+  });
 }
 
 export function getTwitterInfo(url, options = {}) {
@@ -1481,7 +1585,6 @@ async function finishTask(task, status, errorMsg) {
   if (errorMsg) task.error = errorMsg;
   task.completedAt = new Date().toISOString();
   if (status === 'completed') {
-    recordDownloaded(task.url, task.category);
     task.progress = 100;
     task.retryCount = 0;
     task.lastError = null;
@@ -1523,7 +1626,12 @@ async function finishTask(task, status, errorMsg) {
         return;
       }
     } else if (downloadedPaths.length > 0) {
-      task.filePath = downloadedPaths[0];
+      let primary = downloadedPaths[0];
+      if (task.audioExtract) {
+        const audioPath = downloadedPaths.find(p => AUDIO_EXTS.has(path.extname(p).toLowerCase()) && fs.existsSync(p));
+        if (audioPath) primary = audioPath;
+      }
+      task.filePath = primary;
       task.filename = path.basename(task.filePath);
       try {
         const fileStat = fs.statSync(task.filePath);
@@ -1531,8 +1639,25 @@ async function finishTask(task, status, errorMsg) {
         task.downloaded = formatBytes(fileStat.size);
         task.downloadTimestamp = getFileArrivalTimestamp(task.filePath).toISOString();
       } catch {}
+      if (task.audioExtract && task.embedCover) {
+        const merged = await embedCoverForAudioTask(task);
+        if (!merged) {
+          const errMsg = task.error || `Embed cover gagal untuk ${task.filename}`;
+          task.error = errMsg;
+          task.status = 'failed';
+          task.completedAt = new Date().toISOString();
+          addLog(task, `Embed cover gagal: ${errMsg}`);
+          cleanupDownloadWorkDir(task);
+          running = Math.max(0, running - 1);
+          savePersistentTasks();
+          processQueue();
+          notifyTaskFinished(task);
+          return;
+        }
+      }
     }
 
+    recordDownloaded(task.url, task.category);
     postProcessTask(task);
     cleanupDownloadWorkDir(task);
     debouncedRescan();
@@ -1549,6 +1674,51 @@ async function finishTask(task, status, errorMsg) {
 }
 
 // ── Post-Processing ──
+
+const COVER_MIME_BY_EXT = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+};
+
+async function embedCoverForAudioTask(task) {
+  const audioPath = task.filePath;
+  if (!audioPath || !fs.existsSync(audioPath)) return false;
+  const dir = path.dirname(audioPath);
+  const base = path.basename(audioPath).replace(/\.[^.]+$/, '');
+
+  let coverPath = null;
+  let candidates = [];
+  try { candidates = fs.readdirSync(dir); } catch {}
+  for (const name of candidates) {
+    const full = path.join(dir, name);
+    try { if (!fs.statSync(full).isFile()) continue; } catch { continue; }
+    const ext = path.extname(name).toLowerCase();
+    if (!IMAGE_EXTS.has(ext)) continue;
+    if (path.basename(name, ext) === base) { coverPath = full; break; }
+    if (!coverPath) coverPath = full;
+  }
+  if (!coverPath) {
+    task.error = `Cover tidak ditemukan untuk ${path.basename(audioPath)}, embed cover tidak dapat diproses`;
+    addLog(task, task.error);
+    return false;
+  }
+
+  const mime = COVER_MIME_BY_EXT[path.extname(coverPath).toLowerCase()] || 'image/jpeg';
+  try {
+    const imageBuffer = fs.readFileSync(coverPath);
+    await embedCover(audioPath, imageBuffer, mime);
+    addLog(task, `Cover ter-embed ke ${path.basename(audioPath)}`);
+    try { fs.unlinkSync(coverPath); } catch {}
+    return true;
+  } catch (err) {
+    task.error = `Embed cover gagal untuk ${path.basename(audioPath)}: ${(err.message || '').slice(0, 200)}`;
+    addLog(task, task.error);
+    return false;
+  }
+}
 
 function postProcessFile(task, filePath) {
   if (!filePath) return filePath;
@@ -1726,7 +1896,8 @@ function spawnYtdlp(task) {
     const bitrate = AUDIO_BITRATE_MAP[task.audioBitrate] || '0';
     args.push('-f', 'bestaudio[ext=m4a]/bestaudio/best');
     args.push('-S', 'lang:original');
-    args.push('--extract-audio', '--audio-format', task.audioFormat, '--audio-quality', bitrate);
+    args.push('--extract-audio', '--audio-quality', bitrate);
+    if (task.audioFormat) args.push('--audio-format', task.audioFormat);
 } else if (task.quality === 'audio') {
   args.push('-f', 'bestaudio[ext=m4a]/bestaudio/best');
   args.push('-S', 'lang:original');

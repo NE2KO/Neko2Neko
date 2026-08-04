@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import {
   createTask, createBulkTasks, cancelTask, removeTask, retryTask,
-  getTaskList, getTask, getAvailableFormats, getTwitterInfo,
+  getTaskList, getTask, getAvailableFormats, getTwitterInfo, getPlaylistInfo,
   getMaxConcurrent, setMaxConcurrent,
 } from '../downloader/manager.js';
 
@@ -90,6 +90,19 @@ router.post('/formats', (req, res) => {
   if (!result) return res.status(400).json({ error: 'Format detection supported only for YouTube.' });
   if (result.error) return res.status(400).json({ error: result.error });
   res.json(result);
+});
+
+router.post('/playlist', async (req, res) => {
+  const { url, youtubeCookiesPath } = req.body;
+  if (!url || typeof url !== 'string' || !url.trim())
+    return res.status(400).json({ error: 'URL playlist diperlukan' });
+  try {
+    const result = await getPlaylistInfo(url.trim(), youtubeCookiesPath || '');
+    if (result.error) return res.status(400).json({ error: result.error });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message || 'Gagal memuat playlist' });
+  }
 });
 
 router.post('/twitter-info', async (req, res) => {

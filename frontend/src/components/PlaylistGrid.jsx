@@ -29,7 +29,7 @@ function buildRows(items, cols) {
 
 // Named row component — stable reference for react-window
 const PlaylistGridRow = memo(({ index, style, data }) => {
-  const { rows, onSelect, onDelete, itemWidth, cardHeight, columnCount, selectedPlaylistIds } = data;
+  const { rows, onSelect, onDelete, itemWidth, cardHeight, columnCount, selectedPlaylistIds, selectMode } = data;
   const row = rows[index];
 
   if (row.type === 'separator') {
@@ -59,6 +59,7 @@ const PlaylistGridRow = memo(({ index, style, data }) => {
             onDelete={onDelete}
             _rawItem={p}
             isSelected={selectedPlaylistIds?.has(p.id)}
+            selectMode={selectMode}
           />
         ))}
       </div>
@@ -79,6 +80,7 @@ const PlaylistGrid = forwardRef(({
   sortOrder = 'asc',
   groupByFolder = false,
   selectedPlaylistIds = null,
+  selectMode = false,
 }, ref) => {
   const listRef = useRef(null);
   const outerListRef = useRef(null);
@@ -179,6 +181,7 @@ const PlaylistGrid = forwardRef(({
               cardHeight: CARD_H,
               columnCount: cols,
               selectedPlaylistIds,
+              selectMode,
             };
 
             return (

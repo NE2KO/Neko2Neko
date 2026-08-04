@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Play, Pause, SkipBack, SkipForward, X, Maximize2, Heart } from 'lucide-react';
 import usePlaybackStore from '../store/playbackStore';
 import { useIsFavorite } from '../store/favoritesStore';
@@ -16,6 +16,10 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [coverUrl, setCoverUrl] = useState(null);
+  const [mvReady, setMvReady] = useState(false);
+  const [mvError, setMvError] = useState(false);
+  const [audioPlaying, setAudioPlaying] = useState(false);
+  const bgVideoRef = useRef(null);
 
   const {
     isPlaying,
@@ -31,6 +35,7 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
   const prevFileIdRef = sharedPrevFileIdRef || { current: null };
   const currentTrack = queue?.[currentTrackIndex];
   const fileId = currentTrack?.file_id;
+  const mvId = currentTrack?.youtube_id;
 
   // Favorite status — single source of truth via the global favorites store,
   // so it stays in sync with the full player / carousel / queue list.
@@ -64,6 +69,58 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
     const cleanup = loadCover(fileId);
     return cleanup;
   }, [fileId, loadCover]);
+
+  // BG video source is the SAME shared MV cache as the full player
+  // (`/api/video-cache/stream/:youtubeId`) — no separate download. It streams
+  // directly; if the file isn't cached the video errors and we fall back to the
+  // cover backdrop. The background follows the shared audio: play/pause and seek.
+  useEffect(() => {
+    setMvReady(false);
+    setMvError(false);
+  }, [mvId]);
+
+  // Mirror the shared audio play/pause + position onto the BG video so it
+  // stays roughly in sync (seek = jump, pause = freeze, resume = continue).
+  useEffect(() => {
+    const audio = audioRef?.current;
+    const video = bgVideoRef.current;
+    if (!audio || !video) return;
+
+    const offset = Number(currentTrack?.video_offset) || 0;
+    const syncPosition = () => {
+      const dur = video.duration;
+      if (!Number.isFinite(dur) || dur <= 0) return;
+      const target = ((audio.currentTime || 0) + offset) % dur;
+      if (Math.abs((video.currentTime || 0) - target) > 1.0) {
+        try { video.currentTime = target; } catch {}
+      }
+    };
+    const onPlay = () => { video.play().catch(() => {}); };
+    const onPause = () => { video.pause(); };
+    const onCanPlay = () => {
+      if (!audio.paused) video.play().catch(() => {});
+      syncPosition();
+    };
+
+    audio.addEventListener('play', onPlay);
+    audio.addEventListener('pause', onPause);
+    audio.addEventListener('seeked', syncPosition);
+    audio.addEventListener('timeupdate', syncPosition);
+    video.addEventListener('loadedmetadata', syncPosition);
+    video.addEventListener('canplay', onCanPlay);
+
+    if (audio.paused) video.pause(); else video.play().catch(() => {});
+    syncPosition();
+
+    return () => {
+      audio.removeEventListener('play', onPlay);
+      audio.removeEventListener('pause', onPause);
+      audio.removeEventListener('seeked', syncPosition);
+      audio.removeEventListener('timeupdate', syncPosition);
+      video.removeEventListener('loadedmetadata', syncPosition);
+      video.removeEventListener('canplay', onCanPlay);
+    };
+  }, [audioRef, mvId, currentTrack?.video_offset]);
 
   // Re-fetch the cover if the connection returns (wifi toggled off then on)
   useEffect(() => {
@@ -122,14 +179,32 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
     };
   }, [fileId, audioReady, audioRef]);
 
-  // Sync play/pause state with audio element — guard against redundant calls
+  // Play/pause is driven by the shared audio element's REAL state (not the
+  // store), so the icon can never desync from what's actually audible — e.g.
+  // when returning to the MiniPlayer while the audio is still playing.
+  useEffect(() => {
+    const audio = audioRef?.current;
+    if (!audio) return;
+    const update = () => setAudioPlaying(!audio.paused);
+    update();
+    audio.addEventListener('play', update);
+    audio.addEventListener('pause', update);
+    audio.addEventListener('playing', update);
+    return () => {
+      audio.removeEventListener('play', update);
+      audio.removeEventListener('pause', update);
+      audio.removeEventListener('playing', update);
+    };
+  }, [audioRef]);
+
+  // Resume-only sync: if the store wants playback but the element is paused
+  // (e.g. a play intent from MediaControls), retry play. Never pauses the audio
+  // based on store state — the element itself is the source of truth.
   useEffect(() => {
     const audio = audioRef?.current;
     if (!audio) return;
     if (isPlaying && audio.paused) {
       audio.play().catch(() => {});
-    } else if (!isPlaying && !audio.paused) {
-      audio.pause();
     }
   }, [isPlaying, audioRef]);
 
@@ -145,23 +220,25 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
     setCurrentTime(newTime);
   }, [duration, audioRef]);
 
-  // Handle play/pause — call audio.play() directly in click handler for user gesture
+  // Handle play/pause — toggle the audio element directly (user gesture)
   const handlePlayPause = useCallback(() => {
     const audio = audioRef?.current;
-    if (isPlaying) {
-      pause();
-      if (audio) audio.pause();
-    } else {
+    if (!audio) return;
+    if (audio.paused) {
+      audio.play().catch(() => {});
       play();
-      if (audio) audio.play().catch(() => {});
+    } else {
+      audio.pause();
+      pause();
     }
-  }, [isPlaying, play, pause, audioRef]);
+  }, [play, pause, audioRef]);
 
   // Handle close: pause + clear store + callback
   const handleClose = useCallback(() => {
     pause();
+    if (audioRef?.current) audioRef.current.pause();
     onClose?.();
-  }, [pause, onClose]);
+  }, [pause, onClose, audioRef]);
 
   // Handle expand to full player
   const handleExpand = useCallback(() => {
@@ -178,9 +255,40 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
         data-debug-id="1.2"
         data-debug-name="MiniPlayer"
         data-debug-type="floating"
-        className="fixed bottom-4 left-4 right-4 md:left-auto md:right-4 md:w-96 bg-neutral-900/95 backdrop-blur-md border border-neutral-700/50 shadow-2xl z-40 rounded-2xl overflow-hidden"
+        className="fixed bottom-4 left-1/2 -translate-x-1/2 w-[min(92vw,480px)] bg-neutral-900/40 backdrop-blur-md border border-neutral-700/50 shadow-2xl z-40 rounded-2xl overflow-hidden"
       >
-        <div className="flex items-center gap-3 px-3 py-2.5">
+        {/* Background art: MV (if cached) over a blurred cover, never plain dark */}
+        <div className="absolute inset-0 pointer-events-none">
+          <NetworkImage
+            src={coverUrl || `/thumbnails/${fileId}.jpg`}
+            alt=""
+            className="absolute inset-0 w-full h-full object-cover"
+            style={{ filter: 'blur(18px) brightness(0.5) saturate(1.2)', transform: 'scale(1.12)' }}
+            showRetry={false}
+          />
+          {mvId && !mvError && (
+            <video
+              key={mvId}
+              ref={bgVideoRef}
+              src={`/api/video-cache/stream/${mvId}`}
+              className="absolute inset-0 w-full h-full object-cover"
+              style={{
+                opacity: mvReady ? 1 : 0,
+                transition: 'opacity 300ms ease',
+                filter: 'blur(12px) brightness(0.55) saturate(1.1)',
+                transform: 'scale(1.08)',
+              }}
+              muted
+              playsInline
+              onLoadedData={() => setMvReady(true)}
+              onError={() => { setMvError(true); setMvReady(false); }}
+            />
+          )}
+          <div className="absolute inset-0 bg-black/40" />
+          <div className="absolute inset-0" style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.75), rgba(0,0,0,0.15))' }} />
+        </div>
+
+        <div className="relative z-10 flex items-center gap-3 px-3 py-2.5">
           {/* Cover art */}
           <div className="w-12 h-12 flex-shrink-0 rounded-xl overflow-hidden bg-neutral-800">
             <NetworkImage
@@ -207,7 +315,7 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
                   style={{ width: `${progress}%` }}
                 />
                 <div
-                  className="absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full shadow-md opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"
+                  className="absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full shadow-md opacity-0 group-hover:opacity-100 transition-all pointer-events-none"
                   style={{ left: `calc(${progress}% - 5px)` }}
                 />
               </div>
@@ -228,7 +336,7 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
               onClick={handlePlayPause}
               className="w-9 h-9 rounded-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white flex items-center justify-center hover:shadow-lg hover:shadow-indigo-500/25 transition-all hover:scale-105 flex-shrink-0"
             >
-              {isPlaying ? (
+              {audioPlaying ? (
                 <Pause size={14} fill="currentColor" />
               ) : (
                 <Play size={14} fill="currentColor" className="ml-0.5" />

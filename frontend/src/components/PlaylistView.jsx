@@ -14,7 +14,7 @@ import PlaylistListItemRow, { injectPlaylistListItemRowStyles } from './Playlist
 import AddMusicPanel from './AddMusicPanel';
 import FilterPanel from './FilterPanel';
 import { PlaylistListHeader, PlaylistDetailHeader } from './HeaderComponents';
-import { formatBytes as formatSize } from '../utils/format.js';
+
 
 import './PlaylistView.css';
 
@@ -237,7 +237,7 @@ function DropdownMenu({ trigger, items, position = 'right' }) {
 // holds across scrolls (previously a fresh gridData object every render forced
 // every visible row+card to re-render → the "grid berat" jank).
 const PlaylistTrackGridInner = React.memo(function PlaylistTrackGridInner({
-  height, width, gridItems, onSelect, selectedForDelete, deletingTrackIds,
+  height, width, gridItems, onSelect, selectedForDelete, deletingTrackIds, selectMode,
 }) {
   const listRef = useRef(null);
 
@@ -260,9 +260,49 @@ const PlaylistTrackGridInner = React.memo(function PlaylistTrackGridInner({
     return r;
   }, [gridItems, cols]);
 
+  // FLIP slide: during the exit phase (some items marked _leaving) compute where
+  // each remaining card will land after reflow, as a CSS transform delta. The
+  // cards slide into place while the leaving ones fade, so the swap after 200ms
+  // has no visible jump. Uses width/cols for exact horizontal (centered) offsets.
+  const slideMap = useMemo(() => {
+    if (!gridItems.some(it => it._leaving)) return null;
+    const rowWidth = width || 0;
+    const centerOffset = (c) => c <= 0 ? 0 : (rowWidth - (c * IW + (c - 1) * GUTTER)) / 2;
+    const fullRowsOld = Math.floor(gridItems.length / cols);
+    const lastCountOld = gridItems.length % cols === 0 ? cols : gridItems.length % cols;
+    const leavingBefore = [];
+    let removed = 0;
+    for (let i = 0; i < gridItems.length; i++) {
+      leavingBefore[i] = removed;
+      if (gridItems[i]._leaving) removed++;
+    }
+    const remaining = gridItems.length - removed;
+    const fullRowsNew = Math.floor(remaining / cols);
+    const lastCountNew = remaining % cols === 0 ? cols : remaining % cols;
+    const map = {};
+    for (let i = 0; i < gridItems.length; i++) {
+      const it = gridItems[i];
+      if (it._leaving) continue;
+      const oldRow = Math.floor(i / cols);
+      const oldCol = i % cols;
+      const oldCount = oldRow < fullRowsOld ? cols : lastCountOld;
+      const newIndex = i - leavingBefore[i];
+      const newRow = Math.floor(newIndex / cols);
+      const newCol = newIndex % cols;
+      const newCount = newRow < fullRowsNew ? cols : lastCountNew;
+      const oldLeft = centerOffset(oldCount) + oldCol * (IW + GUTTER);
+      const newLeft = centerOffset(newCount) + newCol * (IW + GUTTER);
+      map[it._trackId] = {
+        dx: Math.round(newLeft - oldLeft),
+        dy: (newRow - oldRow) * (CH + GUTTER),
+      };
+    }
+    return map;
+  }, [gridItems, cols, IW, CH, width]);
+
   const gridData = useMemo(() => ({
-    rows, onSelect, itemWidth: IW, cardHeight: CH, columnCount: cols, selectedForDelete, deletingTrackIds,
-  }), [rows, onSelect, IW, CH, cols, selectedForDelete, deletingTrackIds]);
+    rows, onSelect, itemWidth: IW, cardHeight: CH, columnCount: cols, selectedForDelete, deletingTrackIds, selectMode, slideMap,
+  }), [rows, onSelect, IW, CH, cols, selectedForDelete, deletingTrackIds, selectMode, slideMap]);
 
   const itemSize = useCallback(() => CH + GUTTER, [CH]);
 
@@ -318,6 +358,7 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
   ];
   const TRACK_FILTER_OPTIONS = [
     { key: 'all', label: 'All' },
+    { key: 'is_favorite', label: 'Love' },
     { key: 'flac', label: 'FLAC' },
     { key: 'mp3', label: 'MP3' },
     { key: 'm4a', label: 'M4A' },
@@ -336,7 +377,6 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
     { key: 'created_at', label: 'Created', order: 'desc' },
     { key: 'mtime', label: 'Modified', order: 'desc' },
     { key: 'size', label: 'Size', order: 'desc' },
-    { key: 'is_favorite', label: 'Love', order: 'desc' },
   ];
   const [playlistSort, setPlaylistSort] = useState(() => {
     try { const s = JSON.parse(localStorage.getItem('playlistSort')); return s || { by: 'name', order: 'asc' }; } catch { return { by: 'name', order: 'asc' }; }
@@ -344,8 +384,16 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
   const [trackSort, setTrackSort] = useState(() => {
     try { const s = JSON.parse(localStorage.getItem('trackSort')); return s || { by: 'track_num', order: 'asc' }; } catch { return { by: 'track_num', order: 'asc' }; }
   });
-  const [trackFilterType, setTrackFilterType] = useState('all');
-  const [showFilterPanel, setShowFilterPanel] = useState(false);
+  const [trackFilterType, setTrackFilterType] = useState(() => {
+    try { return localStorage.getItem('trackFilterType') || 'all'; } catch { return 'all'; }
+  });
+   const [trackSearchQuery, setTrackSearchQuery] = useState(() => {
+     try { return localStorage.getItem('trackSearchQuery') || ''; } catch { return ''; }
+   });
+   useEffect(() => {
+     try { localStorage.setItem('trackSearchQuery', trackSearchQuery); } catch {}
+   }, [trackSearchQuery]);
+   const [showFilterPanel, setShowFilterPanel] = useState(false);
   const [filterPanelType, setFilterPanelType] = useState('playlist');
 
   // Delete mode states
@@ -377,6 +425,9 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
   useEffect(() => {
     localStorage.setItem('trackSort', JSON.stringify(trackSort));
   }, [trackSort]);
+  useEffect(() => {
+    if (trackFilterType) localStorage.setItem('trackFilterType', trackFilterType);
+  }, [trackFilterType]);
 
   async function handleImportXSPF(e) {
     const file = e.target.files?.[0];
@@ -608,17 +659,22 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
 
   const sortedTracks = useMemo(() => {
     let list = [...playlistTracks];
-    if (trackFilterType !== 'all') {
+    if (trackFilterType === 'is_favorite') {
+      list = list.filter(t => t.is_favorite === 1);
+    } else if (trackFilterType !== 'all') {
       list = list.filter(t => {
         const filePath = t.resolved_path || t.location || '';
         const ext = filePath.split('.').pop().toLowerCase();
         return ext === trackFilterType;
       });
     }
-    // When sorting by is_favorite, show only loved tracks
-    if (trackSort.by === 'is_favorite') {
-      list = list.filter(t => t.is_favorite === 1);
-      return list;
+    const query = trackSearchQuery.trim().toLowerCase();
+    if (query) {
+      list = list.filter(t => {
+        const name = (t.display_name || t.title || t.name || '').toLowerCase();
+        const artist = (t.artist || '').toLowerCase();
+        return name.includes(query) || artist.includes(query);
+      });
     }
     const { by, order } = trackSort;
     list.sort((a, b) => {
@@ -636,7 +692,94 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
       return 0;
     });
     return list;
-  }, [playlistTracks, trackSort, trackFilterType]);
+  }, [playlistTracks, trackSort, trackFilterType, trackSearchQuery]);
+
+  // ---- Search filter animation (fade-out + slide) ----
+  // Keeps the previously-rendered list for ~200ms after a filter/search change,
+  // marks the removed tracks as "leaving" (fade out) and shifts the remaining
+  // tracks up by the number of leaving rows above them (slide). Only the visible
+  // rows are ever rendered (react-window), so this stays lightweight.
+  const trackKey = (t) => (t?.id ?? t?.file_id ?? '');
+  const [displayTracks, setDisplayTracks] = useState(() => sortedTracks);
+  const [leavingTrackIds, setLeavingTrackIds] = useState(new Set());
+  const [shiftAbove, setShiftAbove] = useState(new Map());
+  const [enteringTrackIds, setEnteringTrackIds] = useState(new Set());
+  const displayRef = useRef(sortedTracks);
+  const filterAnimTimerRef = useRef(null);
+
+  useEffect(() => {
+    if (filterAnimTimerRef.current) {
+      clearTimeout(filterAnimTimerRef.current);
+      filterAnimTimerRef.current = null;
+    }
+    const prev = displayRef.current;
+    if (!prev || prev.length === 0 || prev === sortedTracks) {
+      displayRef.current = sortedTracks;
+      setDisplayTracks(sortedTracks);
+      setLeavingTrackIds(new Set());
+      setShiftAbove(new Map());
+      setEnteringTrackIds(new Set());
+      return;
+    }
+    const prevKeys = new Set(prev.map(trackKey));
+    const newKeys = new Set(sortedTracks.map(trackKey));
+    const leaving = new Set(prev.filter(t => !newKeys.has(trackKey(t))).map(trackKey));
+    const entering = new Set(sortedTracks.filter(t => !prevKeys.has(trackKey(t))).map(trackKey));
+
+    if (leaving.size > 0) {
+      // Exit phase: keep the old list, fade out removed items, slide remaining.
+      // For grid view, skip the exit phase (instantly swap) because CSS grid
+      // reflow can't be smoothly transitioned — the remaining cards look wrong
+      // when they slide while leaving cards still occupy their cells.
+      if (displayMode !== 'grid') {
+        const shift = new Map();
+        let count = 0;
+        for (const t of prev) {
+          const k = trackKey(t);
+          if (leaving.has(k)) count++;
+          else shift.set(k, count);
+        }
+        setDisplayTracks(prev);
+        setLeavingTrackIds(leaving);
+        setShiftAbove(shift);
+        setEnteringTrackIds(new Set());
+        filterAnimTimerRef.current = setTimeout(() => {
+          displayRef.current = sortedTracks;
+          setDisplayTracks(sortedTracks);
+          setLeavingTrackIds(new Set());
+          setShiftAbove(new Map());
+        }, 220);
+      } else {
+        // Grid: swap instantly, no exit animation. Still animate new items in.
+        displayRef.current = sortedTracks;
+        setDisplayTracks(sortedTracks);
+        setLeavingTrackIds(new Set());
+        setShiftAbove(new Map());
+        if (entering.size > 0) {
+          setEnteringTrackIds(entering);
+          filterAnimTimerRef.current = setTimeout(() => {
+            setEnteringTrackIds(new Set());
+          }, 260);
+        } else {
+          setEnteringTrackIds(new Set());
+        }
+      }
+    } else {
+      // Enter phase (e.g. clearing search): swap immediately, animate new items in.
+      displayRef.current = sortedTracks;
+      setDisplayTracks(sortedTracks);
+      setLeavingTrackIds(new Set());
+      setShiftAbove(new Map());
+      if (entering.size > 0) {
+        setEnteringTrackIds(entering);
+        filterAnimTimerRef.current = setTimeout(() => {
+          setEnteringTrackIds(new Set());
+        }, 260);
+      } else {
+        setEnteringTrackIds(new Set());
+      }
+    }
+  }, [sortedTracks, displayMode]);
 
   const handleBulkDelete = useCallback(async () => {
     if (!selectedPlaylist) return;
@@ -723,6 +866,19 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
     });
   }, []);
 
+  // Stable select handler so PlaylistGrid / PlaylistListItemRow memoization
+  // actually holds across selection toggles (inline arrows would re-create the
+  // callback every render and force every visible card to re-render per click).
+  const handlePlaylistGridSelect = useCallback((playlist) => {
+    if (playlistDeleteMode) togglePlaylistSelect(playlist.id);
+    else handleSelectPlaylist(playlist);
+  }, [playlistDeleteMode, togglePlaylistSelect, handleSelectPlaylist]);
+
+  const handlePlaylistListSelect = useCallback((playlist) => {
+    if (playlistDeleteMode) togglePlaylistSelect(playlist.id);
+    else handleSelectPlaylist(playlist);
+  }, [playlistDeleteMode, togglePlaylistSelect, handleSelectPlaylist]);
+
   const fullQueueMemo = useMemo(() => {
     return sortedTracks.map((t, i) => ({
       file_id: t.file_id,
@@ -758,73 +914,51 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
   const handlePlayTrack = useCallback((track, index) => {
     if (playTrackGuardRef.current) return;
     if (loadingTracks) return;
-    // Only a resolvable file id is required to play. Previously a missing
-    // `exists`/`resolved_path` silently dropped the click and left the previous
-    // track playing ("thrown to another song"). The player resolves the stream
-    // by file_id, so relax the guard to require only that.
     const fileId = track?.file_id || track?.id;
     if (!fileId) return;
     playTrackGuardRef.current = true;
     setTimeout(() => { playTrackGuardRef.current = false; }, 500);
 
-    const queue = fullQueueMemo.filter(t => t.exists && (t.file_id || t.id));
+    const queue = sortedTracks.map((t, i) => ({
+      file_id: t.file_id,
+      track_index: i,
+      display_name: t.display_name,
+      artist: t.artist || '',
+      album: t.album || '',
+      duration: t.duration || 0,
+      path: t.resolved_path || t.location || '',
+      resolved_path: t.resolved_path,
+      location: t.location,
+      exists: !!t.exists && !!t.file_id,
+      type: 'audio',
+      ext: t.resolved_path ? t.resolved_path.split('.').pop()?.toLowerCase() || '' : '',
+      size: t.size || 0,
+      is_favorite: t.is_favorite || 0,
+      youtube_id: t.youtube_id || null,
+      video_offset: t.video_offset || 0,
+    })).filter(t => t.exists && (t.file_id || t.id));
+
     if (queue.length === 0) return;
 
-    // Resolve the play index AUTHORITATIVELY by file_id. This is immune to any
-    // sort/filter/refresh divergence between the displayed list and the queue, and
-    // to a stale persisted currentTrackIndex (playbackStore persists it to
-    // localStorage). The DISPLAY position is only used as a tie-breaker when the
-    // playlist genuinely contains duplicate file_ids, so we still pick the exact
-    // clicked row in that edge case.
     let clickedIdx = queue.findIndex(t => (t.file_id || t.id) === fileId);
-
-    if (clickedIdx >= 0 && typeof index === 'number' && index >= 0) {
-      const positional = sortedTracks.slice(0, index).filter(t => t.exists && (t.file_id || t.id)).length;
-      if (
-        positional >= 0 && positional < queue.length &&
-        (queue[positional]?.file_id || queue[positional]?.id) === fileId
-      ) {
-        clickedIdx = positional;
-      }
+    if (clickedIdx < 0 && typeof index === 'number' && index >= 0 && index < queue.length) {
+      clickedIdx = index;
     }
-
-    // Guarantee the clicked track ALWAYS appears in the carousel/player. A newly
-    // added track can be filtered out of the playable queue (e.g. not yet flagged
-    // exists, or excluded by a type filter) — if so, synthesize a queue entry from
-    // it and insert at the clicked display position so the user never sees the
-    // track they just opened "vanish".
-    if (clickedIdx < 0) {
-      const entry = fullQueueMemo.find(t => (t.file_id || t.id) === fileId) || {
-        file_id: track.file_id,
-        track_index: typeof index === 'number' ? index : 0,
-        display_name: track.display_name || track.title || track.name,
-        artist: track.artist || '',
-        album: track.album || '',
-        duration: track.duration || 0,
-        path: track.resolved_path || track.path || '',
-        resolved_path: track.resolved_path,
-        location: track.location,
-        exists: true,
-        type: track.type || 'audio',
-        ext: track.ext || (track.resolved_path ? track.resolved_path.split('.').pop()?.toLowerCase() : '') || '',
-        is_favorite: track.is_favorite || 0,
-        youtube_id: track.youtube_id || null,
-        video_offset: track.video_offset || 0,
-      };
-      const insertAt = Math.max(0, Math.min(typeof index === 'number' ? index : queue.length, queue.length));
-      queue.splice(insertAt, 0, entry);
-      clickedIdx = insertAt;
-    }
+    if (clickedIdx < 0) clickedIdx = 0;
 
     if (clickedIdx < 0 || clickedIdx >= queue.length) return;
     onPlayTrack(track, queue, clickedIdx, selectedPlaylist);
-  }, [fullQueueMemo, sortedTracks, selectedPlaylist, onPlayTrack, loadingTracks]);
+  }, [selectedPlaylist, onPlayTrack, loadingTracks, sortedTracks]);
 
   const listRowData = useMemo(() => ({
-    tracks: sortedTracks,
+    tracks: displayTracks,
     deleteMode,
     selectedForDelete,
     deletingTrackIds,
+    leavingTrackIds,
+    shiftAbove,
+    enteringTrackIds,
+    itemSize: 64,
     onSelect: (track, index) => {
       if (deleteMode) { toggleSelectForDelete(track.id); return; }
       // Only a resolvable id is required to attempt playback. The player resolves
@@ -833,7 +967,7 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
       if (track.file_id || track.id) handlePlayTrack(track, index);
     },
     onRemove: handleRemoveTrack,
-  }), [sortedTracks, deleteMode, selectedForDelete, deletingTrackIds, handlePlayTrack, handleRemoveTrack, toggleSelectForDelete]);
+  }), [displayTracks, deleteMode, selectedForDelete, deletingTrackIds, leavingTrackIds, shiftAbove, enteringTrackIds, handlePlayTrack, handleRemoveTrack, toggleSelectForDelete]);
 
   const listItemSize = useCallback(() => 64, []);
 
@@ -844,35 +978,40 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
     playlistDeleteMode,
     selectedPlaylistIds,
     onSelect: playlistDeleteMode
-      ? (p) => togglePlaylistSelect(p.id)
+      ? handlePlaylistListSelect
       : handleSelectPlaylist,
     onDelete: handleDeletePlaylist,
     onToggleSelect: togglePlaylistSelect,
-  }), [sortedPlaylists, playlistDeleteMode, selectedPlaylistIds, handleSelectPlaylist, handleDeletePlaylist, togglePlaylistSelect]);
+  }), [sortedPlaylists, playlistDeleteMode, selectedPlaylistIds, handleSelectPlaylist, handleDeletePlaylist, togglePlaylistSelect, handlePlaylistListSelect]);
 
   const gridItems = useMemo(() => {
-    return sortedTracks.map((track, i) => ({
+    return displayTracks.map((track, i) => ({
       id: track.file_id || `track-${i}`,
+      _trackId: track.id || track.file_id || `track-${i}`,
+      _flattenIndex: i,
       _cardTitle: track.display_name,
       _cardSubtitle: track.duration > 0 ? formatDuration(track.duration) : (track.artist || ''),
       _cardThumbnail: track.file_id ? `/thumbnails/${track.file_id}.jpg` : null,
       _cardHasImage: true,
       _typeLabel: 'AUDIO',
       _trackIndex: i,
+      _track: track,
+      _leaving: leavingTrackIds.has(track.id ?? track.file_id),
+      _entering: enteringTrackIds.has(track.id ?? track.file_id),
       _exists: !!(track.exists && track.file_id),
       _file_id: track.file_id,
       _is_favorite: track.is_favorite || 0,
     }));
-  }, [sortedTracks]);
+  }, [displayTracks, leavingTrackIds, enteringTrackIds]);
 
   const handleTrackGridSelect = useCallback((item) => {
     if (deleteMode) {
-      const realTrack = sortedTracks[item._trackIndex] || item;
+      const realTrack = item?._track || sortedTracks[item?._trackIndex] || item;
       if (realTrack?.id) toggleSelectForDelete(realTrack.id);
       return;
     }
-    const realTrack = sortedTracks[item._trackIndex] || item;
-    handlePlayTrack(realTrack, item._trackIndex);
+    const realTrack = item?._track || sortedTracks[item?._trackIndex] || item;
+    handlePlayTrack(realTrack, item?._trackIndex);
   }, [deleteMode, handlePlayTrack, sortedTracks, toggleSelectForDelete]);
 
   // Create modal
@@ -1165,15 +1304,15 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
               <PlaylistGrid
                 key={`grid-${displayMode}`}
                 playlists={sortedPlaylists}
-                onSelect={playlistDeleteMode ? (p) => togglePlaylistSelect(p.id) : handleSelectPlaylist}
+                onSelect={handlePlaylistGridSelect}
                 onDelete={handleDeletePlaylist}
                 hasMore={false}
                 fetchingMore={loading}
                 onLoadMore={handleRefresh}
                 sortBy={null}
                 sortOrder="asc"
-                groupByFolder={false}
                 selectedPlaylistIds={playlistDeleteMode ? selectedPlaylistIds : null}
+                selectMode={playlistDeleteMode}
               />
               </div>
             )}
@@ -1208,6 +1347,8 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
             filterType={trackFilterType}
             onOpenFilters={handleOpenTrackFilters}
             onToggleOrder={handleTrackOrderToggle}
+            searchQuery={trackSearchQuery}
+            onSearchChange={setTrackSearchQuery}
           />
           </div>
 
@@ -1229,7 +1370,7 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
                   animation: 'spin 1s linear infinite',
                 }} />
               </div>
-            ) : sortedTracks.length === 0 ? (
+            ) : displayTracks.length === 0 ? (
               <div style={{
                 display: 'flex',
                 flexDirection: 'column',
@@ -1249,7 +1390,7 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
                       key={`track-list-${displayMode}`}
                       height={height}
                       width={width}
-                      itemCount={sortedTracks.length}
+                      itemCount={displayTracks.length}
                       itemSize={listItemSize}
                       overscanCount={5}
                       itemData={listRowData}
@@ -1270,26 +1411,12 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
                       onSelect={handleTrackGridSelect}
                       selectedForDelete={selectedForDelete}
                       deletingTrackIds={deletingTrackIds}
+                      selectMode={deleteMode}
                     />
                   )}
                 </AutoSizer>
               </div>
             )}
-          </div>
-
-          {/* Footer */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '12px 16px',
-            borderTop: `1px solid ${COLORS.border.primary}`,
-            background: `${COLORS.bg.secondary}80`,
-            fontSize: '12px',
-            color: COLORS.text.secondary,
-          }}>
-            <span>{sortedTracks.filter(t => t.exists && t.file_id).length} / {sortedTracks.length} tracks available</span>
-            {selectedPlaylist?.total_size > 0 && <span>{formatSize(selectedPlaylist.total_size)}</span>}
           </div>
         </div>
       )}

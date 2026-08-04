@@ -1,5 +1,5 @@
 import React from 'react';
-import { List, Plus, Upload, RefreshCw, Grid, Check, Trash2, X, ArrowLeft } from 'lucide-react';
+import { List, Plus, Upload, RefreshCw, Grid, Check, Trash2, X, ArrowLeft, SlidersHorizontal } from 'lucide-react';
 
 function PlaylistListHeader({
   playlistCount = 0,
@@ -51,20 +51,16 @@ function PlaylistListHeader({
           <div className="flex items-center gap-1.5 flex-shrink-0 overflow-x-auto ml-2" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
             <input ref={fileInputRef} type="file" accept=".xspf" onChange={onImportFile} className="hidden" />
             {onOpenFilters && (
-              <button onClick={onOpenFilters} className={`h-8 px-2.5 rounded-lg text-[11px] font-medium border border-neutral-700/60 bg-neutral-800/80 text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100 transition-colors flex items-center gap-1 flex-shrink-0 ${sortBy ? 'border-sky-500/40 text-sky-400' : ''}`}>
-                Filters
+              <button onClick={onOpenFilters} className={`w-8 h-8 rounded-lg border border-neutral-700/60 bg-neutral-800/80 text-neutral-400 hover:bg-neutral-700 hover:text-neutral-200 transition-colors flex items-center justify-center flex-shrink-0 ${sortBy ? 'border-sky-500/40 text-sky-400' : ''}`} title="Filters">
+                <SlidersHorizontal size={15} />
               </button>
             )}
-            <button onClick={onToggleOrder} className={`w-8 h-8 rounded-lg border border-neutral-700/60 bg-neutral-800/80 text-neutral-400 hover:bg-neutral-700 hover:text-neutral-200 transition-colors flex items-center justify-center flex-shrink-0 ${!sortBy ? 'opacity-40 cursor-not-allowed' : ''}`} disabled={!sortBy} title="Toggle sort direction">
-              {sortOrder === 'asc' ? '↑' : '↓'}
-            </button>
             <button onClick={onToggleSelect} className="h-8 px-2.5 rounded-lg text-[11px] font-medium border border-neutral-700/60 bg-neutral-800/80 text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100 transition-colors flex items-center gap-1 flex-shrink-0">
               <Check size={12} />
               <span className="hidden sm:inline">Select</span>
             </button>
-            <button onClick={onCreate} className="h-8 px-2.5 rounded-lg text-[11px] font-semibold bg-sky-500 text-white hover:bg-sky-600 transition-colors flex items-center gap-1 flex-shrink-0">
-              <Plus size={12} />
-              <span className="hidden sm:inline">Add</span>
+            <button onClick={onCreate} className="w-8 h-8 rounded-lg bg-sky-500 text-white hover:bg-sky-600 transition-colors flex items-center justify-center flex-shrink-0" title="Add">
+              <Plus size={15} />
             </button>
             <button onClick={() => fileInputRef?.current?.click()} disabled={isImporting} className="h-8 px-2.5 rounded-lg text-[11px] font-medium border border-neutral-700/60 bg-neutral-800/80 text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100 transition-colors flex items-center gap-1 flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed">
               <Upload size={12} />
@@ -84,7 +80,7 @@ function PlaylistListHeader({
 
       {/* Selection Mode Header */}
       {selectionMode && (
-        <div className="flex items-center justify-between px-3 py-2 border-b border-neutral-800 bg-neutral-900 animate-[slideDown_0.15s_ease-out]">
+        <div className="flex items-center justify-between px-3 py-2.5 border-b border-neutral-800 bg-neutral-900 animate-[slideDown_0.15s_ease-out]">
           <div className="flex items-center gap-2.5">
             <button onClick={onSelectAll} className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${selectedCount === playlistCount ? 'bg-sky-500 border-sky-500' : 'border-neutral-500 bg-transparent'}`}>
               {selectedCount === playlistCount && <Check size={12} className="text-white" />}
@@ -128,6 +124,8 @@ function PlaylistDetailHeader({
   filterType = 'all',
   onOpenFilters,
   onToggleOrder,
+  searchQuery = '',
+  onSearchChange,
 }) {
   return (
     <div className="flex-shrink-0">
@@ -141,22 +139,24 @@ function PlaylistDetailHeader({
             </button>
             <div className="flex-1 min-w-0">
               <h2 className="text-sm font-semibold text-neutral-100 truncate">{playlistName}</h2>
-              <p className="text-[10px] text-neutral-500 leading-tight">
-                {availableCount} / {trackCount} tracks
-              </p>
             </div>
           </div>
 
           {/* Right: action buttons */}
           <div className="flex items-center gap-1.5 flex-shrink-0 overflow-x-auto ml-2" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+            {onSearchChange && (
+              <input
+                value={searchQuery}
+                onChange={(e) => onSearchChange(e.target.value)}
+                placeholder="Search..."
+                className="h-8 w-40 px-2.5 rounded-lg text-[11px] border border-neutral-700/60 bg-neutral-800/80 text-neutral-300 placeholder:text-neutral-500 focus:outline-none focus:border-sky-500/60 flex-shrink-0"
+              />
+            )}
             {onOpenFilters && (
-              <button onClick={onOpenFilters} className={`h-8 px-2.5 rounded-lg text-[11px] font-medium border border-neutral-700/60 bg-neutral-800/80 text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100 transition-colors flex items-center gap-1 flex-shrink-0 ${(sortBy || filterType !== 'all') ? 'border-sky-500/40 text-sky-400' : ''}`}>
-                Filters
+              <button onClick={onOpenFilters} className={`w-8 h-8 rounded-lg border border-neutral-700/60 bg-neutral-800/80 text-neutral-400 hover:bg-neutral-700 hover:text-neutral-200 transition-colors flex items-center justify-center flex-shrink-0 ${(sortBy || filterType !== 'all') ? 'border-sky-500/40 text-sky-400' : ''}`} title="Filters">
+                <SlidersHorizontal size={15} />
               </button>
             )}
-            <button onClick={onToggleOrder} className={`w-8 h-8 rounded-lg border border-neutral-700/60 bg-neutral-800/80 text-neutral-400 hover:bg-neutral-700 hover:text-neutral-200 transition-colors flex items-center justify-center flex-shrink-0 ${(!sortBy && filterType === 'all') ? 'opacity-40 cursor-not-allowed' : ''}`} disabled={!sortBy && filterType === 'all'} title="Toggle sort direction">
-              {sortOrder === 'asc' ? '↑' : '↓'}
-            </button>
             <button onClick={onEnterSelectMode} className="h-8 px-2.5 rounded-lg text-[11px] font-medium border border-neutral-700/60 bg-neutral-800/80 text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100 transition-colors flex items-center gap-1 flex-shrink-0">
               <Check size={12} />
               <span className="hidden sm:inline">Select</span>
@@ -166,9 +166,8 @@ function PlaylistDetailHeader({
                 {displayMode === 'grid' ? <List size={13} /> : <Grid size={13} />}
               </button>
             )}
-            <button onClick={onAdd} className="h-8 px-2.5 rounded-lg text-[11px] font-semibold bg-sky-500 text-white hover:bg-sky-600 transition-colors flex items-center gap-1 flex-shrink-0">
-              <Plus size={12} />
-              <span className="hidden sm:inline">Add</span>
+            <button onClick={onAdd} className="w-8 h-8 rounded-lg bg-sky-500 text-white hover:bg-sky-600 transition-colors flex items-center justify-center flex-shrink-0" title="Add">
+              <Plus size={15} />
             </button>
           </div>
         </div>
@@ -176,7 +175,7 @@ function PlaylistDetailHeader({
 
       {/* Selection Mode Header */}
       {selectionMode && (
-        <div className="flex items-center justify-between px-3 py-2 border-b border-neutral-800 bg-neutral-900 animate-[slideDown_0.15s_ease-out]">
+        <div className="flex items-center justify-between px-3 py-2.5 border-b border-neutral-800 bg-neutral-900 animate-[slideDown_0.15s_ease-out]">
           <div className="flex items-center gap-2.5">
             <button onClick={onSelectAll} className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${selectedCount === trackCount ? 'bg-sky-500 border-sky-500' : 'border-neutral-500 bg-transparent'}`}>
               {selectedCount === trackCount && <Check size={12} className="text-white" />}

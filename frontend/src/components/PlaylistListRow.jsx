@@ -27,16 +27,24 @@ const LIST_ROW_STYLE = `
     padding: 8px 16px;
     border-bottom: 1px solid ${COLORS.border.primary};
     cursor: pointer;
-    transition: background 0.15s ease;
+    transition: background 0.15s ease, opacity 0.18s ease;
   }
   .playlist-list-row:hover {
     background: ${COLORS.border.primary}40 !important;
   }
   .playlist-list-row.selected {
     background: ${COLORS.accent}15 !important;
+    box-shadow: inset 0 0 0 1.5px ${COLORS.accent} !important;
   }
   .playlist-list-row.not-exists {
     cursor: default;
+  }
+  .playlist-list-row.row-enter {
+    animation: playlistRowIn 0.25s ease;
+  }
+  @keyframes playlistRowIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
   }
   .playlist-list-row .trash-btn {
     opacity: 0;
@@ -99,7 +107,7 @@ const ThumbImg = memo(function ThumbImg({ fileId, colorClass, size = 48 }) {
 });
 
 const PlaylistListRow = memo(({ index, style, data }) => {
-  const { tracks, deleteMode, selectedForDelete, deletingTrackIds, onSelect, onRemove } = data;
+  const { tracks, deleteMode, selectedForDelete, deletingTrackIds, leavingTrackIds, shiftAbove, enteringTrackIds, itemSize, onSelect, onRemove } = data;
   const track = tracks[index];
   if (!track) return null;
 
@@ -107,14 +115,20 @@ const PlaylistListRow = memo(({ index, style, data }) => {
   const extLabel = ext.toUpperCase();
   const isSelected = selectedForDelete?.has(track.id);
   const isDeleting = deletingTrackIds?.has(track.id);
+  const trackId = track.id ?? track.file_id;
+  const isLeaving = leavingTrackIds?.has(trackId);
+  const shift = shiftAbove?.get(trackId) || 0;
+  const isEntering = enteringTrackIds?.has(trackId);
 
-  const rowClass = `playlist-list-row${isSelected ? ' selected' : ''}${!track.exists ? ' not-exists' : ''}`;
+  const rowClass = `playlist-list-row${isSelected ? ' selected' : ''}${!track.exists ? ' not-exists' : ''}${isEntering ? ' row-enter' : ''}`;
 
   return (
     <div
       style={{
         ...style,
         ...(isDeleting ? { opacity: 0.4, pointerEvents: 'none' } : {}),
+        ...(isLeaving ? { opacity: 0 } : {}),
+        ...(shift > 0 ? { transform: `translateY(${-shift * (itemSize || 64)}px)`, transition: 'transform 200ms ease' } : {}),
       }}
       className={rowClass}
       onClick={() => onSelect?.(track, index)}

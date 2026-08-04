@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Bell, Upload as UploadIcon, X, Trash2, Bug, Heart, Send, SlidersHorizontal } from 'lucide-react';
 import { fetchFolder, fetchFileById, clearResponseCache, toggleFavorite, fetchPlaylistPlay } from './utils/api';
+import { safeParseTrackFilter, safeParseTrackSearchQuery, applyTrackFilter, applyTrackSearch } from './utils/trackFilter';
 
 // Initial page size when opening a folder. The backend caps a folder at 5000
 // items by default, which makes opening a large folder ship a huge JSON payload
@@ -258,7 +259,7 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
              const ts = safeParseTrackSort();
              const data = await fetchPlaylistPlay(initialRoute.playlistId, { sortBy: ts.by, sortOrder: ts.order });
             if (data?.queue?.length) {
-              queueToUse = data.queue;
+              queueToUse = applyTrackSearch(applyTrackFilter(data.queue, safeParseTrackFilter()), safeParseTrackSearchQuery());
               metadataToUse = data.playlist;
             }
           }
@@ -1705,15 +1706,16 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
                  const ts = safeParseTrackSort();
                  const data = await fetchPlaylistPlay(route.playlistId, { sortBy: ts.by, sortOrder: ts.order });
                 if (data?.queue?.length) {
-                  setPlaylistQueue(data.queue);
+                  const q = applyTrackSearch(applyTrackFilter(data.queue, safeParseTrackFilter()), safeParseTrackSearchQuery());
+                  setPlaylistQueue(q);
                   setPlaylistMetadata(data.playlist);
                   const idx = route.trackFileId
-                    ? data.queue.findIndex(t => String(t.file_id || t.id) === String(route.trackFileId))
+                    ? q.findIndex(t => String(t.file_id || t.id) === String(route.trackFileId))
                     : -1;
                   const resolved = idx >= 0 ? idx : 0;
                   setCurrentTrackIndex(resolved);
                   const zs2 = usePlaybackStore.getState();
-                  zs2.setQueue(data.queue, resolved);
+                  zs2.setQueue(q, resolved);
                 }
               } else if (route.fileId) {
                 const file = await fetchFileById(route.fileId);
@@ -2248,7 +2250,6 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
           <div className="flex-1 flex overflow-hidden">
           <MusicPlayer
             file={state.selectedFile}
-            folderFiles={playerFiles}
             currentSortBy={state.currentSortBy}
             currentSortOrder={state.currentSortOrder}
             favoriteOnly={favoriteOnly}
@@ -2275,6 +2276,7 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
             sharedAudioRef={sharedAudioRef}
             sharedPrevFileIdRef={sharedPrevFileIdRef}
             audioReady={audioReady}
+            folderFiles={searchResults !== null && searchQuery.trim().length >= 2 ? searchFileList : playerFiles}
           />
           </div>
         )}
@@ -2282,7 +2284,7 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
           <div className="flex-1 flex overflow-hidden">
             <VaultAudioPlayer
               file={state.selectedFile}
-              folderFiles={playerFiles}
+              folderFiles={searchResults !== null && searchQuery.trim().length >= 2 ? searchFileList : playerFiles}
               currentSortBy={state.currentSortBy}
               currentSortOrder={state.currentSortOrder}
               favoriteOnly={favoriteOnly}
@@ -2386,21 +2388,18 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
 {/* Media Modal - only show when NOT in audio view (audio has its own player) */}
           {state.selectedFile && view !== 'audio' && view !== 'vaultAudio' && (
             <>
-               <MediaModal
-                file={state.selectedFile}
-                folderFiles={searchResults !== null && searchQuery.trim().length >= 2
-                  ? searchFileList
-                  : playerFiles
-                }
-                currentFilter={state.currentFilter}
-                currentSortBy={state.currentSortBy}
-                currentSortOrder={state.currentSortOrder}
-                favoriteOnly={favoriteOnly}
-                onClose={handleCloseModal}
-                onFileChange={handleFileChange}
-                onToggleFavorite={handleToggleFavorite}
-                sharedAudioRef={sharedAudioRef}
-                audioReady={audioReady}
+                <MediaModal
+                 file={state.selectedFile}
+                 folderFiles={searchResults !== null && searchQuery.trim().length >= 2 ? searchFileList : playerFiles}
+                 currentFilter={state.currentFilter}
+                 currentSortBy={state.currentSortBy}
+                 currentSortOrder={state.currentSortOrder}
+                 favoriteOnly={favoriteOnly}
+                 onClose={handleCloseModal}
+                 onFileChange={handleFileChange}
+                 onToggleFavorite={handleToggleFavorite}
+                 sharedAudioRef={sharedAudioRef}
+                 audioReady={audioReady}
               />
            </>
          )}

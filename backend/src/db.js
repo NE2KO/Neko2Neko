@@ -306,6 +306,44 @@ db.exec(`
   )
 `);
 
+// Audio bot: maps a Telegram user link-message to the download tasks it spawned
+db.exec(`
+  CREATE TABLE IF NOT EXISTS telegram_audio_bot_tasks (
+    user_msg_id INTEGER PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    queued_msg_id INTEGER,
+    task_ids TEXT NOT NULL,
+    total INTEGER NOT NULL DEFAULT 0,
+    finished INTEGER NOT NULL DEFAULT 0,
+    cleaned INTEGER NOT NULL DEFAULT 0
+  )
+`);
+
+// Audio bot: reverse map download task id -> originating Telegram user message id
+db.exec(`
+  CREATE TABLE IF NOT EXISTS telegram_audio_task_link (
+    task_id INTEGER PRIMARY KEY,
+    user_msg_id INTEGER NOT NULL
+  )
+`);
+
+// Audio bot: ephemeral Telegram messages that auto-delete after a TTL
+db.exec(`
+  CREATE TABLE IF NOT EXISTS telegram_audio_ephemeral (
+    msg_id INTEGER PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    delete_at INTEGER NOT NULL
+  )
+`);
+
+// Audio bot: processed Telegram message ids (restart-safe dedupe)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS telegram_audio_processed (
+    msg_id INTEGER PRIMARY KEY,
+    ts INTEGER NOT NULL
+  )
+`);
+
 // Deferred DB init — runs after server.listen() to avoid blocking startup
 export function deferredDbInit() {
   const t0 = Date.now();

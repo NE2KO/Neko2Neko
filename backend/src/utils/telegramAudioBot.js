@@ -4,13 +4,12 @@ import path from 'node:path';
 import db from '../db.js';
 import { extractUrls, createBulkTasks, onTaskFinished, getTaskList } from '../downloader/manager.js';
 
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const CHAT_ID = process.env.TELEGRAM_CHAT_ID || '-1002821903652';
+const BOT_TOKEN = process.env.TELEGRAM_AUDIO_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
+const CHAT_ID = process.env.TELEGRAM_AUDIO_CHAT_ID || process.env.TELEGRAM_CHAT_ID || '-1002821903652';
+const DEFAULT_ALLOWED = (process.env.TELEGRAM_AUDIO_ALLOWED_CHAT_IDS || process.env.TELEGRAM_ALLOWED_CHAT_IDS || '1399809913')
+  .split(',').map(s => s.trim()).filter(Boolean);
 const SUMMARY_TTL_MS = 5 * 60 * 1000;
 const DUPLICATE_TTL_MS = 8 * 1000;
-
-const DEFAULT_ALLOWED = (process.env.TELEGRAM_ALLOWED_CHAT_IDS || '1399809913')
-  .split(',').map(s => s.trim()).filter(Boolean);
 
 let bot = null;
 let messageHandler = null;
@@ -31,7 +30,7 @@ function createBot() {
           const newBot = createBot();
           if (newBot && messageHandler) {
             newBot.on('message', messageHandler);
-            console.log('[tg] message handler re-registered after restart');
+            console.log('[tg audio] message handler re-registered after restart');
           }
         }, 5000);
       }).catch(() => {});
@@ -39,7 +38,7 @@ function createBot() {
     const now = Date.now();
     if (now - lastPollingErrorLog > POLLING_ERROR_LOG_INTERVAL) {
       lastPollingErrorLog = now;
-      console.error('[tg polling]', msg);
+      console.error('[tg audio polling]', msg);
     }
   });
   return bot;
@@ -52,77 +51,58 @@ export function getBot() {
   return sendBot;
 }
 
-export async function sendFileToTelegram(fileId, captionPrefix = '') {
+export async function sendAudioToTelegram(fileId, captionPrefix = '') {
   const b = getBot();
-  if (!b) throw new Error('TELEGRAM_BOT_TOKEN not configured');
-
+  if (!b) throw new Error('TELEGRAM_AUDIO_BOT_TOKEN not configured');
   const file = getFileWithRelPath(fileId);
   if (!file) throw new Error('File not found');
-
-  const caption = captionPrefix || '';
-
-  await b.sendDocument(CHAT_ID, file.fullPath, { caption });
+  await b.sendAudio(CHAT_ID, file.fullPath, { caption: captionPrefix || '' });
 }
 
 // ── DB helpers ──
-function dbGetTaskLink(taskId) {
-  return db.prepare('SELECT user_msg_id FROM telegram_task_link WHERE task_id = ?').get(taskId);
-}
 function dbGetBotTask(userMsgId) {
-  return db.prepare('SELECT * FROM telegram_bot_tasks WHERE user_msg_id = ?').get(userMsgId);
+  return db.prepare('SELECT * FROM telegram_audio_bot_tasks WHERE user_msg_id = ?').get(userMsgId);
 }
 function dbSetCleaned(userMsgId) {
-  db.prepare('UPDATE telegram_bot_tasks SET cleaned = 1 WHERE user_msg_id = ?').run(userMsgId);
+  db.prepare('UPDATE telegram_audio_bot_tasks SET cleaned = 1 WHERE user_msg_id = ?').run(userMsgId);
 }
 function dbIncFinished(userMsgId) {
-  db.prepare('UPDATE telegram_bot_tasks SET finished = finished + 1 WHERE user_msg_id = ?').run(userMsgId);
+  db.prepare('UPDATE telegram_audio_bot_tasks SET finished = finished + 1 WHERE user_msg_id = ?').run(userMsgId);
 }
 function dbGetFinished(userMsgId) {
-  return db.prepare('SELECT finished, total FROM telegram_bot_tasks WHERE user_msg_id = ?').get(userMsgId);
+  return db.prepare('SELECT finished, total FROM telegram_audio_bot_tasks WHERE user_msg_id = ?').get(userMsgId);
 }
 function dbDeleteBotTask(userMsgId) {
-  db.prepare('DELETE FROM telegram_bot_tasks WHERE user_msg_id = ?').run(userMsgId);
-  db.prepare('DELETE FROM telegram_task_link WHERE user_msg_id = ?').run(userMsgId);
+  db.prepare('DELETE FROM telegram_audio_bot_tasks WHERE user_msg_id = ?').run(userMsgId);
+  db.prepare('DELETE FROM telegram_audio_task_link WHERE user_msg_id = ?').run(userMsgId);
 }
 function dbInsertLink(taskId, userMsgId) {
-  db.prepare('INSERT OR REPLACE INTO telegram_task_link (task_id, user_msg_id) VALUES (?, ?)').run(taskId, userMsgId);
+  db.prepare('INSERT OR REPLACE INTO telegram_audio_task_link (task_id, user_msg_id) VALUES (?, ?)').run(taskId, userMsgId);
 }
 function dbInsertBotTask(userMsgId, chatId, queuedMsgId, taskIds, total) {
-  db.prepare('INSERT OR REPLACE INTO telegram_bot_tasks (user_msg_id, chat_id, queued_msg_id, task_ids, total, finished, cleaned) VALUES (?, ?, ?, ?, ?, 0, 0)')
+  db.prepare('INSERT OR REPLACE INTO telegram_audio_bot_tasks (user_msg_id, chat_id, queued_msg_id, task_ids, total, finished, cleaned) VALUES (?, ?, ?, ?, ?, 0, 0)')
     .run(userMsgId, String(chatId), queuedMsgId || null, JSON.stringify(taskIds), total);
 }
 function dbIsProcessed(msgId) {
-  return !!db.prepare('SELECT msg_id FROM telegram_processed WHERE msg_id = ?').get(msgId);
+  return !!db.prepare('SELECT msg_id FROM telegram_audio_processed WHERE msg_id = ?').get(msgId);
 }
 function dbMarkProcessed(msgId) {
-  db.prepare('INSERT OR IGNORE INTO telegram_processed (msg_id, ts) VALUES (?, ?)').run(msgId, Date.now());
+  db.prepare('INSERT OR IGNORE INTO telegram_audio_processed (msg_id, ts) VALUES (?, ?)').run(msgId, Date.now());
 }
 function dbInsertEphemeral(msgId, chatId, deleteAt) {
-  db.prepare('INSERT OR REPLACE INTO telegram_ephemeral (msg_id, chat_id, delete_at) VALUES (?, ?, ?)').run(msgId, String(chatId), deleteAt);
+  db.prepare('INSERT OR REPLACE INTO telegram_audio_ephemeral (msg_id, chat_id, delete_at) VALUES (?, ?, ?)').run(msgId, String(chatId), deleteAt);
 }
 
 function isAuthorized(chatId) {
   const id = String(chatId);
   if (DEFAULT_ALLOWED.includes(id)) return true;
-  const row = db.prepare('SELECT chat_id FROM telegram_allowed_chats WHERE chat_id = ?').get(id);
-  return !!row;
-}
-
-function authorizeChat(chatId) {
-  db.prepare('INSERT OR IGNORE INTO telegram_allowed_chats (chat_id, created_at) VALUES (?, ?)')
-    .run(String(chatId), Date.now());
+  return false;
 }
 
 function isUrlDuplicate(url) {
   const activeStatuses = ['queued', 'downloading'];
   const allTasks = getTaskList();
   return allTasks.some(t => t.viaBot && activeStatuses.includes(t.status) && t.url === url);
-}
-
-async function tryDelete(chatId, msgId) {
-  if (!msgId) return;
-  try { await bot.deleteMessage(chatId, msgId); }
-  catch (e) { console.warn('[tg delete]', e.message); }
 }
 
 function buildSummary(task) {
@@ -141,33 +121,49 @@ function buildSummary(task) {
 }
 
 let finishedHookRegistered = false;
+const pendingAudioSends = new Map();
 
 function handleTaskFinished(task) {
   if (!task.viaBot) return;
-  const link = dbGetTaskLink(task.id);
-  if (!link) return;
-  const userMsgId = link.user_msg_id;
-  const entry = dbGetBotTask(userMsgId);
-  if (!entry) return;
+  const pending = pendingAudioSends.get(task.id);
+  if (!pending) return;
+  pendingAudioSends.delete(task.id);
 
-  if (!entry.cleaned) {
-    dbSetCleaned(userMsgId);
-    tryDelete(entry.chat_id, userMsgId);
-    tryDelete(entry.chat_id, entry.queued_msg_id);
+  const { chatId, userMsgId, queuedMsgId } = pending;
+
+  if (task.status === 'completed' && task.filePath && task.filename) {
+    sendAudioToTelegram(task.filePath, task.filename)
+      .then((audioMsg) => {
+        if (audioMsg && audioMsg.message_id) {
+          const deleteAt = Date.now() + SUMMARY_TTL_MS;
+          dbInsertEphemeral(audioMsg.message_id, chatId, deleteAt);
+        }
+        return sendSummary(chatId, userMsgId, queuedMsgId, task);
+      })
+      .catch(async (err) => {
+        console.error('[tg audio send]', err.message);
+        await sendSummary(chatId, userMsgId, queuedMsgId, task);
+      });
+  } else {
+    sendSummary(chatId, userMsgId, queuedMsgId, task).catch(() => {});
   }
+}
 
+async function sendSummary(chatId, userMsgId, queuedMsgId, task) {
   try {
-    bot.sendMessage(entry.chat_id, buildSummary(task)).then(sent => {
-      if (sent && sent.message_id) {
-        const deleteAt = Date.now() + SUMMARY_TTL_MS;
-        dbInsertEphemeral(sent.message_id, entry.chat_id, deleteAt);
-      }
-    }).catch(() => {});
+    const sent = await bot.sendMessage(chatId, buildSummary(task)).catch(() => null);
+    if (sent && sent.message_id) {
+      const deleteAt = Date.now() + SUMMARY_TTL_MS;
+      dbInsertEphemeral(sent.message_id, chatId, deleteAt);
+    }
   } catch {}
 
-  dbIncFinished(userMsgId);
-  const f = dbGetFinished(userMsgId);
-  if (f && f.finished >= f.total) dbDeleteBotTask(userMsgId);
+  if (userMsgId) {
+    try { await bot.deleteMessage(chatId, userMsgId).catch(() => {}); } catch {}
+  }
+  if (queuedMsgId) {
+    try { await bot.deleteMessage(chatId, queuedMsgId).catch(() => {}); } catch {}
+  }
 }
 
 async function onMessage(msg) {
@@ -175,12 +171,11 @@ async function onMessage(msg) {
   if (!chatId) return;
   const text = (msg.text || '').trim();
 
-  console.log(`[tg msg] chat=${chatId} type=${msg.chat.type} text="${text.substring(0, 80)}"`);
+  console.log(`[tg audio msg] chat=${chatId} type=${msg.chat.type} text="${text.substring(0, 80)}"`);
 
   if (text.startsWith('/start') || text.startsWith('/allow')) {
     if (msg.chat.type === 'private') {
-      authorizeChat(chatId);
-      const reply = await bot.sendMessage(chatId, '✅ Bot diotorisasi untuk chat ini.\nKirim link YouTube / Instagram / Twitter untuk auto-download.').catch(() => null);
+      const reply = await bot.sendMessage(chatId, '✅ Audio bot diotorisasi.\nKirim link YouTube, bot akan download audio + cover otomatis.').catch(() => null);
       if (reply && reply.message_id) {
         dbInsertEphemeral(reply.message_id, chatId, Date.now() + DUPLICATE_TTL_MS);
       }
@@ -189,32 +184,35 @@ async function onMessage(msg) {
   }
 
   if (msg.chat.type !== 'private') {
-    console.log(`[tg msg] skipped: not private chat`);
+    console.log(`[tg audio msg] skipped: not private chat`);
     return;
   }
   if (!isAuthorized(chatId)) {
-    console.log(`[tg msg] skipped: not authorized (chatId=${chatId})`);
+    console.log(`[tg audio msg] skipped: not authorized (chatId=${chatId})`);
     return;
   }
 
   const urls = extractUrls(text);
   if (urls.length === 0) {
-    const reply = await bot.sendMessage(chatId, 'Kirim link YouTube / Instagram / Twitter, bot akan download otomatis. Ketik /start untuk otorisasi.').catch(() => null);
+    const reply = await bot.sendMessage(chatId, 'Kirim link YouTube, bot akan download audio + cover otomatis.').catch(() => null);
     if (reply && reply.message_id) {
       dbInsertEphemeral(reply.message_id, chatId, Date.now() + DUPLICATE_TTL_MS);
     }
     return;
   }
 
-  if (dbIsProcessed(msg.message_id)) {
-    console.log(`[tg msg] skipped: already processed (msgId=${msg.message_id})`);
+  const ytUrls = urls.filter(u => /youtube\.com|youtu\.be/i.test(u));
+  if (ytUrls.length === 0) {
+    const reply = await bot.sendMessage(chatId, 'Hanya link YouTube yang didukung di bot ini.').catch(() => null);
+    if (reply && reply.message_id) {
+      dbInsertEphemeral(reply.message_id, chatId, Date.now() + DUPLICATE_TTL_MS);
+    }
     return;
   }
-  dbMarkProcessed(msg.message_id);
 
-  const activeUrls = urls.filter(u => isUrlDuplicate(u));
-  if (activeUrls.length > 0) {
-    const reply = await bot.sendMessage(chatId, `⏳ Link ini sedang didownload: ${activeUrls[0].substring(0, 60)}\nTunggu selesai atau cancel dulu.`).catch(() => null);
+  const duplicateUrls = ytUrls.filter(u => isUrlDuplicate(u));
+  if (duplicateUrls.length > 0) {
+    const reply = await bot.sendMessage(chatId, `⏳ Link ini sedang didownload: ${duplicateUrls[0].substring(0, 60)}\nTunggu selesai atau cancel dulu.`).catch(() => null);
     if (reply && reply.message_id) {
       dbInsertEphemeral(reply.message_id, chatId, Date.now() + DUPLICATE_TTL_MS);
     }
@@ -222,13 +220,25 @@ async function onMessage(msg) {
     return;
   }
 
+  if (dbIsProcessed(msg.message_id)) {
+    console.log(`[tg audio msg] skipped: already processed (msgId=${msg.message_id})`);
+    return;
+  }
+  dbMarkProcessed(msg.message_id);
+
   try {
-    const results = createBulkTasks(urls, { botMode: true });
+    const results = createBulkTasks(ytUrls, {
+      botMode: true,
+      category: 'youtube',
+      audioExtract: true,
+      audioBitrate: 'best',
+      embedCover: true,
+    });
     const ok = results.filter(r => !r.error && r.id != null);
     const failed = results.filter(r => r.error);
     const skipped = results.filter(r => r.skipped || r.cached);
 
-    console.log(`[tg msg] urls=${urls.length} ok=${ok.length} failed=${failed.length} skipped=${skipped.length}`);
+    console.log(`[tg audio msg] urls=${ytUrls.length} ok=${ok.length} failed=${failed.length} skipped=${skipped.length}`);
 
     if (ok.length === 0) {
       const errOrSkip = [...failed, ...skipped];
@@ -243,13 +253,17 @@ async function onMessage(msg) {
       return;
     }
 
-    const taskIds = ok.map(r => r.id);
-    const reply = `📥 ${ok.length} link diantrekan untuk download...`;
+    const reply = `🎵 ${ok.length} audio diantrekan untuk download...`;
     const sent = await bot.sendMessage(chatId, reply).catch(() => null);
     const queuedMsgId = sent?.message_id || null;
 
-    dbInsertBotTask(msg.message_id, chatId, queuedMsgId, taskIds, ok.length);
+    dbInsertBotTask(msg.message_id, chatId, queuedMsgId, ok.map(r => r.id), ok.length);
     for (const r of ok) dbInsertLink(r.id, msg.message_id);
+
+    if (queuedMsgId) {
+      const deleteAt = Date.now() + SUMMARY_TTL_MS;
+      dbInsertEphemeral(queuedMsgId, chatId, deleteAt);
+    }
 
     if (failed.length > 0) {
       const errReply = await bot.sendMessage(chatId, `⚠️ ${failed.length} link dilewati: ${failed[0].error}`).catch(() => null);
@@ -264,7 +278,7 @@ async function onMessage(msg) {
       }
     }
   } catch (err) {
-    console.error('[tg msg] error:', err);
+    console.error('[tg audio msg] error:', err);
     const reply = await bot.sendMessage(chatId, `❌ Gagal: ${err.message}`).catch(() => null);
     if (reply && reply.message_id) {
       dbInsertEphemeral(reply.message_id, chatId, Date.now() + DUPLICATE_TTL_MS);
@@ -279,23 +293,26 @@ function startEphemeralCleaner() {
   setInterval(() => {
     try {
       const now = Date.now();
-      const rows = db.prepare('SELECT msg_id, chat_id FROM telegram_ephemeral WHERE delete_at <= ?').all(now);
+      const rows = db.prepare('SELECT msg_id, chat_id FROM telegram_audio_ephemeral WHERE delete_at <= ?').all(now);
       for (const row of rows) {
-        tryDelete(row.chat_id, row.msg_id);
-        db.prepare('DELETE FROM telegram_ephemeral WHERE msg_id = ?').run(row.msg_id);
+        try { bot.deleteMessage(row.chat_id, row.msg_id).catch(() => {}); } catch {}
+        db.prepare('DELETE FROM telegram_audio_ephemeral WHERE msg_id = ?').run(row.msg_id);
       }
-      db.prepare('DELETE FROM telegram_processed WHERE ts < ?').run(now - 24 * 60 * 60 * 1000);
+      db.prepare('DELETE FROM telegram_audio_processed WHERE ts < ?').run(now - 24 * 60 * 60 * 1000);
     } catch {}
   }, 60 * 1000);
 }
 
-export function initTelegramInbound() {
-  if (!BOT_TOKEN) return;
+export function initTelegramAudioBot() {
+  if (!BOT_TOKEN) {
+    console.log('[tg audio] TELEGRAM_AUDIO_BOT_TOKEN not configured, skipping');
+    return;
+  }
   createBot();
   if (!bot) return;
   messageHandler = onMessage;
   bot.on('message', onMessage);
-  console.log('[tg] inbound initialized, polling active');
+  console.log('[tg audio] inbound initialized, polling active');
   if (!finishedHookRegistered) {
     finishedHookRegistered = true;
     onTaskFinished(handleTaskFinished);
