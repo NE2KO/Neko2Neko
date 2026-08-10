@@ -74,6 +74,8 @@ Media Vault is a self-hosted media server born from the need to access media fil
 - **Scrcpy Monitor**: Simple remote phone screen viewing (under development)
 - **Send Queue**: Monitors sent/failed/cancelled files to Telegram and WA; tick-based queue system is dedicated for WA status
 - **Git Integration**: Web-based Git operations without opening terminal
+- **WhatsApp**: WhatsApp Web pairing and bot controls, accessible from the sidebar
+- **AI Chat**: Conversational AI assistant for help, context-aware answers, and tasks
 
 **Technology Stack:** Node.js, Express, SQLite, React, FFmpeg, HLS streaming, waveform visualization.
 
@@ -91,7 +93,9 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | Scrcpy Monitor | Optional | Remote phone screen viewing via external scrcpy window (zero overhead) | node-pty shell execution |
 | Music Player | Optional | Dual modes: cover mode (audio only) and video mode (separate audio/video with precision sync); fixes Strawberry player navigation bug | waveform, synced LRC, hls.js, precision sync engine |
 | Send Queue | Optional | Monitors sent/failed/cancelled files to Telegram and WA; tick-based queue for WA status (1-6 posts per day in 24h format) | Tick-based precision, SSE, WA/Telegram APIs |
-| Git Integration | Optional | Full Git operations without terminal (status, branches, tags, stash, commit, push, pull, diff, file editor, tree browser) | Simple Git wrapper |
+| WhatsApp | Optional | WhatsApp Web pairing (QR), connection status, and bot/message controls | whatsapp-web.js, whatsapp-bot, /api/whatsapp |
+| AI Chat | Optional | Conversational AI assistant with provider-based models, context awareness, and a settings UI | ai.js, ai-providers.js, ai-context.js, AIChat.jsx, AISettings.jsx |
+| Git Integration | API-only | Full Git operations without terminal (status, branches, tags, stash, commit, push, pull, diff, file editor, tree browser); web UI menu under development | Simple Git wrapper |
 
 > **Note:** All menus are still actively worked on and under development. New menus may be added in the future.
 
@@ -203,8 +207,10 @@ homelab-media-server/
 |------|-------------|
 | `backend/src/server.js` | Entry point, Express, lifecycle |
 | `backend/src/db.js` | SQLite database, FTS, settings |
-| `backend/src/routes/` | 18 route modules |
+| `backend/src/routes/` | 22 route modules |
+| `backend/src/ai/` | AI chat engine (providers, context, chat) |
 | `backend/src/monitor/` | System metrics |
+| `backend/src/services/` | Background service modules |
 | `backend/src/utils/` | Helpers (watcher, downloader, upload) |
 | `backend/src/middleware/` | Route guards |
 
@@ -228,6 +234,10 @@ homelab-media-server/
 | `upload.js` | Multipart upload |
 | `videoCache.js` | Video cache management |
 | `whatsapp.js` | WhatsApp bridge |
+| `ai.js` | AI chat API (providers, context, chat) |
+| `ai-context.js` | AI context building |
+| `ai-providers.js` | AI provider configuration |
+| `git.js` | Git operations (status, diff, commit, push, pull, branches, stash, tree, file editor) |
 
 ### Frontend
 
@@ -235,7 +245,7 @@ homelab-media-server/
 |------|-------------|
 | `frontend/src/App.jsx` | Main application |
 | `frontend/src/main.jsx` | Vite entry |
-| `frontend/src/components/` | 40+ components |
+| `frontend/src/components/` | 70+ components |
 | `frontend/src/store/` | Zustand stores |
 | `frontend/src/hooks/` | Custom hooks |
 | `frontend/src/utils/` | Utility functions |
@@ -366,17 +376,17 @@ homelab-media-server/
 
 | Directory | Files | Lines of Code |
 |-----------|-------|---------------|
-| `backend/src/` | 82 | ~3,300 |
-| `frontend/src/` | 141 | ~18,000 |
+| `backend/src/` | ~110 | ~26,500 |
+| `frontend/src/` | ~198 | ~52,500 |
 | `whatsapp-bot/src/` | 6 | ~900 |
-| **Total** | **228** | **~22,000** |
+| **Total** | **~314** | **~80,000** |
 
 > Note: Lines of code approximate. Does not include `node_modules`, `cache/`, `logs/`, or `data/`.
 
 ## Future Ideas
 
-- **Authentication System**: Desain auth masih dipertimbangkan — mulai dari user login, multi-user, hingga recovery jika user kehilangan password.
-- **Kontrol Jarak Jauh via Stream Web (GSR-inspired)**: Direct frame copying dari GPU block encoder untuk zero-overhead screen capture.
+- **Authentication System**: The auth design is still under consideration — ranging from user login and multi-user support to account recovery in case a user loses their password.
+- **Web Stream-based Remote Control (GSR-inspired)**: Direct frame copying from the GPU block encoder for zero-overhead screen capture.
 
 ## Documentation
 
