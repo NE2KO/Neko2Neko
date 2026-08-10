@@ -1,7 +1,13 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Bell, Upload as UploadIcon, X, Trash2, Bug, Heart, Send, SlidersHorizontal } from 'lucide-react';
 import { fetchFolder, fetchFileById, clearResponseCache, toggleFavorite, fetchPlaylistPlay } from './utils/api';
+import { createMediaRepository } from './utils/mediaRepository';
 import { safeParseTrackFilter, safeParseTrackSearchQuery, applyTrackFilter, applyTrackSearch } from './utils/trackFilter';
+
+// Index-driven playback repository (singleton, holds ordered ID indexes + a
+// small LRU object cache OUTSIDE React). Grid/playback are decoupled: the modal
+// navigates through this, never through a full media array.
+const mediaRepo = createMediaRepository();
 
 // Initial page size when opening a folder. The backend caps a folder at 5000
 // items by default, which makes opening a large folder ship a huge JSON payload
@@ -9,6 +15,7 @@ import { safeParseTrackFilter, safeParseTrackSearchQuery, applyTrackFilter, appl
 // infinite-scroll pull the rest as the user scrolls. 500 keeps the initial
 // parse + React state small; the grid is virtualized so only visible rows render.
 const INITIAL_FOLDER_LIMIT = 500;
+const PAGE_SIZE = 500;
 import MediaGrid from './components/MediaGrid';
 import MediaModal from './components/MediaModal';
 import MonitoringView from './components/MonitoringView';
@@ -39,6 +46,8 @@ import { useUploadQueueLogic } from './hooks/useUploadQueueLogic'; // New hook i
 import usePlaylistStore from './store/playlistStore';
 import { applySink, getStoredDevice, isOutputRoutingSupported } from './utils/audioOutput';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { pageCacheSet, pageCacheGet, pageCacheEvict, pageCacheStats, pageCacheInit } from './utils/pageCache.js';
+import { getFrontendSnapshot, trackThumbnails, trackWorkerHeap } from './utils/resourceManager.js';
 
 // === STABLE MERGE FUNCTION (APPEND NEW, UPDATE CHANGED) ===
 function safeParseTrackSort() {
@@ -75,76 +84,7 @@ function stableMerge(oldList = [], newList = []) {
 }
 
 // === ROUTE STATE MACHINE ===
-function parseHash(hash) {
-  const cleaned = (hash || '').replace(/^#+/, '').trim();
-  
-  // Check session storage for saved view (persisted across reloads)
-  if (!cleaned || cleaned === '/') {
-    const savedView = sessionStorage.getItem('view') || 'media';
-    if (savedView === 'monitoring') {
-  const savedSub = sessionStorage.getItem('monitoringSubPath') || '';
-  return { type: 'monitoring', subPath: savedSub };
-  }
-    if (savedView === 'downloader') return { type: 'downloader' };
-    if (savedView === 'adb') return { type: 'adb' };
-    if (savedView === 'playlists') return { type: 'playlists' };
-    if (savedView === 'audio') return { type: 'audio' };
-    if (savedView === 'scrcpy') return { type: 'scrcpy' };
-    if (savedView === 'ai') return { type: 'ai' };
-    return { type: 'root', view: 'media' };
-  }
-
-  const parts = cleaned.split('/').filter(Boolean);
-  if (parts[0] === 'monitoring') return { type: 'monitoring', subPath: parts[1] || '' };
-  if (parts[0] === 'downloader') return { type: 'downloader' };
-  if (parts[0] === 'adb') return { type: 'adb' };
-  if (parts[0] === 'scrcpy') return { type: 'scrcpy' };
-  if (parts[0] === 'whatsapp') return { type: 'whatsapp' };
-  if (parts[0] === 'sendqueue') {
-    // #/sendqueue
-    // #/sendqueue/<group>/<status>            (group = wa|telegram)
-    // #/sendqueue/<group>/<status>/<qid>      (open item in player)
-    if (parts[1] && parts[2]) {
-      return { type: 'sendqueue', group: parts[1], status: parts[2], qid: parts[3] || null };
-    }
-    return { type: 'sendqueue' };
-  }
-  if (parts[0] === 'playlists') {
-    if (parts[1]) {
-      return { type: 'playlist-detail', playlistId: parts[1] };
-    }
-    return { type: 'playlists' };
-  }
-  if (parts[0] === 'ai-settings') return { type: 'ai-settings' };
-  if (parts[0] === 'ai') return { type: 'ai' };
-  if (parts[0] === 'music-sandbox') return { type: 'music-sandbox' };
-  if (parts[0] === 'audio') {
-    if (parts[1] === 'playlist' && parts[2] && parts[3] === 'track' && parts[4] !== undefined) {
-      return { type: 'audio', playlistId: parts[2], trackFileId: parts[4] };
-    }
-    if (parts[1] === 'single' && parts[2]) {
-      return { type: 'audio', fileId: parts[2] };
-    }
-    const tab = parts[1] || 'nowplaying';
-    return { type: 'audio', tab };
-  }
-  if (parts[0] === 'vault' && parts[1] === 'audio') {
-    return { type: 'vault-audio', fileId: parts[2] || null };
-  }
-  if (parts[0] === 'media' && parts[1] === 'v' && parts[2]) {
-    return { type: 'root-file', fileId: parts[2] };
-  }
-  if (parts[0] === 'media') return { type: 'root', view: 'media' };
-  if (parts[0] === 'f' && parts[1]) {
-    const folderId = parts[1];
-    if (parts[2] === 'v' && parts[3]) {
-      if (folderId === 'root') return { type: 'root-file', fileId: parts[3] };
-      return { type: 'file', folderId, fileId: parts[3] };
-    }
-    return { type: 'folder', folderId };
-  }
-  return { type: 'root', view: 'media' };
-}
+import { parseHash } from './utils/routeParser';
 
 function DebugToggle() {
   const { enabled, toggle } = useDebugStore();
@@ -192,14 +132,16 @@ function App() {
     loadedSortBy: null,
     loadedSortOrder: 'asc',
     updateNotification: '',
-    hasMore: false,
-    fetchingMore: false,
-    nextCursor: null,
-    stats: null,
+     hasMore: false,
+     fetchingMore: false,
+     nextCursor: null,
+     prevCursor: null,
+     pagesFetched: 0,
+     stats: null,
   });
 
 const [sidebarOpen, setSidebarOpen] = useState(false);
-   const initialRoute = parseHash(window.location.hash);
+   const initialRoute = parseHash(window.location.hash, sessionStorage);
     const initialView = initialRoute.type === 'playlists' ? 'playlists'
        : initialRoute.type === 'playlist-detail' ? 'playlists'
        : initialRoute.type === 'monitoring' ? 'monitoring'
@@ -267,34 +209,49 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
           if (queueToUse) setPlaylistQueue(queueToUse);
           if (metadataToUse) setPlaylistMetadata(metadataToUse);
 
-          // Always reconcile the track index from the URL's trackFileId.
-          // The URL is the source of truth for which track should be active.
-          let resolvedIdx = 0;
-          if (initialRoute.trackFileId && queueToUse) {
-            const idx = queueToUse.findIndex(t => String(t.file_id || t.id) === String(initialRoute.trackFileId));
-            if (idx >= 0) {
-              resolvedIdx = idx;
-            } else if (savedTrackIndex !== null) {
+            // Start from the persisted track index (it reflects the last track
+            // the user navigated to). A deep link / shareable URL that names an
+            // explicit track should still win when it points at a *different*
+            // track than the restored index — otherwise clicking a track URL
+            // (e.g. .../track/<fileId>) silently plays the wrong (first) track.
+            // On skip the URL is kept in sync with the current track, so when the
+            // URL and the restored index resolve to the same file there is no
+            // behavior change (this does not re-introduce the "reload jumps to a
+            // different song" bug).
+            let resolvedIdx = 0;
+            if (savedTrackIndex !== null) {
               resolvedIdx = parseInt(savedTrackIndex, 10) || 0;
             }
-          } else if (savedTrackIndex !== null) {
-            resolvedIdx = parseInt(savedTrackIndex, 10) || 0;
-          }
+            if (initialRoute.trackFileId && queueToUse) {
+              const urlIdx = queueToUse.findIndex(t => String(t.file_id || t.id) === String(initialRoute.trackFileId));
+              if (urlIdx >= 0) {
+                const restoredFid = queueToUse[resolvedIdx] ? String(queueToUse[resolvedIdx].file_id || queueToUse[resolvedIdx].id) : null;
+                if (savedTrackIndex === null || restoredFid !== String(initialRoute.trackFileId)) {
+                  resolvedIdx = urlIdx;
+                }
+              }
+            }
 
           setCurrentTrackIndex(resolvedIdx);
 
-          // CRITICAL: Also update zustand store directly. Music.jsx reads
-          // storeCurrentTrackIndex from zustand (not React props) to determine
-          // the active track. Without this, the zustand store still has index 0
-          // from its default, and Music.jsx's sync effect persists that stale 0
-          // to localStorage.playbackStore before zustand hydration completes.
-          const zs = usePlaybackStore.getState();
-          if (queueToUse) {
-            zs.setQueue(queueToUse, resolvedIdx);
-          } else {
-            zs.setCurrentTrackIndex(resolvedIdx);
-          }
-        } catch (e) {
+           // CRITICAL: Also update zustand store directly. Music.jsx reads
+           // storeCurrentTrackIndex from zustand (not React props) to determine
+           // the active track. Without this, the zustand store still has index 0
+           // from its default, and Music.jsx's sync effect persists that stale 0
+           // to localStorage.playbackStore before zustand hydration completes.
+           const zs = usePlaybackStore.getState();
+            if (queueToUse) {
+              zs.setQueue(queueToUse, resolvedIdx);
+            } else {
+              zs.setCurrentTrackIndex(resolvedIdx);
+            }
+            // Do NOT call zs.play() here. isPlaying is intentionally left false on
+            // reload so playback starts as a fresh initialization: the shared load
+            // effect in Music.jsx loads the current track, resets currentTime to 0,
+            // and attempts audio.play() (falling back to the user-interaction
+            // autoPlayPending retry on NotAllowedError). Resume-state restoration is
+            // intentionally not implemented yet.
+         } catch (e) {
           console.error('[App] Failed to restore playlist state:', e);
         }
       })();
@@ -445,6 +402,7 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
            return;
          }
           next();
+          syncAudioUrl();
          });
 
        return () => {
@@ -538,6 +496,7 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
   // Refs
   const currentRequestRef = useRef(0);
   const abortControllerRef = useRef(null);
+  const backgroundLoadControllerRef = useRef(null);
   const lastUrlWriteRef = useRef(null);
   const navigationInProgressRef = useRef(false);
   const scrollContainerRef = useRef(null);
@@ -585,6 +544,12 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
     const currentFav = currentStored !== undefined ? currentStored : fallback;
     const optimisticFav = currentFav === 1 ? 0 : 1;
     favStore.set(item.id, optimisticFav);
+    // A favorite change can alter the favorite-only index membership + ordering.
+    // Invalidate the repository's cached indexes so the affected folder's
+    // favoriteOnly/filter scopes refetch on the next modal open.
+    if (folderScope) {
+      mediaRepo.invalidate(folderScope);
+    }
     try {
       const result = await toggleFavorite(item.id);
       // Ensure store reflects the server result
@@ -619,6 +584,157 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
       console.error('[App] Failed to toggle favorite:', err);
     }
   }, [updateState]);
+
+  // Lock Spacebar to play/pause and L key for favorite in audio / vaultAudio / sendqueue views
+  useEffect(() => {
+    const handleKey = (e) => {
+      const target = e.target;
+      const isTyping = target && (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.isContentEditable
+      );
+      if (isTyping) return;
+
+      if (e.key === ' ' || e.code === 'Space') {
+        const view = viewRef.current;
+        if (view === 'audio' || view === 'vaultAudio') {
+          e.preventDefault();
+          e.stopPropagation();
+          const audio = sharedAudioRef.current;
+          if (!audio) return;
+          try {
+            if (audio.paused) {
+              audio.play().catch(() => {});
+              usePlaybackStore.getState().play();
+            } else {
+              audio.pause();
+              usePlaybackStore.getState().pause();
+            }
+          } catch {}
+        } else if (view === 'media') {
+          e.preventDefault();
+          e.stopPropagation();
+          window.dispatchEvent(new Event('global-media-toggle-play'));
+        } else if (view === 'sendqueue') {
+          e.preventDefault();
+          e.stopPropagation();
+          window.dispatchEvent(new Event('global-media-toggle-play'));
+        }
+        return;
+      }
+
+      if (e.key === 'l' || e.key === 'L') {
+        const view = viewRef.current;
+        const pStore = usePlaybackStore.getState();
+        const track = pStore.queue?.[pStore.currentTrackIndex];
+        const item = track || state.selectedFile;
+        if (view === 'audio' || view === 'vaultAudio' || view === 'media') {
+          e.preventDefault();
+          e.stopPropagation();
+          if (item?.id) handleToggleFavorite(item);
+        }
+        return;
+      }
+
+      if (e.key === 'm' || e.key === 'M') {
+        const view = viewRef.current;
+        if (e.repeat) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (view === 'audio') {
+          window.dispatchEvent(new Event('music-skip-next'));
+        } else if (view === 'vaultAudio') {
+          usePlaybackStore.getState().next();
+          syncAudioUrl();
+        } else if (view === 'media' || view === 'sendqueue') {
+          window.dispatchEvent(new Event('global-media-next'));
+        }
+        return;
+      }
+
+      if (e.key === 'n' || e.key === 'N') {
+        const view = viewRef.current;
+        if (e.repeat) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (view === 'audio') {
+          window.dispatchEvent(new Event('music-skip-prev'));
+        } else if (view === 'vaultAudio') {
+          usePlaybackStore.getState().previous();
+          syncAudioUrl();
+        } else if (view === 'media' || view === 'sendqueue') {
+          window.dispatchEvent(new Event('global-media-previous'));
+        }
+        return;
+      }
+
+      if (e.key === 'b' || e.key === 'B') {
+        const view = viewRef.current;
+        e.preventDefault();
+        e.stopPropagation();
+        const pStore = usePlaybackStore.getState();
+        if (view === 'audio' || view === 'vaultAudio' || view === 'media') {
+          pStore.setShuffle(!pStore.shuffle);
+        } else if (view === 'sendqueue') {
+          window.dispatchEvent(new Event('global-media-toggle-shuffle'));
+        }
+        return;
+      }
+
+      if (e.key === 'j' || e.key === 'J') {
+        const view = viewRef.current;
+        e.preventDefault();
+        e.stopPropagation();
+        if (view === 'audio' || view === 'vaultAudio' || view === 'media') {
+          const pStore = usePlaybackStore.getState();
+          const modes = ['off', 'all', 'one'];
+          const idx = modes.indexOf(pStore.loopMode);
+          const next = modes[(idx + 1) % modes.length];
+          pStore.setLoopMode(next);
+        } else if (view === 'sendqueue') {
+          window.dispatchEvent(new Event('global-media-toggle-loop'));
+        }
+        return;
+      }
+
+      if (e.key === 'g' || e.key === 'G') {
+        const view = viewRef.current;
+        e.preventDefault();
+        e.stopPropagation();
+        if (view === 'media' || view === 'sendqueue') {
+          window.dispatchEvent(new Event('global-media-skip-minus5'));
+        } else if ((view === 'audio' || view === 'vaultAudio') && sharedAudioRef.current) {
+          sharedAudioRef.current.currentTime = Math.max(0, sharedAudioRef.current.currentTime - 5);
+        }
+        return;
+      }
+
+      if (e.key === 'h' || e.key === 'H') {
+        const view = viewRef.current;
+        e.preventDefault();
+        e.stopPropagation();
+        if (view === 'media' || view === 'sendqueue') {
+          window.dispatchEvent(new Event('global-media-skip-plus5'));
+        } else if ((view === 'audio' || view === 'vaultAudio') && sharedAudioRef.current) {
+          sharedAudioRef.current.currentTime = Math.min(sharedAudioRef.current.duration || 0, sharedAudioRef.current.currentTime + 5);
+        }
+        return;
+      }
+
+      if (e.key === 'k' || e.key === 'K') {
+        const view = viewRef.current;
+        e.preventDefault();
+        e.stopPropagation();
+        if (view === 'media') {
+          window.dispatchEvent(new Event('global-media-send-status'));
+        }
+        return;
+      }
+    };
+    document.addEventListener('keydown', handleKey, { capture: true });
+    return () => document.removeEventListener('keydown', handleKey, { capture: true });
+  }, [handleToggleFavorite, state.selectedFile]);
 
   // === SCROLL POSITION MANAGEMENT ===
   const saveScrollPosition = useCallback((path, itemCount) => {
@@ -851,6 +967,8 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
       folders: data.folders || prev.folders,
       hasMore: data.has_more || false,
       nextCursor: data.next_cursor || null,
+      prevCursor: data.prev_cursor || null,
+      pagesFetched: 0,
       loadedSortBy: sortBy,
       loadedSortOrder: newOrder,
     }));
@@ -880,6 +998,8 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
           items: data.items || [],
           hasMore: data.has_more || false,
           nextCursor: data.next_cursor || null,
+          prevCursor: data.prev_cursor || null,
+          pagesFetched: 0,
           loadedSortBy: state.currentSortBy,
           loadedSortOrder: newOrder,
         }));
@@ -994,6 +1114,7 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
         error: null,
         hasMore: data.has_more || false,
         nextCursor: data.next_cursor || null,
+        prevCursor: data.prev_cursor || null,
       }));
 
       return data;
@@ -1015,18 +1136,111 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
   const stateRef = useRef(state);
   stateRef.current = state;
 
-  const fetchNextPage = useCallback(async () => {
+  const pageKeyRef = useRef('');
+  const evictedPageRef = useRef(null);
+
+  const buildPageKey = useCallback((folderId, sortBy, sortOrder, pageIndex) => {
+    return `${folderId || 'root'}:${sortBy || ''}:${sortOrder || 'asc'}:${pageIndex}`;
+  }, []);
+
+  const fetchFolderPage = useCallback(async (folderPath, cursor, limit, folderId, sortBy, sortOrder) => {
+    return fetchFolder(folderPath, cursor, limit, folderId, sortBy, sortOrder);
+  }, []);
+
+  pageCacheInit(async (pageKey) => {
+    const [folderId, sortBy, sortOrder, pageIndex] = pageKey.split(':');
+    const pageIdx = parseInt(pageIndex, 10);
+    if (isNaN(pageIdx) || pageIdx < 0) return [];
+
+    const s = stateRef.current;
+    const cursor = pageIdx === 0 ? null : `page_${pageIdx}`;
+    const data = await fetchFolderPage(
+      s.currentPath,
+      cursor,
+      PAGE_SIZE,
+      s.currentFolderId || (folderId === 'root' ? null : parseInt(folderId)),
+      sortBy || s.currentSortBy,
+      sortOrder || s.currentSortOrder
+    );
+    return data?.items || [];
+  });
+
+  const ensurePage = useCallback(async (pageKey) => {
+    if (!pageKey) return [];
+    const result = await pageCacheGet(pageKey);
+      if (result.reloaded && result.items.length > 0) {
+        setState(prev => {
+          const existingIds = new Set(prev.items.map(i => i.id));
+          const newItems = result.items.filter(i => !existingIds.has(i.id));
+          if (newItems.length === 0) return prev;
+          return { ...prev, items: [...newItems, ...prev.items] };
+        });
+      }
+    return result.items;
+  }, []);
+
+  const handleNearTop = useCallback(async () => {
+    const s = stateRef.current;
+    const pageIndex = 0;
+    const pageKey = buildPageKey(s.currentFolderId, s.currentSortBy, s.currentSortOrder, pageIndex);
+    await ensurePage(pageKey);
+  }, [buildPageKey, ensurePage]);
+
+  // === BACKGROUND FULL-FOLDER LOAD (AbortController + incremental merge) ===
+
+  const loadAllFolderItems = useCallback(async (folderId, path, sortBy, sortOrder) => {
+    if (folderId == null && path == null) return;
+
+    if (backgroundLoadControllerRef.current) {
+      backgroundLoadControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    backgroundLoadControllerRef.current = controller;
+    backgroundLoadTargetRef.current = { folderId, path };
+
+    let cursor = null;
+    let pageIndex = 0;
+
+    try {
+      while (true) {
+        if (controller.signal.aborted) return;
+        const data = await fetchFolder(path, cursor, PAGE_SIZE, folderId == null ? null : folderId, sortBy, sortOrder);
+        if (!data || !Array.isArray(data.items) || data.items.length === 0) break;
+
+        const newItems = data.items;
+        updateState(prev => {
+          const existingIds = new Set(prev.items.map(i => i.id));
+          const trulyNew = newItems.filter(i => !existingIds.has(i.id));
+          if (trulyNew.length === 0) return prev;
+          return { ...prev, items: [...prev.items, ...trulyNew] };
+        });
+
+        cursor = data.next_cursor;
+        pageIndex++;
+        if (!data.has_more || !cursor) break;
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        console.warn('[loadAllFolderItems] background load stopped:', err.message);
+      }
+    } finally {
+      backgroundLoadControllerRef.current = null;
+      backgroundLoadTargetRef.current = { folderId: null, path: null };
+    }
+  }, [updateState]);
+
+  const fetchNextPage = useCallback(async (onDone) => {
     if (fetchNextPageGuardRef.current) return;
     if (navigationInProgressRef.current) return;
     if (!stateRef.current.hasMore || !stateRef.current.nextCursor) return;
-    
+
     fetchNextPageGuardRef.current = true;
     setState(prev => ({ ...prev, fetchingMore: true }));
-    
+
     try {
       const s = stateRef.current;
       const folderData = await fetchFolder(s.currentPath, s.nextCursor, null, s.currentFolderId, s.currentSortBy, s.currentSortOrder);
-      
+
       if (!folderData || !Array.isArray(folderData.items)) {
         console.warn('Invalid API response for next page:', folderData);
         setState(prev => ({ ...prev, fetchingMore: false }));
@@ -1034,47 +1248,96 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
         return;
       }
 
+      const merged = [...s.items, ...folderData.items];
+      const pageIndex = (s.pagesFetched || 0) + 1;
+      const pageKey = buildPageKey(s.currentFolderId, s.currentSortBy, s.currentSortOrder, pageIndex);
+      pageCacheSet(pageKey, folderData.items);
+
       setState(prev => ({
         ...prev,
-        items: [...prev.items, ...folderData.items],
+        items: merged,
         hasMore: folderData.has_more || false,
         nextCursor: folderData.next_cursor || null,
+        prevCursor: folderData.prev_cursor || null,
+        pagesFetched: pageIndex,
         fetchingMore: false,
       }));
       fetchNextPageGuardRef.current = false;
+      if (onDone) onDone(folderData.items[0]);
     } catch (err) {
       console.error('[fetchNextPage] Error:', err);
       setState(prev => ({ ...prev, fetchingMore: false }));
       fetchNextPageGuardRef.current = false;
     }
-  }, []);
+  }, [buildPageKey]);
 
-  // === SILENT REFRESH (fetch data in place, no loading state) ===
-  // Only fetches first page (limit 500) to avoid heavy re-fetch on upload
-  const silentRefreshCurrentFolder = useCallback(async () => {
-    if (navigationInProgressRef.current) return;
-    clearResponseCache();
-    const guard = ++refreshGuardRef.current;
+  const fetchPrevPageGuardRef = useRef(false);
+
+  const fetchPrevPage = useCallback(async (onDone) => {
+    if (fetchPrevPageGuardRef.current) return false;
+    if (navigationInProgressRef.current) return false;
+    const s = stateRef.current;
+    if (!s.prevCursor) return false;
+
+    fetchPrevPageGuardRef.current = true;
+    setState(prev => ({ ...prev, fetchingMore: true }));
+
     try {
-      const data = await fetchFolder(
-        state.currentPath,
-        null, null,
-        state.currentFolderId,
-        state.loadedSortBy, state.loadedSortOrder
-      );
-      if (guard !== refreshGuardRef.current) return;
-      if (!data || !Array.isArray(data.items)) return;
-      const loadedKey = `${state.currentFolderId || 'root'}:${state.currentPath || ''}:${state.loadedSortBy || ''}:${state.loadedSortOrder}`;
-      const shouldPreservePages = loadedPageKeyRef.current === loadedKey;
+      const folderData = await fetchFolder(s.currentPath, null, null, s.currentFolderId, s.currentSortBy, s.currentSortOrder, s.prevCursor);
+
+      if (!folderData || !Array.isArray(folderData.items)) {
+        console.warn('Invalid API response for prev page:', folderData);
+        setState(prev => ({ ...prev, fetchingMore: false }));
+        fetchPrevPageGuardRef.current = false;
+        return false;
+      }
+
+      const merged = [...folderData.items, ...s.items];
+      const pageIndex = Math.max(0, (s.pagesFetched || 0) - 1);
+      const pageKey = buildPageKey(s.currentFolderId, s.currentSortBy, s.currentSortOrder, pageIndex);
+      pageCacheSet(pageKey, folderData.items);
+
       setState(prev => ({
         ...prev,
-        folders: data.folders || prev.folders,
-        items: shouldPreservePages ? stableMerge(prev.items, data.items) : (data.items || []),
-        hasMore: data.has_more || false,
-        nextCursor: data.next_cursor || null,
+        items: merged,
+        hasMore: folderData.has_more || false,
+        nextCursor: folderData.next_cursor || null,
+        prevCursor: folderData.prev_cursor || null,
+        pagesFetched: pageIndex,
+        fetchingMore: false,
       }));
-    } catch {}
-  }, [state.currentPath, state.currentFolderId, state.loadedSortBy, state.loadedSortOrder, stableMerge]);
+      fetchPrevPageGuardRef.current = false;
+      if (onDone) onDone(folderData.items[0]);
+      return true;
+    } catch (err) {
+      console.error('[fetchPrevPage] Error:', err);
+      setState(prev => ({ ...prev, fetchingMore: false }));
+      fetchPrevPageGuardRef.current = false;
+      return false;
+    }
+  }, [buildPageKey]);
+
+  // === FOLDER-CHANGE GUARD RESET ===
+  const prevFolderIdRef = useRef(state.currentFolderId);
+  const prevPathRef = useRef(state.currentPath);
+  const backgroundLoadTargetRef = useRef({ folderId: null, path: null });
+  useEffect(() => {
+    if (prevFolderIdRef.current !== state.currentFolderId || prevPathRef.current !== state.currentPath) {
+      fetchNextPageGuardRef.current = false;
+      fetchPrevPageGuardRef.current = false;
+      navigationInProgressRef.current = false;
+      const bgTarget = backgroundLoadTargetRef.current;
+      const currentFolderId = state.currentFolderId;
+      const currentPath = state.currentPath;
+      const isSameFolder = bgTarget.folderId === currentFolderId && bgTarget.path === currentPath;
+      if (backgroundLoadControllerRef.current && !isSameFolder) {
+        backgroundLoadControllerRef.current.abort();
+        backgroundLoadControllerRef.current = null;
+      }
+      prevFolderIdRef.current = state.currentFolderId;
+      prevPathRef.current = state.currentPath;
+    }
+  }, [state.currentFolderId, state.currentPath]);
 
   // === NAVIGATE TO FOLDER (single consolidated API call) ===
     const navigateToFolder = useCallback(async (folderId, fileId = null, source = 'internal', preloadedPath = null) => {
@@ -1133,23 +1396,25 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
            }
            const mergedAllFolders = Array.from(folderMap.values());
   
-           return {
-             ...prev,
-             folders: newFolders,
-             allFolders: mergedAllFolders,
-             items: folderData.items || [],
-             currentPath: folderInfo.path || '',
-             currentFolderId: folderId,
-              currentFilter: storedSort,
-              currentSortBy: storedMetaSort.sortBy,
-              currentSortOrder: storedMetaSort.sortOrder,
-              loadedSortBy: storedMetaSort.sortBy,
-              loadedSortOrder: storedMetaSort.sortOrder,
-              loading: false,
-              hasMore: folderData.has_more || false,
-              nextCursor: folderData.next_cursor || null,
+            return {
+              ...prev,
+              folders: newFolders,
+              allFolders: mergedAllFolders,
+              items: folderData.items || [],
+              currentPath: folderInfo.path || '',
+              currentFolderId: folderId,
+               currentFilter: storedSort,
+               currentSortBy: storedMetaSort.sortBy,
+               currentSortOrder: storedMetaSort.sortOrder,
+               loadedSortBy: storedMetaSort.sortBy,
+               loadedSortOrder: storedMetaSort.sortOrder,
+               loading: false,
+               hasMore: folderData.has_more || false,
+               nextCursor: folderData.next_cursor || null,
+               prevCursor: folderData.prev_cursor || null,
+               pagesFetched: 0,
                fetchingMore: false,
-           };
+            };
          });
           // Optional background preload of missing ancestor folders so breadcrumb
           // ancestry is already clickable before the user actually clicks it.
@@ -1189,7 +1454,11 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
               }).catch(() => {});
             }
           }
-          loadedPageKeyRef.current = `${folderId}:${folderInfo.path || ''}:${storedMetaSort.sortBy || ''}:${storedMetaSort.sortOrder || 'asc'}`;
+loadedPageKeyRef.current = `${folderId}:${folderInfo.path || ''}:${storedMetaSort.sortBy || ''}:${storedMetaSort.sortOrder || 'asc'}`;
+
+        // Playback list no longer depends on the full folder being loaded into
+        // React state: the MediaRepository serves its own ordered ID index for
+        // the modal/carousel. Only the grid's scrolled pages live in state.items.
 
         // Restore scroll position after folder load
        restoreScrollPosition(folderInfo.path || '', folderData.items?.length || 0);
@@ -1248,10 +1517,12 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
           loading: false,
           hasMore: folderData.has_more || false,
           nextCursor: folderData.next_cursor || null,
+          prevCursor: folderData.prev_cursor || null,
+          pagesFetched: 0,
           fetchingMore: false,
           selectedFile: null,
         }));
-        loadedPageKeyRef.current = `root::${savedMetaSort.sortBy || ''}:${savedMetaSort.sortOrder || 'asc'}`;
+         loadedPageKeyRef.current = `root::${savedMetaSort.sortBy || ''}:${savedMetaSort.sortOrder || 'asc'}`;
       clearUrl();
 
       restoreScrollPosition('', folderData.items?.length || 0);
@@ -1266,8 +1537,6 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
   // Debounced to avoid multiple rapid refreshes.
   const refreshTimeoutRef = useRef(null);
   const lastRefreshRef = useRef(0);
-  const silentRefreshRef = useRef(silentRefreshCurrentFolder);
-  silentRefreshRef.current = silentRefreshCurrentFolder;
   useEffect(() => {
     const handler = () => {
       if (refreshTimeoutRef.current) {
@@ -1277,16 +1546,16 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
         const now = Date.now();
         if (now - lastRefreshRef.current < 2000) return;
         lastRefreshRef.current = now;
-        silentRefreshRef.current();
       }, 500);
     };
     window.addEventListener('media-upload-complete', handler);
     return () => {
+      clearTimeout(refreshTimeoutRef.current);
       window.removeEventListener('media-upload-complete', handler);
     };
   }, []);
 
-   // === HANDLE SELECT ===
+  // === HANDLE SELECT ===
    const handleSelect = useCallback((item) => {
      if (!item) return;
       if (item.type === 'folder') {
@@ -1557,7 +1826,9 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
     let result = state.items;
 
     if (state.currentFilter !== 'all') {
-      result = result.filter(f => f.type === state.currentFilter);
+      if (state.currentFilter !== 'folder' && state.currentFilter !== 'love') {
+        result = result.filter(f => f.type === state.currentFilter);
+      }
     }
 
     // Filter favorites only
@@ -1596,9 +1867,11 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
      const files = searchResults?.files;
      if (!files || files.length === 0) return files || [];
      let result = [...files];
-     if (state.currentFilter !== 'all') {
-       result = result.filter(f => f.type === state.currentFilter);
-     }
+    if (state.currentFilter !== 'all') {
+      if (state.currentFilter !== 'folder' && state.currentFilter !== 'love') {
+        result = result.filter(f => f.type === state.currentFilter);
+      }
+    }
      // Love filter type — show only loved items
      if (state.currentFilter === 'love') {
        result = result.filter(f => f.is_favorite === 1);
@@ -1642,6 +1915,24 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
     return processedItems.filter(f => f.type === state.currentFilter);
   }, [processedItems, state.currentFilter]);
 
+  // Scope descriptor for the index-driven MediaRepository. Maps the current
+  // vault filter/sort/favorites into server-side index filters. When searching,
+  // playback falls back to the (search-capped) array path.
+  const isSearching = searchResults !== null && searchQuery.trim().length >= 2;
+  const folderScope = useMemo(() => {
+    if (isSearching || state.currentFolderId == null) return null;
+    const type = (state.currentFilter === 'video' || state.currentFilter === 'audio' || state.currentFilter === 'image')
+      ? state.currentFilter
+      : null;
+    return {
+      folderId: state.currentFolderId,
+      type,
+      favoriteOnly: favoriteOnly || state.currentFilter === 'love',
+      sortBy: state.currentSortBy,
+      sortOrder: state.currentSortOrder,
+    };
+  }, [isSearching, state.currentFolderId, state.currentFilter, state.currentSortBy, state.currentSortOrder, favoriteOnly]);
+
 
 
   /* DEBUG console.log removed */
@@ -1659,7 +1950,7 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
      const MAX_RETRIES = 60;
 
      const attemptLoad = (retriesLeft) => {
-       const route = parseHash(window.location.hash);
+       const route = parseHash(window.location.hash, sessionStorage);
        if (route.type === 'monitoring') {
          const sub = route.subPath || '';
          if (sub) sessionStorage.setItem('monitoringSubPath', sub);
@@ -1769,7 +2060,7 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
   // === HANDLE BROWSER BACK/FORWARD ===
   useEffect(() => {
     const handlePopState = (event) => {
-      const route = parseHash(window.location.hash);
+      const route = parseHash(window.location.hash, sessionStorage);
       if (route.type === 'monitoring') {
   const sub = route.subPath || '';
   if (sub) {
@@ -2315,7 +2606,7 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
       ) : view === 'whatsapp' ? (
           <WhatsAppView onMenuOpen={() => setSidebarOpen(true)} />
        ) : view === 'sendqueue' ? (
-           <SendQueueView onMenuOpen={() => setSidebarOpen(true)} />
+            <SendQueueView onMenuOpen={() => setSidebarOpen(true)} onToggleFavorite={handleToggleFavorite} />
        ) : view === 'scrcpy' ? (
           <ScrcpyView onMenuOpen={() => setSidebarOpen(true)} />
       ) : (
@@ -2359,20 +2650,21 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
                        <div className="h-full bg-sky-500 animate-loading-bar" />
                      </div>
                    )}
-                    <MediaGrid
-                    ref={gridApiRef}
-                    key={`${isSearching ? 'search' : state.currentFilter}`}
-                    folders={displayFolders}
-                    files={displayItems}
-                    onSelect={handleSelect}
-                    onToggleFavorite={handleToggleFavorite}
-                   sortBy={state.currentSortBy}
-                   sortOrder={state.currentSortOrder}
-                    groupByFolder={isSearching}
-                   hasMore={state.hasMore}
-                   fetchingMore={state.fetchingMore}
+                     <MediaGrid
+                     ref={gridApiRef}
+                     key={`${isSearching ? 'search' : state.currentFilter}`}
+                     folders={displayFolders}
+                     files={displayItems}
+                     onSelect={handleSelect}
+                     onToggleFavorite={handleToggleFavorite}
+                    sortBy={state.currentSortBy}
+                    sortOrder={state.currentSortOrder}
+                     groupByFolder={isSearching}
+                    hasMore={state.hasMore}
+                    fetchingMore={state.fetchingMore}
                     onLoadMore={fetchNextPage}
-                 />
+                    onNearTop={handleNearTop}
+                  />
                    {searchCapped && (
                      <div className="text-center text-xs text-neutral-500 py-3">
                        Menampilkan {Math.min(SEARCH_RENDER_LIMIT, sortedSearchItems.length)} dari {sortedSearchItems.length} hasil — persempit kata kunci untuk melihat lainnya
@@ -2389,18 +2681,22 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
           {state.selectedFile && view !== 'audio' && view !== 'vaultAudio' && (
             <>
                 <MediaModal
-                 file={state.selectedFile}
-                 folderFiles={searchResults !== null && searchQuery.trim().length >= 2 ? searchFileList : playerFiles}
-                 currentFilter={state.currentFilter}
-                 currentSortBy={state.currentSortBy}
-                 currentSortOrder={state.currentSortOrder}
-                 favoriteOnly={favoriteOnly}
-                 onClose={handleCloseModal}
-                 onFileChange={handleFileChange}
-                 onToggleFavorite={handleToggleFavorite}
-                 sharedAudioRef={sharedAudioRef}
-                 audioReady={audioReady}
-              />
+                  file={state.selectedFile}
+                  folderFiles={searchResults !== null && searchQuery.trim().length >= 2 ? searchFileList : playerFiles}
+                  currentFilter={state.currentFilter}
+                  currentSortBy={state.currentSortBy}
+                  currentSortOrder={state.currentSortOrder}
+                  favoriteOnly={favoriteOnly}
+                  onClose={handleCloseModal}
+                  onFileChange={handleFileChange}
+                  onToggleFavorite={handleToggleFavorite}
+                  sharedAudioRef={sharedAudioRef}
+                  audioReady={audioReady}
+                  onPreviousEnd={fetchPrevPage}
+                  onNextEnd={fetchNextPage}
+                  mediaRepo={isSearching ? null : mediaRepo}
+                  folderScope={isSearching ? null : folderScope}
+                />
            </>
          )}
 
@@ -2636,6 +2932,8 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
                 folders: data.folders || prev.folders,
                 hasMore: data.has_more || false,
                 nextCursor: data.next_cursor || null,
+                prevCursor: data.prev_cursor || null,
+                pagesFetched: 0,
                 loadedSortBy: newSortBy,
                 loadedSortOrder: newSortOrder,
               }));

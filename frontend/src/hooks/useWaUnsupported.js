@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { fetchFileById } from '../utils/api';
-import { isVideoHevc } from '../utils/codec';
+import { isWaUnsupportedVideo } from '../utils/codec';
 
 // Returns true when the current file is a video whose codec is NOT supported by
-// WhatsApp (HEVC), so the WA send buttons (Channel / Status / All) should be
-// disabled. Non-video files and H.264 videos return false.
+// WhatsApp (anything other than H.264 — e.g. HEVC, AV1, VP9), so the WA send
+// buttons (Channel / Status / All) should be disabled. Non-video files and
+// H.264 videos return false.
 export function useWaUnsupported(file) {
   const [unsupported, setUnsupported] = useState(false);
 
@@ -18,14 +19,14 @@ export function useWaUnsupported(file) {
 
     // Already have codec info on the object (e.g. opened via detail route).
     if (file.codec_info != null) {
-      setUnsupported(isVideoHevc(file));
+      setUnsupported(isWaUnsupportedVideo(file));
       return;
     }
 
     // Otherwise fetch the full record, which includes codec_info.
     setUnsupported(false);
     fetchFileById(file.id)
-      .then((f) => { if (!cancelled) setUnsupported(isVideoHevc(f)); })
+      .then((f) => { if (!cancelled) setUnsupported(isWaUnsupportedVideo(f)); })
       .catch(() => {});
 
     return () => { cancelled = true; };

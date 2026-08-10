@@ -5,7 +5,7 @@ import { getFileWithRelPath } from '../utils/fileResolver.js';
 import db from '../db.js';
 import { stmts } from '../db.js';
 import { spawn } from 'node:child_process';
-import { hasEmbeddedCover, extractEmbeddedThumbnail, extractFrameThumbnail, generateImageThumbnail, THUMBNAIL_DIR } from '../utils/thumbnailUtils.js';
+import { hasEmbeddedCover, extractEmbeddedThumbnail, extractFrameThumbnail, generateImageThumbnail, THUMBNAIL_DIR, getThumbPath } from '../utils/thumbnailUtils.js';
 import { get } from '../utils/runtimeSettings.js';
 
 mkdirSync(THUMBNAIL_DIR, { recursive: true });
@@ -73,12 +73,15 @@ async function doGenerateThumbnail(file, outPath) {
 }
 
 async function generateThumbnailSingle(file) {
-  const thumbPath = join(THUMBNAIL_DIR, `${file.id}.jpg`);
+  const thumbPath = getThumbPath(file.id);
   if (existsSync(thumbPath)) return thumbPath;
 
   if (generating.has(file.id)) {
     return generating.get(file.id);
   }
+
+  const thumbDir = join(thumbPath, '..');
+  mkdirSync(thumbDir, { recursive: true });
 
   const promise = doGenerateThumbnail(file, thumbPath);
   generating.set(file.id, promise);
@@ -119,7 +122,7 @@ function runWithinSlot(fn) {
 }
 
 async function ensureThumbnailForFile(file) {
-  const thumbPath = join(THUMBNAIL_DIR, `${file.id}.jpg`);
+  const thumbPath = getThumbPath(file.id);
   if (existsSync(thumbPath)) return thumbPath;
 
   return runWithinSlot(() => generateThumbnailSingle(file));
@@ -218,24 +221,25 @@ async function generateFolderPreview(folderId) {
 
 router.get('/:id.jpg', async (req, res) => {
   const { id } = req.params;
-  const outPath = join(THUMBNAIL_DIR, `${id}.jpg`);
+  const hashedPath = getThumbPath(id);
+  const flatPath = join(THUMBNAIL_DIR, `${id}.jpg`);
 
-  if (existsSync(outPath)) {
-    res.set('Cache-Control', 'public, max-age=300');
-    res.set('Content-Type', 'image/jpeg');
-    return createReadStream(outPath).pipe(res);
-  }
-
-  // Wait for existing generation or start new one
-  if (generating.has(id)) {
-    try {
-      await generating.get(id);
-    } catch {}
-    if (existsSync(outPath)) {
+  const tryServe = (path) => {
+    if (existsSync(path)) {
       res.set('Cache-Control', 'public, max-age=300');
       res.set('Content-Type', 'image/jpeg');
-      return createReadStream(outPath).pipe(res);
+      return createReadStream(path).pipe(res);
     }
+    return null;
+  };
+
+  const served = tryServe(hashedPath) || tryServe(flatPath);
+  if (served) return;
+
+  if (generating.has(id)) {
+    try { await generating.get(id); } catch {}
+    const served2 = tryServe(hashedPath) || tryServe(flatPath);
+    if (served2) return;
     return res.status(404).json({ error: 'Thumbnail generation failed' });
   }
 
@@ -246,11 +250,8 @@ router.get('/:id.jpg', async (req, res) => {
 
   try {
     const thumbPath = await ensureThumbnailForFile(file);
-    if (thumbPath && existsSync(outPath)) {
-      res.set('Cache-Control', 'public, max-age=300');
-      res.set('Content-Type', 'image/jpeg');
-      return createReadStream(outPath).pipe(res);
-    }
+    const served3 = tryServe(thumbPath || '') || tryServe(hashedPath) || tryServe(flatPath);
+    if (served3) return;
     return res.status(404).json({ error: 'Thumbnail not found' });
   } catch {
     return res.status(500).json({ error: 'Thumbnail generation failed' });

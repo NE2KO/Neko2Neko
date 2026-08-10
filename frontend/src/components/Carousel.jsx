@@ -27,6 +27,8 @@ const WINDOW_RADIUS = 12;   // ~25 nodes mounted around the active item initiall
 const SCROLL_BUFFER = 8;    // extra nodes kept mounted beyond the viewport
 const INCLUDE_ACTIVE_MARGIN = 4; // keep the active item mounted near the window edge
 const DRAG_THRESHOLD = 4;   // pointer movement before it becomes a drag-scroll
+const HYDRATE_STEP = 14;    // scroll distance before the next prefetch window fires
+const RECENTER_IDLE_MS = 30000; // with lock ON, re-center to the active item after this much idleness
 const DEFAULT_PITCH = { sm: 56, lg: 104 }; // item width + gap estimates (md+)
 
 const estimateDividerWidth = (node) => {
@@ -65,6 +67,8 @@ const CarouselItem = React.memo(React.forwardRef(function CarouselItem({ file, c
       <button
         onClick={onClick}
         draggable={false}
+        tabIndex={-1}
+        onMouseDown={(e) => e.preventDefault()}
         className={`${ITEM_SIZES[itemSize] || ITEM_SIZES.sm} rounded-lg overflow-hidden relative block transition-opacity border-2 ${
           isActive ? borderColor : 'border-transparent'
         } ${
@@ -75,7 +79,7 @@ const CarouselItem = React.memo(React.forwardRef(function CarouselItem({ file, c
           <img
             src={thumbUrl}
             alt={file.name}
-            loading="lazy"
+            loading={isActive ? "eager" : "lazy"}
             decoding="async"
             draggable={false}
             className="w-full h-full object-cover"
@@ -105,21 +109,37 @@ const CarouselItem = React.memo(React.forwardRef(function CarouselItem({ file, c
   );
 }));
 
-export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrder = 'asc', cacheBust = '', onToggleFavorite = null, autoHide = false, hidden = false, onToggleHidden = () => {}, itemSize = 'sm', restoreScrollKey = null, slide = false }) {
+export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrder = 'asc', cacheBust = '', onToggleFavorite = null, autoHide = false, hidden = false, onToggleHidden = () => {}, itemSize = 'sm', restoreScrollKey = null, slide = false, repo = null, onActivity = null, lockEnabled = true }) {
   const currentFileId = currentFile?.id;
   const scrollRef = useRef(null);
   const itemRefs = useRef(new Map());
   const tweenRafRef = useRef(null);
+  const scrollSettleRef = useRef(null);
+  const onActivityRef = useRef(onActivity);
+  onActivityRef.current = onActivity;
   const SCROLL_STORAGE_KEY = `mv_carousel_scroll_${restoreScrollKey || 'default'}`;
   const scrollRestoredRef = useRef(false);
   const isFirstCenterRef = useRef(true);
   const activeWindowedRef = useRef(false);
 
-  const showFolderLabels = files?.length > 1 && files.some(f => f.dir_path !== files[0]?.dir_path);
+  // Virtual (repository-backed) mode: the list is "infinite" — an ordered ID
+  // index lives in the MediaRepository and items are hydrated on demand, so the
+  // carousel never materializes the whole folder in React. Only the visible
+  // window (+ buffer) mounts. When `repo` is absent (search etc.) we keep the
+  // plain array behaviour.
+  const virtualTotal = repo ? repo.total() : 0;
+  const virtual = !!repo && virtualTotal > 0;
+  const virtualRef = useRef(virtual);
+  virtualRef.current = virtual;
+  const virtualTotalRef = useRef(virtualTotal);
+  virtualTotalRef.current = virtualTotal;
+
+  const showFolderLabels = !virtual && files?.length > 1 && files.some(f => f.dir_path !== files[0]?.dir_path);
 
   const getGroupLabelShared = useCallback((item) => getGroupLabel(item, sortBy), [sortBy]);
 
   const metadataGroupedNodes = useMemo(() => {
+    if (virtual) return null;
     if (!sortBy || sortBy === 'size') return null;
     const nodes = [];
     let lastLabel = null;
@@ -135,6 +155,7 @@ export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrde
   }, [files, sortBy, getGroupLabelShared]);
 
   const grouped = useMemo(() => {
+    if (virtual) return null;
     if (!showFolderLabels) return null;
     const groups = [];
     let currentGroup = null;
@@ -151,6 +172,7 @@ export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrde
 
   // Flat node list: items + dividers (metadata labels or folder labels).
   const nodes = useMemo(() => {
+    if (virtual) return [];
     if (metadataGroupedNodes) return metadataGroupedNodes;
     if (showFolderLabels && grouped) {
       const flat = [];
@@ -167,19 +189,59 @@ export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrde
   const [win, setWin] = useState({ start: 0, end: 25 });
   const [pitch, setPitch] = useState(() => DEFAULT_PITCH[itemSize] || 56);
   const [dividerWidths, setDividerWidths] = useState({});
+  const [hydrateTick, setHydrateTick] = useState(0);
 
   const nodesRef = useRef(nodes);
   nodesRef.current = nodes;
   const winRef = useRef(win);
   winRef.current = win;
+  const lastPrefetchRef = useRef(-1);
+
+  // Virtual-only: keep a hydration window around the active item and funnel
+  // loaded objects into a local re-render tick (the repo has no subscription,
+  // so we re-read its cache after each fetch settles).
+  useEffect(() => {
+    if (!virtual) return;
+    let on = true;
+const ai = repo.findIndex(currentFileId);
+      if (ai >= 0) {
+        // Hydrate a generous radius around the active item so the user can walk
+        // forward/back several screens without ever reaching an un-hydrated slot.
+        // Without this, the hydrated region lagged behind and the carousel showed
+        // empty placeholder blocks until you physically reached the boundary item.
+        repo.prefetchWindow(ai, 60).then(() => {
+          if (on) setHydrateTick((t) => t + 1);
+        });
+      }
+    return () => { on = false; };
+  }, [currentFileId, virtual, virtualTotal, repo]);
+  const filesIdRef = useRef(files?.length ?? 0);
+  const filesVersionRef = useRef(0);
+  if ((files?.length ?? 0) !== filesIdRef.current) {
+    filesIdRef.current = files?.length ?? 0;
+    filesVersionRef.current += 1;
+  }
+  // The (rare) window that actually mounts: visible items + scroll buffer. In
+  // virtual mode we also allow items already hydrated in the repo's object cache
+  // to count toward the version bump, so new loads re-render the strip.
+  if (virtual) {
+    filesVersionRef.current += 1;
+  }
 
   // Prefix sums of node widths: prefix[i] = total width of nodes [0, i). A node's
   // laid-out left edge is LEAD + prefix[i], which is deterministic regardless of
   // which window is mounted — so re-windowing never shifts the visible content.
+  // In virtual mode every node is an item of uniform `pitch`, so prefix is the
+  // trivial arithmetic sequence (built without materializing the folder).
   const prefix = useMemo(() => {
-    const arr = new Array(nodes.length + 1);
+    const total = virtual ? virtualTotal : nodes.length;
+    const arr = new Array(total + 1);
     arr[0] = 0;
-    for (let i = 0; i < nodes.length; i++) {
+    if (virtual) {
+      for (let i = 1; i <= total; i++) arr[i] = i * pitch;
+      return arr;
+    }
+    for (let i = 0; i < total; i++) {
       const n = nodes[i];
       const w = n.type === 'item'
         ? pitch
@@ -187,11 +249,12 @@ export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrde
       arr[i + 1] = arr[i] + w;
     }
     return arr;
-  }, [nodes, pitch, dividerWidths]);
+  }, [nodes, virtual, virtualTotal, pitch, dividerWidths]);
   const prefixRef = useRef(prefix);
   prefixRef.current = prefix;
 
   // id -> node index, so the active item lookup is O(1) instead of a scan.
+  // In virtual mode the repo's index maps id -> position directly (no dividers).
   const nodeIndexById = useMemo(() => {
     const m = new Map();
     for (let i = 0; i < nodes.length; i++) {
@@ -205,9 +268,17 @@ export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrde
 
   const findActiveIndex = useCallback(() => {
     if (!currentFileId) return -1;
+    if (virtual) {
+      // Guard: if the repo index hasn't been loaded yet, don't pretend the
+      // active item is missing — just return -1 so the carousel stays quiet
+      // instead of blanking or centering on nothing.
+      const rec = repo.current?.();
+      if (!rec || rec.total === 0) return -1;
+      return repo.findIndex(currentFileId);
+    }
     const i = nodeIndexById.get(currentFileId);
     return i == null ? -1 : i;
-  }, [currentFileId, nodeIndexById]);
+  }, [currentFileId, nodeIndexById, virtual, repo]);
 
   // Count of nodes entirely to the left of a horizontal position.
   const countLeft = useCallback((arr, pos) => {
@@ -232,7 +303,7 @@ export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrde
     const container = scrollRef.current;
     if (!container || container.clientWidth === 0) return;
     const arr = prefixRef.current;
-    const total = nodesRef.current.length;
+    const total = virtualRef.current ? virtualTotalRef.current : nodesRef.current.length;
     if (total === 0) { setWin({ start: 0, end: 0 }); return; }
     const ai = findActiveIndex();
     let s, e;
@@ -287,9 +358,11 @@ export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrde
   // Recompute from the live scroll position whenever the list, measured sizes
   // or visibility change (no scroll event fires in those cases). This removes
   // the "blank until you nudge" glitch and the empty strip after an unhide.
+  // `virtualTotal` is included so the window is recalculated as soon as the
+  // async repo hydration settles — without waiting for the user to scroll.
   useEffect(() => {
     recomputeWindow(false);
-  }, [nodes, pitch, dividerWidths, hidden, recomputeWindow]);
+  }, [nodes, pitch, dividerWidths, hidden, virtualTotal, recomputeWindow]);
 
   // Measure the real item pitch once items render (and re-measure on the
   // md breakpoint via ResizeObserver). Item width = button width + GAP_PX.
@@ -320,11 +393,47 @@ export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrde
   // positions are deterministic (LEAD + prefix[i]), no scrollLeft correction is
   // needed — the content stays put while the window slides.
   const scrollRafRef = useRef(null);
-  const handleScroll = useCallback(() => {
+const handleScroll = useCallback(() => {
     if (scrollRafRef.current != null) return;
     scrollRafRef.current = requestAnimationFrame(() => {
       scrollRafRef.current = null;
       recomputeWindow(false);
+      // Keep auto-hide honest: scrolling is user activity, so ping the cluster's
+      // idle timer (prevents controls fading out mid-scroll).
+      onActivityRef.current?.();
+      // Virtual-only: hydrate the newly visible region so scrolling never hits a
+      // "wall". Throttled by a movement threshold + settle debounce so we don't
+      // fire batches of network requests and re-renders on every scroll frame.
+      if (virtualRef.current) {
+        const c = winRef.current;
+        const ahead = c.end;
+        // Prefetch a generous block BEYOND the visible right edge (not just
+        // around the middle) so the next few screens are already hydrated and
+        // scrolling forward never drops into empty placeholder slots.
+        if (ahead >= 0 && Math.abs(ahead - lastPrefetchRef.current) >= HYDRATE_STEP) {
+          lastPrefetchRef.current = ahead;
+          repo.prefetchWindow(ahead, 30);
+        }
+        if (scrollSettleRef.current) clearTimeout(scrollSettleRef.current);
+        scrollSettleRef.current = setTimeout(() => {
+          scrollSettleRef.current = null;
+          setHydrateTick((t) => t + 1);
+        }, 160);
+      }
+      // Lock-gated idle re-center: with lock ON, once the strip has been idle
+      // for RECENTER_IDLE_MS it smoothly returns to the current item. With lock
+      // OFF (or while the user keeps scrolling) the timer keeps resetting/never
+      // fires, so the strip stays exactly where it is.
+      if (centerLockRef.current) {
+        if (recenterTimerRef.current) clearTimeout(recenterTimerRef.current);
+        recenterTimerRef.current = setTimeout(() => {
+          recenterTimerRef.current = null;
+          if (centerLockRef.current) centerToActiveRef.current();
+        }, RECENTER_IDLE_MS);
+      } else if (recenterTimerRef.current) {
+        clearTimeout(recenterTimerRef.current);
+        recenterTimerRef.current = null;
+      }
     });
   }, [recomputeWindow]);
 
@@ -381,6 +490,13 @@ export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrde
       tweenRafRef.current = null;
       return;
     }
+    // Instant jump for large distances (e.g., jumping from one end to the other
+    // after next/previous). Small drifts still animate smoothly.
+    if (Math.abs(diff) > container.clientWidth * 0.5) {
+      container.scrollLeft = target;
+      tweenRafRef.current = null;
+      return;
+    }
     container.scrollLeft += diff * 0.12;
     tweenRafRef.current = requestAnimationFrame(easeToTarget);
   }, [computeCenterTarget]);
@@ -409,52 +525,57 @@ export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrde
         slideRafRef.current = null;
         return;
       }
+      // Instant jump for large distances (e.g., jumping from one end to the other).
+      if (Math.abs(diff) > container.clientWidth * 0.5) {
+        container.scrollLeft = target;
+        slideRafRef.current = null;
+        return;
+      }
       container.scrollLeft += diff * 0.14;
       slideRafRef.current = requestAnimationFrame(step);
     };
     slideRafRef.current = requestAnimationFrame(step);
   }, [computeCenterTarget]);
 
-  // Keep the active item horizontally centered inside the scroll viewport.
-  // Always animate to the target — no instant snaps. We defer layout reads
-  // to a rAF so the browser has finished laying out the newly-mounted items
-  // in the windowed slice, preventing wrong-direction jumps.
-  useEffect(() => {
+  // Refs bridge the latest values into the centering helpers/effects WITHOUT
+  // putting them in dependency arrays (their identities churn every render),
+  // which is what used to re-trigger centering and yank the strip away.
+  const currentFileIdRef = useRef(currentFileId);
+  currentFileIdRef.current = currentFileId;
+  const slideRef = useRef(slide);
+  slideRef.current = slide;
+  const easeToTargetRef = useRef(easeToTarget);
+  easeToTargetRef.current = easeToTarget;
+  const animateSlideRef = useRef(animateSlide);
+  animateSlideRef.current = animateSlide;
+  const computeCenterTargetRef = useRef(computeCenterTarget);
+  computeCenterTargetRef.current = computeCenterTarget;
+  const centerLockRef = useRef(lockEnabled);
+  centerLockRef.current = lockEnabled;
+  const recenterTimerRef = useRef(null);
+
+  // Center the active item inside the viewport via animation. Returns a cleanup
+  // that cancels all scheduled frames. Safe to call repeatedly (idle recenter,
+  // on item open) — it just no-ops once the item is settled mid-center.
+  const centerToActive = useCallback(() => {
+    const currentId = currentFileIdRef.current;
     const container = scrollRef.current;
-    if (!container || !currentFileId) return;
-
-    // On the very first mount, if a saved scroll position exists, let the
-    // scroll-restoration effect keep the user where they were (no long jump
-    // back to the active item). handleScroll will re-window as needed.
-    if (isFirstCenterRef.current) {
-      isFirstCenterRef.current = false;
-      if (restoreScrollKey) {
-        try {
-          const saved = localStorage.getItem(SCROLL_STORAGE_KEY);
-          const pos = parseFloat(saved);
-          if (!isNaN(pos) && pos > 0) return;
-        } catch {}
-      }
-    }
-
+    if (!container || !currentId) return () => {};
     let retryRaf = null;
     let frames = 0;
     activeWindowedRef.current = false;
-    centerFileIdRef.current = currentFileId;
-
+    centerFileIdRef.current = currentId;
     const computeTarget = () => {
-      if (frames++ > 120) { retryRaf = null; return; }
+      const cid = currentFileIdRef.current;
+      if (frames++ > 100) { retryRaf = null; return; }
       if (dragRef.current != null) { retryRaf = requestAnimationFrame(computeTarget); return; }
-      const container = scrollRef.current;
-      if (!container || container.clientWidth === 0) {
-        retryRaf = requestAnimationFrame(computeTarget);
-        return;
-      }
+      const cont = scrollRef.current;
+      if (!cont || cont.clientWidth === 0) { retryRaf = requestAnimationFrame(computeTarget); return; }
       if (findActiveIndexRef.current() < 0) return; // active item not in this list — nothing to center
-      const el = itemRefs.current.get(currentFileId);
+      const el = itemRefs.current.get(cid);
       if (!el) {
-        // The active item isn't mounted because the user is scrolled away from
-        // it. Bring it into the window once, then keep retrying until it mounts.
+        // Not mounted yet (user scrolled away). Bring it into the window once,
+        // then keep retrying until it mounts.
         if (!activeWindowedRef.current) {
           activeWindowedRef.current = true;
           recomputeWindowRef.current(true);
@@ -462,46 +583,65 @@ export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrde
         retryRaf = requestAnimationFrame(computeTarget);
         return;
       }
-      const target = computeCenterTarget(container, el);
+      const target = computeCenterTargetRef.current(cont, el);
       if (target == null) return;
-
-      if (slide) {
-        animateSlide(container);
+      const cRect = cont.getBoundingClientRect();
+      const eRect = el.getBoundingClientRect();
+      if (!(eRect.right > cRect.left && eRect.left < cRect.right)) {
+        cont.scrollLeft = target;
+        return;
+      }
+      if (slideRef.current) {
+        animateSlideRef.current(cont);
       } else {
-        const diff = target - container.scrollLeft;
-        if (Math.abs(diff) < 1) {
-          return;
-        }
+        const diff = target - cont.scrollLeft;
+        if (Math.abs(diff) < 1) return;
         if (tweenRafRef.current == null) {
-          tweenRafRef.current = requestAnimationFrame(easeToTarget);
+          tweenRafRef.current = requestAnimationFrame(easeToTargetRef.current);
         }
       }
     };
-
-    const rafId = requestAnimationFrame(() => {
-      requestAnimationFrame(computeTarget);
-    });
-
+    const rafId = requestAnimationFrame(() => requestAnimationFrame(computeTarget));
     return () => {
       cancelAnimationFrame(rafId);
       if (retryRaf != null) cancelAnimationFrame(retryRaf);
       if (slideRafRef.current != null) cancelAnimationFrame(slideRafRef.current);
     };
-    // findActiveIndex/recomputeWindow are intentionally NOT deps: they are
-    // recreated on every parent render (SendQueue rebuilds `files` each render),
-    // and including them re-triggered centering after every render — yanking the
-    // strip back to the active item the moment the user tried to scroll away.
-    // The stable refs above always see the latest implementations.
-    //
-    // pitch / dividerWidths are deps so the active item is re-centered once the
-    // real item widths settle (layout drift would otherwise leave a MID-LIST item
-    // a few px off-axis from the header + play/pause button). End items clamp to
-    // scrollLeft 0 / maxScroll, so they stay pinned at the strip edge.
-  }, [currentFileId, slide, animateSlide, easeToTarget, restoreScrollKey, SCROLL_STORAGE_KEY, pitch, dividerWidths]);
+  }, []);
+  const centerToActiveRef = useRef(centerToActive);
+  centerToActiveRef.current = centerToActive;
+
+  // Center on OPEN / NAVIGATION — but only when the strip is LOCKED ("Ikuti").
+  // With lock OFF ("Bebas") the strip never yanks itself back to the current
+  // item: it stays exactly where you scrolled and you move it yourself. The very
+  // first open always centers so the player's active item is in view. The 30s
+  // idle, lock-gated re-center lives in handleScroll.
+  useEffect(() => {
+    const thisIsFirst = isFirstCenterRef.current;
+    if (thisIsFirst) {
+      isFirstCenterRef.current = false;
+      if (restoreScrollKey) {
+        try {
+          const saved = localStorage.getItem(SCROLL_STORAGE_KEY);
+          const pos = parseFloat(saved);
+          if (!isNaN(pos) && pos > 0) return; // let scroll restoration keep the position
+        } catch {}
+      }
+    }
+    if (!thisIsFirst && !centerLockRef.current) return;
+    const cleanup = centerToActive();
+    return cleanup;
+  }, [currentFileId, isFirstCenterRef, restoreScrollKey, SCROLL_STORAGE_KEY, centerToActive]);
+
+  useEffect(() => () => {
+    if (recenterTimerRef.current) clearTimeout(recenterTimerRef.current);
+    if (scrollSettleRef.current) clearTimeout(scrollSettleRef.current);
+  }, []);
 
   // Scroll restoration: on mount, restore the last scroll position from
   // localStorage so that a tab reload doesn't snap the carousel back to the
   // active item — which causes a long jump when the user was scrolled far away.
+  // After restoring, if the active item is not visible, center it.
   useEffect(() => {
     const container = scrollRef.current;
     if (!container || !restoreScrollKey) return;
@@ -516,7 +656,30 @@ export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrde
         }
       }
     } catch {}
-  }, [restoreScrollKey, SCROLL_STORAGE_KEY]);
+
+    let retryRaf = null;
+    let frames = 0;
+    const tryCenter = () => {
+      if (frames++ > 120) { retryRaf = null; return; }
+      const el = currentFileId ? itemRefs.current.get(currentFileId) : null;
+      if (!el || !container) {
+        retryRaf = requestAnimationFrame(tryCenter);
+        return;
+      }
+      const cRect = container.getBoundingClientRect();
+      const eRect = el.getBoundingClientRect();
+      const isVisible = eRect.right > cRect.left && eRect.left < cRect.right;
+      if (!isVisible) {
+        const target = computeCenterTarget(container, el);
+        if (target != null) {
+          container.scrollLeft = target;
+        }
+      }
+      retryRaf = null;
+    };
+    retryRaf = requestAnimationFrame(tryCenter);
+    return () => { if (retryRaf != null) cancelAnimationFrame(retryRaf); };
+  }, [restoreScrollKey, SCROLL_STORAGE_KEY, currentFileId, computeCenterTarget]);
 
   // Persist scroll position to localStorage on unmount so it can be restored
   // on the next mount (e.g. after a tab reload).
@@ -608,14 +771,25 @@ export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrde
     window.removeEventListener('pointercancel', handlePointerEnd);
   }, [handlePointerMove, handlePointerEnd]);
 
-  if (!files || files.length < 1) return null;
+  // Virtual mode renders from the repo even when the initial object window
+  // (files prop) is still empty — the index alone defines the scroll length.
+  if (!virtual && (!files || files.length < 1)) return null;
 
-  const total = nodes.length;
+  const total = virtual ? virtualTotal : nodes.length;
   const start = Math.max(0, Math.min(win.start, total));
   const end = Math.max(start, Math.min(win.end, total));
   const leadingW = LEAD + prefix[start];
   const trailingW = (prefix[total] - prefix[end]) + TRAIL;
-  const windowNodes = nodes.slice(start, end);
+  const windowNodes = virtual
+    ? (() => {
+        const out = new Array(end - start);
+        for (let k = start; k < end; k++) {
+          const id = repo.idAt(k);
+          out[k - start] = { type: 'item', id, index: k, file: id ? repo.get(id) : undefined };
+        }
+        return out;
+      })()
+    : nodes.slice(start, end);
 
   return (
     <div
@@ -658,6 +832,16 @@ export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrde
                     {node.label}
                   </div>
                 </div>
+              );
+            }
+            if (virtual && !node.file) {
+              // Silently reserve the slot while the surrounding window hydrates.
+              return (
+                <div
+                  key={`virt-${node.index}`}
+                  className="flex-shrink-0 animate-pulse bg-neutral-900/60 rounded"
+                  style={{ width: pitch, height: pitch, margin: 2 }}
+                />
               );
             }
             return renderItem(node.file);

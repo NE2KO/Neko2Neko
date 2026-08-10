@@ -185,7 +185,7 @@ const VirtualizedMediaCard = memo(({ file, onSelect, onToggleFavorite, itemWidth
   return prevProps.file?.id === nextProps.file?.id && prevProps.file?.is_favorite === nextProps.file?.is_favorite && prevProps.onSelect === nextProps.onSelect && prevProps.onToggleFavorite === nextProps.onToggleFavorite && prevProps.itemWidth === nextProps.itemWidth && prevProps.cardHeight === nextProps.cardHeight;
 });
 
-const Row = ({ index, style, data }) => {
+const Row = memo(({ index, style, data }) => {
   const { rows, onSelect, onToggleFavorite, itemWidth, cardHeight, columnCount } = data;
   const row = rows[index];
 
@@ -221,9 +221,21 @@ const Row = ({ index, style, data }) => {
       </div>
     </div>
   );
-};
+}, (prev, next) => {
+  if (prev.index !== next.index) return false;
+  if (prev.style !== next.style) return false;
+  const prevRow = prev.data.rows[prev.index];
+  const nextRow = next.data.rows[next.index];
+  if (prevRow !== nextRow) return false;
+  if (prev.data.onSelect !== next.data.onSelect) return false;
+  if (prev.data.onToggleFavorite !== next.data.onToggleFavorite) return false;
+  if (prev.data.itemWidth !== next.data.itemWidth) return false;
+  if (prev.data.cardHeight !== next.data.cardHeight) return false;
+  if (prev.data.columnCount !== next.data.columnCount) return false;
+  return true;
+});
 
-const MediaGrid = forwardRef(({ folders = [], files = [], onSelect, onToggleFavorite, hasMore, fetchingMore, onLoadMore, sortBy = null, sortOrder = 'asc', groupByFolder = false }, ref) => {
+const MediaGrid = forwardRef(({ folders = [], files = [], onSelect, onToggleFavorite, hasMore, fetchingMore, onLoadMore, sortBy = null, sortOrder = 'asc', groupByFolder = false, onNearTop = null }, ref) => {
   const listRef = useRef(null);
   const outerListRef = useRef(null);
   const hasDividers = sortBy && sortBy !== 'size';
@@ -270,10 +282,15 @@ const MediaGrid = forwardRef(({ folders = [], files = [], onSelect, onToggleFavo
         onLoadMoreRef.current();
         requestAnimationFrame(() => { guard = false; });
       }
+      if (onNearTop && el.scrollTop < 120 && !guard) {
+        guard = true;
+        onNearTop();
+        requestAnimationFrame(() => { guard = false; });
+      }
     };
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => el.removeEventListener('scroll', onScroll);
-  }, [hasMore, fetchingMore]);
+  }, [hasMore, fetchingMore, onNearTop]);
 
   const flatItems = useMemo(() => {
     const result = [];
@@ -332,10 +349,19 @@ const MediaGrid = forwardRef(({ folders = [], files = [], onSelect, onToggleFavo
 
   const items = flatItems || [...folders, ...files];
 
-  useLayoutEffect(() => {
-    if (listRef.current) {
-      listRef.current.resetAfterIndex(0);
-    }
+  // Debounce resetAfterIndex to avoid layout thrash during pagination.
+  // useLayoutEffect blocks paint; useEffect + rAF lets the browser paint first.
+  const resetTimerRef = useRef(null);
+  useEffect(() => {
+    if (resetTimerRef.current) cancelAnimationFrame(resetTimerRef.current);
+    resetTimerRef.current = requestAnimationFrame(() => {
+      if (listRef.current) {
+        listRef.current.resetAfterIndex(0);
+      }
+    });
+    return () => {
+      if (resetTimerRef.current) cancelAnimationFrame(resetTimerRef.current);
+    };
   }, [items]);
 
   if (items.length === 0) {
@@ -368,7 +394,6 @@ const MediaGrid = forwardRef(({ folders = [], files = [], onSelect, onToggleFavo
 
             const rows = [];
             let currentRow = { items: [] };
-
             for (const item of items) {
               if (item._separator) {
                 if (currentRow.items.length > 0) {
@@ -396,6 +421,8 @@ const MediaGrid = forwardRef(({ folders = [], files = [], onSelect, onToggleFavo
               return row.type === 'separator' ? 44 : CARD_HEIGHT + GUTTER;
             };
 
+            const itemData = { rows, onSelect, onToggleFavorite, itemWidth: ITEM_WIDTH, cardHeight: CARD_HEIGHT, columnCount };
+
             return (
               <List
                 ref={listRef}
@@ -404,8 +431,8 @@ const MediaGrid = forwardRef(({ folders = [], files = [], onSelect, onToggleFavo
                 width={width}
                 itemCount={rows.length}
                 itemSize={getRowHeight}
-                overscanCount={3}
-                itemData={{ rows, onSelect, onToggleFavorite, itemWidth: ITEM_WIDTH, cardHeight: CARD_HEIGHT, columnCount }}
+                overscanCount={2}
+                itemData={itemData}
                 onItemsRendered={handleItemsRendered}
                 style={{
                   overscrollBehavior: 'none',

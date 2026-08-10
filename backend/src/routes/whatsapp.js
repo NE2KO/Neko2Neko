@@ -387,6 +387,152 @@ export function setupWhatsAppRoutes(app) {
     }
   });
 
+  // TEMP: list my own current WhatsApp statuses via the status broadcast chat
+  // (lifecycle test verification). Uses the public client API, not internals.
+  app.post('/api/whatsapp/_mylist', async (req, res) => {
+    try {
+      const client = getClient();
+      if (!client) return res.status(503).json({ error: 'no client' });
+      const chat = await client.getChatById('status@broadcast');
+      const msgs = await chat.fetchMessages({ count: 30 });
+      const norm = (m) => ({ id: m.id._serialized, shortId: m.id.id, body: (m.body || '').slice(0, 40), t: m.timestamp, ack: m.ack, fromMe: m.fromMe });
+      res.json({ count: msgs.length, items: msgs.map(norm) });
+    } catch (err) { res.status(500).json({ error: err.message, stack: err && err.stack }); }
+  });
+
+  // TEMP: delete one of my own statuses (lifecycle test). Status messages are NOT
+  // in WAWebCollections.Msg, so client.getMessageById() can never resolve them.
+  // They live in WAWebCollections.Status (per-contact threads, keyed by jid); each
+  // thread has a msgs[] of raw message models. We locate the model by its
+  // serialized id, then call Cmd.sendRevokeMsgs on the status@broadcast chat to
+  // revoke (delete for everyone) — mirroring Message.delete() in the library.
+  app.post('/api/whatsapp/_delstatus', async (req, res) => {
+    try {
+      const { id, shortId } = req.body || {};
+      if (!id && !shortId) return res.status(400).json({ error: 'id or shortId required' });
+      const client = getClient();
+      if (!client) return res.status(503).json({ error: 'no client' });
+      const result = await client.pupPage.evaluate(async (serializedId, shortIdArg) => {
+        const Collections = window.require('WAWebCollections');
+        const all = Collections.Status.getModelsArray();
+        // Status MsgKey objects have no _serialized; the short id lives in the
+        // MIDDLE of the serialized form (true_status@broadcast_<shortId>_<self>),
+        // so match on the short id, extracted from either arg.
+        const sShort = serializedId
+          ? (serializedId.split('_').length >= 3 ? serializedId.split('_')[2] : serializedId)
+          : null;
+        let found = null;
+        for (const s of all) {
+          const msgs = (s.msgs && s.msgs.getModelsArray ? s.msgs.getModelsArray() : (s.msgs || [])) || [];
+          for (const m of msgs) {
+            const mid = m.id && m.id.id;
+            if ((shortIdArg && mid === shortIdArg) ||
+                (sShort && mid === sShort) ||
+                (serializedId && mid && serializedId.indexOf(mid) !== -1)) {
+              found = m; break;
+            }
+          }
+          if (found) break;
+        }
+        if (!found) return { found: false, scanned: all.length };
+        const remote = found.id.remote || 'status@broadcast';
+        const chat = Collections.Chat.get(remote) ||
+          (Collections.Chat.find ? await Collections.Chat.find(remote) : null);
+        if (!chat) return { found: true, chatFound: false };
+        const { Cmd } = window.require('WAWebCmd');
+        let revoked = false, err;
+        try {
+          if (window.WWebJS.compareWwebVersions(window.Debug.VERSION, '>=', '2.3000.0')) {
+            await Cmd.sendRevokeMsgs(chat, { list: [found], type: 'message' }, { clearMedia: false });
+          } else {
+            await Cmd.sendRevokeMsgs(chat, [found], { clearMedia: true, type: found.id.fromMe ? 'Sender' : 'Admin' });
+          }
+          revoked = true;
+        } catch (e) { err = e.message; }
+        if (!revoked && err) {
+          try { await Cmd.sendDeleteMsgs(chat, { list: [found], type: 'message' }, false); revoked = true; err = null; }
+          catch (e2) { err = e2.message; }
+        }
+        return { found: true, chatFound: true, revoked, error: err, shortId: found.id.id };
+      }, id || null, shortId || null);
+      res.json(result);
+    } catch (err) { res.status(500).json({ error: err.message, stack: err && err.stack }); }
+  });
+
+
+  // TEMP: bulk-revoke ALL of my own (fromMe) WhatsApp statuses. Used to clean up
+  // after the full-queue send test. Enumerates via WWebJS.getAllStatuses (like
+  // _statusdiag) and revokes each fromMe message model via Cmd.sendRevokeMsgs.
+  app.post('/api/whatsapp/_delallmystatus', async (req, res) => {
+    try {
+      const client = getClient();
+      if (!client || !client.pupPage) return res.status(503).json({ error: 'no page' });
+      const result = await client.pupPage.evaluate(async () => {
+        const Collections = window.require('WAWebCollections');
+        const { Cmd } = window.require('WAWebCmd');
+        const all = (window.WWebJS.getAllStatuses ? window.WWebJS.getAllStatuses() : []);
+        const targets = [];
+        for (const s of all) {
+          const msgsArr = (s.msgs && s.msgs.getModelsArray) ? s.msgs.getModelsArray() : (s.msgs || []);
+          for (const m of msgsArr) {
+            if (m && m.id && m.id.fromMe === true) targets.push(m);
+          }
+        }
+        let revoked = 0, failed = 0;
+        const errors = [];
+        for (const m of targets) {
+          try {
+            const remote = m.id.remote || 'status@broadcast';
+            const chat = Collections.Chat.get(remote) ||
+              (Collections.Chat.find ? await Collections.Chat.find(remote) : null);
+            if (!chat) { failed++; continue; }
+            if (window.WWebJS.compareWwebVersions(window.Debug.VERSION, '>=', '2.3000.0')) {
+              await Cmd.sendRevokeMsgs(chat, { list: [m], type: 'message' }, { clearMedia: false });
+            } else {
+              await Cmd.sendRevokeMsgs(chat, [m], { clearMedia: true, type: m.id.fromMe ? 'Sender' : 'Admin' });
+            }
+            revoked++;
+          } catch (e) { failed++; if (errors.length < 5) errors.push(e.message); }
+          await new Promise(r => setTimeout(r, 250));
+        }
+        return { total: targets.length, revoked, failed, errors };
+      });
+      res.json(result);
+    } catch (err) { res.status(500).json({ error: err.message, stack: err && err.stack }); }
+  });
+
+  // TEMP diagnostic: dump my own statuses from StatusCollection to learn the model
+  app.post('/api/whatsapp/_statusdiag', async (req, res) => {
+    try {
+      const client = getClient();
+      if (!client) return res.status(503).json({ error: 'no client' });
+      const out = await client.pupPage.evaluate(() => {
+        const all = (window.WWebJS.getAllStatuses ? window.WWebJS.getAllStatuses() : []);
+        const mine = all.filter((s) => {
+          const m = s.msg || (s.msgs && s.msgs[0]) || null;
+          return m && m.id && m.id.fromMe === true;
+        });
+        const describe = (x) => x == null ? 'null' : (Array.isArray(x) ? 'array['+x.length+']' : (typeof x === 'object' && x.getModelsArray ? 'collection['+x.getModelsArray().length+']' : typeof x));
+        return {
+          total: all.length,
+          mineCount: mine.length,
+          mine: mine.map((s) => {
+            const msgsArr = (s.msgs && s.msgs.getModelsArray) ? s.msgs.getModelsArray() : (s.msgs || []);
+            const statusArr = (s.statusMsgs && s.statusMsgs.getModelsArray) ? s.statusMsgs.getModelsArray() : (s.statusMsgs || []);
+            return {
+              jid: s.id ? (s.id._serialized || s.id.id || String(s.id)) : undefined,
+              msgsType: describe(s.msgs),
+              statusMsgsType: describe(s.statusMsgs),
+              msgsIds: msgsArr.map(m => m.id && m.id.id),
+              statusMsgsIds: statusArr.map(m => m.id && m.id.id),
+              t: s.t,
+            };
+          }),
+        };
+      });
+      res.json(out);
+    } catch (err) { res.status(500).json({ error: err.message, stack: err && err.stack }); }
+  });
 
   // TEMP read-only diagnostic: read the account's Status Privacy setting as the
   // WA Web session currently sees it. No sends, no writes. Confirms whether a

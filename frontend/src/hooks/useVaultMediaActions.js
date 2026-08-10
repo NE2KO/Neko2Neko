@@ -29,6 +29,11 @@ export function useVaultMediaActions(file, onToggleFavorite) {
   const sendStatusRef = useRef(sendStatus);
   const fileIdRef = useRef(file?.id);
 
+  const clearSendTimer = useCallback(() => {
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    if (pollingTimerRef.current) { clearTimeout(pollingTimerRef.current); pollingTimerRef.current = null; }
+  }, []);
+
   useEffect(() => { sendStatusRef.current = sendStatus; }, [sendStatus]);
   useEffect(() => { fileIdRef.current = file?.id; }, [file?.id]);
 
@@ -37,11 +42,6 @@ export function useVaultMediaActions(file, onToggleFavorite) {
   useEffect(() => {
     clearSendTimer();
   }, [file?.id, clearSendTimer]);
-
-  const clearSendTimer = useCallback(() => {
-    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-    if (pollingTimerRef.current) { clearTimeout(pollingTimerRef.current); pollingTimerRef.current = null; }
-  }, []);
 
   const checkFileSendStatus = useCallback(async () => {
     const currentFileId = fileIdRef.current;

@@ -144,3 +144,10 @@ export async function generateAudioPlaceholder(outPath) {
 }
 
 export const THUMBNAIL_DIR = PATHS.thumbnails;
+
+export function getThumbPath(id) {
+  if (!id || id.length < 6) {
+    return join(THUMBNAIL_DIR, id + '.jpg');
+  }
+  return join(THUMBNAIL_DIR, id.slice(0, 2), id.slice(2, 4), id.slice(4, 6), id + '.jpg');
+}

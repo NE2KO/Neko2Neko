@@ -53,6 +53,35 @@ db.exec(`
     youtube_id TEXT,
     video_offset REAL DEFAULT 0
   );
+
+  -- Per-folder index generation. Bumped automatically by triggers below on
+  -- ANY file mutation (insert/delete/rename) so the client-side media index
+  -- can detect staleness without a global generation invalidating every folder.
+  CREATE TABLE IF NOT EXISTS folder_generation (
+    folder_id INTEGER PRIMARY KEY,
+    generation INTEGER NOT NULL DEFAULT 0
+  );
+`);
+
+db.exec(`
+  DROP TRIGGER IF EXISTS folder_gen_ai;
+  DROP TRIGGER IF EXISTS folder_gen_ad;
+  DROP TRIGGER IF EXISTS folder_gen_au;
+  CREATE TRIGGER folder_gen_ai AFTER INSERT ON files BEGIN
+    INSERT INTO folder_generation(folder_id) VALUES (NEW.dir_id)
+      ON CONFLICT(folder_id) DO UPDATE SET generation = generation + 1;
+  END;
+  CREATE TRIGGER folder_gen_ad AFTER DELETE ON files BEGIN
+    INSERT INTO folder_generation(folder_id) VALUES (OLD.dir_id)
+      ON CONFLICT(folder_id) DO UPDATE SET generation = generation + 1;
+  END;
+  CREATE TRIGGER folder_gen_au AFTER UPDATE ON files BEGIN
+    INSERT INTO folder_generation(folder_id) VALUES (NEW.dir_id)
+      ON CONFLICT(folder_id) DO UPDATE SET generation = generation + 1;
+    INSERT INTO folder_generation(folder_id)
+      SELECT NEW.dir_id WHERE OLD.dir_id != NEW.dir_id
+      ON CONFLICT(folder_id) DO UPDATE SET generation = generation + 1;
+  END;
 `);
 
 // FTS setup is deferred — called after server.listen() to avoid blocking startup
@@ -243,6 +272,10 @@ CREATE TABLE IF NOT EXISTS send_queue (
   try { db.prepare('ALTER TABLE send_queue ADD COLUMN caption TEXT NOT NULL DEFAULT \'\'').run(); } catch (e) {}
   try { db.prepare('ALTER TABLE send_queue ADD COLUMN sort_order INTEGER').run(); } catch (e) {}
   try { db.prepare('ALTER TABLE send_queue ADD COLUMN scheduled_at INTEGER').run(); } catch (e) {}
+  // Send-queue robustness: claim/recovery + bounded retries + per-attempt history.
+  try { db.prepare('ALTER TABLE send_queue ADD COLUMN processing_started_at INTEGER').run(); } catch (e) {}
+  try { db.prepare('ALTER TABLE send_queue ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0').run(); } catch (e) {}
+  try { db.prepare('ALTER TABLE send_queue ADD COLUMN attempt_log TEXT').run(); } catch (e) {}
   // Initialize sort_order for existing rows that have NULL
   db.prepare("UPDATE send_queue SET sort_order = id WHERE sort_order IS NULL").run();
 
@@ -580,6 +613,8 @@ export function deferredDbInit() {
   try { db.prepare('ALTER TABLE files ADD COLUMN cover_source TEXT').run(); } catch(e) {}
   try { db.prepare('ALTER TABLE files ADD COLUMN is_favorite INTEGER DEFAULT 0').run(); } catch(e) {}
   try { db.prepare('CREATE INDEX IF NOT EXISTS idx_files_favorite ON files(is_favorite DESC, id)').run(); } catch(e) {}
+  try { db.prepare('ALTER TABLE files ADD COLUMN is_locked INTEGER DEFAULT 0').run(); } catch(e) {}
+  try { db.prepare('CREATE INDEX IF NOT EXISTS idx_files_locked ON files(is_locked DESC, id)').run(); } catch(e) {}
   try { db.prepare("ALTER TABLE files ADD COLUMN youtube_id TEXT").run(); } catch(e) {}
   try { db.prepare("ALTER TABLE files ADD COLUMN video_offset REAL DEFAULT 0").run(); } catch(e) {}
   try { db.prepare('ALTER TABLE folders ADD COLUMN recursive_file_count INTEGER').run(); } catch(e) {}
@@ -1029,6 +1064,34 @@ const stmts = {
 
   getFolder: db.prepare('SELECT * FROM folders WHERE id = ?'),
   getFolderByPath: db.prepare('SELECT * FROM folders WHERE path = ?'),
+  getFolderGeneration: db.prepare('SELECT generation FROM folder_generation WHERE folder_id = ?'),
+
+  // Index + batch: optional type filter and favorite-only. Built dynamically in
+  // the route from a whitelist; only dir_id is positional.
+  getFilesIndexByTypeFav: db.prepare(
+    `SELECT id FROM files WHERE dir_id = ? AND type = ? AND is_favorite = 1`
+  ),
+  getFilesIndexByFav: db.prepare(
+    `SELECT id FROM files WHERE dir_id = ? AND is_favorite = 1`
+  ),
+  getFilesIndexByType: db.prepare(
+    `SELECT id FROM files WHERE dir_id = ? AND type = ?`
+  ),
+  getFilesIndexAll: db.prepare(
+    `SELECT id FROM files WHERE dir_id = ?`
+  ),
+  getFilesBatch: db.prepare(`
+    SELECT f.id, f.name, f.type, f.ext, f.size, f.mtime, f.has_thumb, f.duration,
+           f.created_at, f.uploaded_at, f.is_favorite, d.path as dir_path
+    FROM files f
+    JOIN folders d ON f.dir_id = d.id
+    WHERE f.id IN (SELECT json_each.value FROM json_each(?))
+  `),
+  getFilesSubfolders: db.prepare(`
+    SELECT f.id FROM files f
+    JOIN folders fo ON fo.id = f.dir_id
+    WHERE (fo.parent_id = ? OR fo.id = ?) AND f.id IN (SELECT json_each.value FROM json_each(?))
+  `),
   getFolderById: db.prepare('SELECT id, path, parent_id, depth FROM folders WHERE id = ?'),
   getFoldersByParent: db.prepare('SELECT id, path, COALESCE(recursive_file_count, file_count) as file_count, COALESCE(recursive_total_size, total_size) as total_size, last_updated, (SELECT COUNT(*) FROM folders sub WHERE sub.parent_id = folders.id) as subfolder_count FROM folders WHERE parent_id = ? ORDER BY path ASC'),
   getFoldersByParentDistinct: db.prepare(`
@@ -1061,6 +1124,15 @@ const stmts = {
     FROM files f
     JOIN folders d ON f.dir_id = d.id
     WHERE f.dir_id = ? AND (f.created_at, f.id) < (?, ?)
+    ORDER BY f.created_at DESC, f.id DESC
+    LIMIT ?
+  `),
+  getFilesCursorWithPathPrev: db.prepare(`
+    SELECT f.id, f.name, f.type, f.ext, f.size, f.mtime, f.has_thumb, f.thumb_cache_path, f.dir_id, f.created_at, f.uploaded_at, f.is_favorite,
+           d.path as dir_path
+    FROM files f
+    JOIN folders d ON f.dir_id = d.id
+    WHERE f.dir_id = ? AND (f.created_at, f.id) > (?, ?)
     ORDER BY f.created_at DESC, f.id DESC
     LIMIT ?
   `),

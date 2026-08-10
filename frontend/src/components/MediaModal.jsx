@@ -3,17 +3,30 @@ import VideoPlayer from './VideoPlayer';
 import VaultAudioPlayer from './VaultAudioPlayer';
 import ImageViewer from './ImageViewer';
 import VaultBottomCluster from './VaultBottomCluster';
-import VaultActionBar from './VaultActionBar';
 import SendProgressPills from './SendProgressPills';
 import { useVaultMediaActions } from '../hooks/useVaultMediaActions';
-import { buildPlaylistWindow } from '../utils/playlistWindow';
 
-function MediaModal({ file, folderFiles, currentFilter, currentSortBy, currentSortOrder = 'asc', favoriteOnly = false, onClose, onFileChange, onLoadFolderFiles, onToggleFavorite, sharedAudioRef, audioReady }) {
+const WINDOW_RADIUS = 60;
+
+function MediaModal({ file, folderFiles, currentFilter, currentSortBy, currentSortOrder = 'asc', favoriteOnly = false, onClose, onFileChange, onLoadFolderFiles, onToggleFavorite, sharedAudioRef, audioReady, onPreviousEnd, onNextEnd, mediaRepo = null, folderScope = null }) {
    const [displayFile, setDisplayFile] = useState(file);
    const [prevFile, setPrevFile] = useState(null);
    const touchStartX = useRef(0);
    const [hydrated, setHydrated] = useState(false);
    const hydratingRef = useRef(false);
+
+   // Carousel "lock": with lock ON the strip auto-re-centers to the active item
+   // after 30s idle; OFF keeps it wherever the user scrolled. Persisted.
+   const [carouselLock, setCarouselLock] = useState(() => {
+     try { return localStorage.getItem('mv_carousel_lock') !== '0'; } catch { return true; }
+   });
+   const toggleCarouselLock = useCallback(() => {
+     setCarouselLock((prev) => {
+       const next = !prev;
+       try { localStorage.setItem('mv_carousel_lock', next ? '1' : '0'); } catch {}
+       return next;
+     });
+   }, []);
 
    // Lazy hydration: mount shell immediately, hydrate async
    useEffect(() => {
@@ -95,14 +108,39 @@ function MediaModal({ file, folderFiles, currentFilter, currentSortBy, currentSo
      touchStartX.current = 0;
    };
 
-   const handleFileChange = useCallback((newFile) => {
-     // Skip if trying to change to the same file
-     if (newFile?.id === displayFileRef.current?.id) {
-       return;
-     }
-     setDisplayFile(newFile);
-     if (onFileChange) onFileChange(newFile);
-   }, [onFileChange]);
+const handleFileChange = useCallback((newFile) => {
+      // Skip if trying to change to the same file
+      if (newFile?.id === displayFileRef.current?.id) {
+        return;
+      }
+      setDisplayFile(newFile);
+      if (onFileChange) onFileChange(newFile);
+    }, [onFileChange]);
+
+    // Repo-native next/previous used by the keyboard bindings inside the
+    // players. Without this, VideoPlayer's OWN 'global-media-next' handler
+    // navigated through the small hydrated window array (wrapping 1..100) while
+    // the cluster navigated the whole repo — the two fought and the key presses
+    // ended up cycling inside the window instead of walking the full index.
+    const handleRepoNext = useCallback(async () => {
+      const f = displayFileRef.current;
+      if (!mediaRepo || !f?.id) return;
+      const nid = mediaRepo.nextId(f.id);
+      if (!nid) return;
+      mediaRepo.prefetchWindow(mediaRepo.findIndex(nid), 12);
+      const obj = await mediaRepo.getOrHydrate(nid);
+      if (obj) handleFileChange(obj);
+    }, [mediaRepo, handleFileChange]);
+
+    const handleRepoPrev = useCallback(async () => {
+      const f = displayFileRef.current;
+      if (!mediaRepo || !f?.id) return;
+      const pid = mediaRepo.prevId(f.id);
+      if (!pid) return;
+      mediaRepo.prefetchWindow(mediaRepo.findIndex(pid), 12);
+      const obj = await mediaRepo.getOrHydrate(pid);
+      if (obj) handleFileChange(obj);
+    }, [mediaRepo, handleFileChange]);
 
     // Ref bridge so the persistent bottom cluster's controls can drive the
     // CURRENTLY displayed video element. Only the active (cur) video player
@@ -111,93 +149,141 @@ function MediaModal({ file, folderFiles, currentFilter, currentSortBy, currentSo
 
     // Favorite + send + progress logic for the persistent bottom cluster (driven
     // by the currently displayed file). Mirrors the standalone players' logic.
-    const { isFav, waUnsupported, progress, handleToggleFavorite, handleSend } =
+    const { progress, handleToggleFavorite, handleSend, isFileQueued, isFileSent, sendStatus, sendMessage, sendExtraInfo, isFileLocked, toggleItemLock } =
       useVaultMediaActions(displayFile, onToggleFavorite);
 
-    // Get filtered + windowed playlist — never pass the full 72k array to carousel/player.
-    // buildPlaylistWindow returns a centered window (radius=125 → ~251 items max).
-    const playlistFiles = useMemo(() => {
-      if (!folderFiles || folderFiles.length === 0) {
-        return [];
-      }
-
-      let filtered;
-      if (currentFilter === 'all') {
-        filtered = folderFiles;
-      } else if (currentFilter !== 'folder') {
-        filtered = folderFiles.filter(f => f.type === currentFilter);
-      } else {
-        filtered = folderFiles;
-      }
-
-      // Apply favorites filter (matches vault grid's favoriteOnly toggle)
-      if (favoriteOnly) {
-        filtered = filtered.filter(f => f.is_favorite === 1);
-      }
-
-      // Window it to avoid passing 72k to carousel/player
-      const result = buildPlaylistWindow(filtered, displayFile?.id, 125);
-      return result.window;
-    }, [folderFiles, currentFilter, displayFile?.id, favoriteOnly]);
-
-     const renderPlayer = useCallback((f, startPaused = false, isCur = false) => {
-      if (!f) return null;
-       if (f.type === 'video') {
-         return (
-           <VideoPlayer
-             file={f}
-             folderFiles={playlistFiles}
-             currentSortBy={currentSortBy}
-             currentSortOrder={currentSortOrder}
-              onClose={onClose}
-              onFileChange={handleFileChange}
-              onToggleFavorite={onToggleFavorite}
-              embedded
-              mediaRef={isCur ? activeMediaRef : undefined}
-              startPaused={startPaused}
-            />
-        );
-      }
-      if (f.type === 'audio') {
-        return (
-          <VaultAudioPlayer
-            file={f}
-            folderFiles={playlistFiles}
-            currentSortBy={currentSortBy}
-            currentSortOrder={currentSortOrder}
-            onClose={onClose}
-            onAudioChange={handleFileChange}
-            onToggleFavorite={onToggleFavorite}
-            sharedAudioRef={sharedAudioRef}
-            audioReady={audioReady}
-            startPaused={startPaused}
-            embedded
-          />
-        );
-      }
-       if (f.type === 'image') {
-         return (
-           <ImageViewer
-             file={f}
-             folderFiles={playlistFiles}
-             currentSortBy={currentSortBy}
-             currentSortOrder={currentSortOrder}
-             onClose={onClose}
-             onImageChange={handleFileChange}
-             onLoadFolderFiles={onLoadFolderFiles}
-             onToggleFavorite={onToggleFavorite}
-             embedded
-           />
-        );
+     // playlistFiles supplies both the player and the carousel. For folders with many
+     // items we intentionally pass the full filtered list so the carousel can scroll
+     // through the entire folder instead of wrapping at a fixed window.
+     const playlistFiles = useMemo(() => {
+       if (!folderFiles || folderFiles.length === 0) {
+         return [];
        }
-       return null;
-     }, [playlistFiles, currentSortBy, currentSortOrder, onClose, handleFileChange, onToggleFavorite, onLoadFolderFiles, sharedAudioRef, audioReady]);
 
-     // Video/image show a send bar (Tele/WA/All) at the very bottom; audio does
-     // not. The bottom cluster slides DOWN (translateY 3.5rem) in audio mode to
-     // drop the carousel to the bottom and hide the (empty) send-bar slot.
-     const hasSendBar = (t) => t === 'video' || t === 'image';
-     const isAudioMode = displayFile?.type === 'audio';
+       if (currentFilter === 'all') {
+         return favoriteOnly ? folderFiles.filter(f => f.is_favorite === 1) : folderFiles;
+       }
+       if (currentFilter === 'folder') {
+         return favoriteOnly ? folderFiles.filter(f => f.is_favorite === 1) : folderFiles;
+       }
+
+        const filtered = folderFiles.filter(f => f.type === currentFilter);
+        return favoriteOnly ? filtered.filter(f => f.is_favorite === 1) : filtered;
+      }, [folderFiles, currentFilter, favoriteOnly]);
+
+     // Index-driven playback: when a repository + folder scope are supplied we
+     // stop passing the full folder array around. Only a bounded hydrated window
+     // around the ACTIVE item is materialized (Carousel + controls). Next/prev
+     // navigate through the repo (O(1), always wraps).
+      const [windowFiles, setWindowFiles] = useState(null);
+      const scopeJson = mediaRepo && folderScope ? JSON.stringify(folderScope) : null;
+      const [indexReady, setIndexReady] = useState(false);
+      useEffect(() => {
+        if (!mediaRepo || !folderScope || !displayFile?.id) {
+          setWindowFiles(null);
+          setIndexReady(false);
+          return;
+        }
+        let cancelled = false;
+        let ready = false;
+        (async () => {
+          try {
+            ready = await mediaRepo.ensureIndex(folderScope);
+          } catch {}
+          if (cancelled) return;
+          setIndexReady(ready);
+          if (!ready) {
+            setWindowFiles(null);
+            return;
+          }
+          const idx = mediaRepo.findIndex(displayFile.id);
+          if (idx < 0) return;
+          await mediaRepo.prefetchWindow(idx, WINDOW_RADIUS);
+          if (cancelled) return;
+          setWindowFiles(mediaRepo.getWindow(idx, WINDOW_RADIUS).filter(Boolean));
+        })();
+        return () => { cancelled = true; };
+      }, [displayFile?.id, scopeJson, mediaRepo, folderScope]);
+
+      const useRepo = !!(mediaRepo && folderScope && displayFile?.id && indexReady);
+      const clusterFiles = useRepo ? (windowFiles || []) : playlistFiles;
+
+      const renderPlayer = useCallback((f, startPaused = false, isCur = false) => {
+       if (!f) return null;
+         if (f.type === 'video') {
+           return (
+              <VideoPlayer
+                file={f}
+ folderFiles={playlistFiles}
+                 currentSortBy={currentSortBy}
+                 currentSortOrder={currentSortOrder}
+                  onClose={onClose}
+                  onFileChange={handleFileChange}
+                  onToggleFavorite={onToggleFavorite}
+                  embedded
+                  mediaRef={isCur ? activeMediaRef : undefined}
+                  startPaused={startPaused}
+                   onSend={handleSend}
+                   lockEnabled={carouselLock}
+                   onToggleLock={toggleCarouselLock}
+                   onRepoNext={handleRepoNext}
+                   onRepoPrev={handleRepoPrev}
+                   isFileQueued={isFileQueued}
+                   isFileSent={isFileSent}
+                   isFileLocked={isFileLocked}
+                   onToggleItemLock={toggleItemLock}
+                   sendStatus={sendStatus}
+                  sendMessage={sendMessage}
+                  sendExtraInfo={sendExtraInfo}
+                />
+            );
+    }
+    if (f.type === 'audio') {
+      return (
+        <VaultAudioPlayer
+          file={f}
+ folderFiles={playlistFiles}
+              currentSortBy={currentSortBy}
+              currentSortOrder={currentSortOrder}
+              onClose={onClose}
+              onAudioChange={handleFileChange}
+              onToggleFavorite={onToggleFavorite}
+              sharedAudioRef={sharedAudioRef}
+              audioReady={audioReady}
+              startPaused={startPaused}
+              embedded
+              lockEnabled={carouselLock}
+              onToggleLock={toggleCarouselLock}
+            />
+          );
+        }
+         if (f.type === 'image') {
+            return (
+              <ImageViewer
+                file={f}
+                folderFiles={playlistFiles}
+                currentSortBy={currentSortBy}
+                currentSortOrder={currentSortOrder}
+                onClose={onClose}
+                onImageChange={handleFileChange}
+                onLoadFolderFiles={onLoadFolderFiles}
+                onToggleFavorite={onToggleFavorite}
+                embedded
+                lockEnabled={carouselLock}
+                onToggleLock={toggleCarouselLock}
+                onRepoNext={handleRepoNext}
+                onRepoPrev={handleRepoPrev}
+                onSend={handleSend}
+                isFileQueued={isFileQueued}
+                isFileSent={isFileSent}
+                sendStatus={sendStatus}
+                sendMessage={sendMessage}
+                sendExtraInfo={sendExtraInfo}
+              />
+        );
+        }
+        return null;
+      }, [playlistFiles, currentSortBy, currentSortOrder, onClose, handleFileChange, onToggleFavorite, onLoadFolderFiles, sharedAudioRef, audioReady, handleRepoNext, handleRepoPrev, carouselLock, toggleCarouselLock, handleSend, isFileQueued, sendStatus, sendMessage, sendExtraInfo]);
 
      return (
       <div
@@ -244,48 +330,41 @@ function MediaModal({ file, folderFiles, currentFilter, currentSortBy, currentSo
                key={'cur-' + displayFile?.type}
                className="absolute inset-0 z-10 animate-in fade-in duration-300"
              >
-              {renderPlayer(displayFile, false, true)}
-            </div>
+{renderPlayer(displayFile, false, true)}
+             </div>
 
-             {/* Persistent bottom cluster: controls + carousel + send bar, owned
+             {/* Persistent bottom cluster: controls + carousel, owned
                  once by MediaModal so it slides across type swaps. Never remounts
                  (no key) → carousel centering stays continuous, no teleport. */}
-             <VaultBottomCluster
-               type={displayFile?.type}
-               files={playlistFiles}
-               currentFile={displayFile}
-               onSelect={handleFileChange}
-               sortBy={currentSortBy}
-               sortOrder={currentSortOrder}
-               activeMediaRef={activeMediaRef}
-               sharedAudioRef={sharedAudioRef}
-               isAudioMode={isAudioMode}
-               onClose={onClose}
-               onToggleFavorite={onToggleFavorite}
-               bottomBar={hasSendBar(displayFile?.type) ? (
-                  <VaultActionBar
-                    file={displayFile}
-                    isFav={isFav}
-                    onToggleFavorite={handleToggleFavorite}
-                    onSend={handleSend}
-                    waUnsupported={waUnsupported}
-                    hideLove={displayFile?.type === 'video'}
-                    floating
-                  />
-               ) : null}
-             />
+              <VaultBottomCluster
+                type={displayFile?.type}
+                files={clusterFiles}
+                currentFile={displayFile}
+                onSelect={handleFileChange}
+                sortBy={currentSortBy}
+                sortOrder={currentSortOrder}
+                activeMediaRef={activeMediaRef}
+                sharedAudioRef={sharedAudioRef}
+                 onClose={onClose}
+                 onToggleFavorite={onToggleFavorite}
+                 onPreviousEnd={onPreviousEnd}
+                 onNextEnd={onNextEnd}
+                 repo={useRepo ? mediaRepo : null}
+                 lockEnabled={carouselLock}
+                 allFiles={playlistFiles}
+              />
 
-             {/* Send progress pills: rendered once, top-right of the modal,
-                 driven by the cluster's send action (not per-player). */}
-             {progress && (
-               <div className="absolute top-16 right-3 z-50 pointer-events-none">
-                 <SendProgressPills progress={progress} />
-               </div>
-             )}
-         </div>
-        )}
-      </div>
-    );
-}
+              {/* Send progress pills: rendered once, top-right of the modal,
+                  driven by the cluster's send action (not per-player). */}
+              {progress && (
+                <div className="absolute top-16 right-3 z-50 pointer-events-none">
+                  <SendProgressPills progress={progress} />
+                </div>
+              )}
+          </div>
+         )}
+       </div>
+     );
+   }
 
 export default MediaModal;

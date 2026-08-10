@@ -327,14 +327,18 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
           <div data-debug-id="1.2.5" data-debug-name="MiniPrevNext" data-debug-type="other" className="flex items-center gap-0.5">
             <button
               onClick={previous}
-              className="text-neutral-400 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-neutral-800"
+              className="text-neutral-400 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0"
+              tabIndex={-1}
+              onMouseDown={(e) => e.preventDefault()}
             >
               <SkipBack size={14} />
             </button>
             <button
               data-debug-id="1.2.1" data-debug-name="MiniPlayPause" data-debug-type="other"
               onClick={handlePlayPause}
-              className="w-9 h-9 rounded-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white flex items-center justify-center hover:shadow-lg hover:shadow-indigo-500/25 transition-all hover:scale-105 flex-shrink-0"
+              className="w-9 h-9 rounded-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white flex items-center justify-center hover:shadow-lg hover:shadow-indigo-500/25 transition-all hover:scale-105 flex-shrink-0 focus:outline-none focus:ring-0"
+              tabIndex={-1}
+              onMouseDown={(e) => e.preventDefault()}
             >
               {audioPlaying ? (
                 <Pause size={14} fill="currentColor" />
@@ -344,7 +348,9 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
             </button>
             <button
               onClick={next}
-              className="text-neutral-400 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-neutral-800"
+              className="text-neutral-400 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0"
+              tabIndex={-1}
+              onMouseDown={(e) => e.preventDefault()}
             >
               <SkipForward size={14} />
             </button>

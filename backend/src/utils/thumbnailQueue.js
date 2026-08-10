@@ -1,12 +1,19 @@
-import { existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import db, { stmts } from '../db.js';
-import { hasEmbeddedCover, extractEmbeddedThumbnail, extractFrameThumbnail, generateImageThumbnail, generateAudioPlaceholder, THUMBNAIL_DIR, VAAPI_AVAILABLE } from './thumbnailUtils.js';
+import { hasEmbeddedCover, extractEmbeddedThumbnail, extractFrameThumbnail, generateImageThumbnail, generateAudioPlaceholder, THUMBNAIL_DIR, VAAPI_AVAILABLE, getThumbPath } from './thumbnailUtils.js';
 import { resolveFullPath, getFileId, getRelPath } from './fileScanner.js';
 import { get } from './runtimeSettings.js';
+import { registerSubsystem, setPaused } from './resourceManager.js';
 
 mkdirSync(THUMBNAIL_DIR, { recursive: true });
+
+registerSubsystem('thumbnail', {
+  memoryBudget: 2 * 1024 * 1024 * 1024,
+  ioPriority: 'low',
+  cpuPriority: 'low',
+});
 
 let queue = [];
 let processing = false;
@@ -21,7 +28,27 @@ let existingThumbs = new Set();
 const activeProcs = new Set();
 
 function buildThumbCache() {
-  try { existingThumbs = new Set(readdirSync(THUMBNAIL_DIR)); } catch { existingThumbs = new Set(); }
+  try {
+    existingThumbs = new Set();
+    const scanDir = (dir) => {
+      let entries;
+      try { entries = readdirSync(dir); } catch { return; }
+      for (const entry of entries) {
+        const full = join(dir, entry);
+        try {
+          const stat = lstatSync(full);
+          if (stat.isDirectory()) {
+            scanDir(full);
+          } else {
+            existingThumbs.add(entry);
+          }
+        } catch {
+          existingThumbs.add(entry);
+        }
+      }
+    };
+    scanDir(THUMBNAIL_DIR);
+  } catch { existingThumbs = new Set(); }
 }
 buildThumbCache();
 
@@ -112,10 +139,13 @@ function ffmpegRun(args, timeoutMs = 15000) {
 
 async function processOne(item) {
   if (paused || stopped) return false;
-  const outPath = join(THUMBNAIL_DIR, item.id + '.jpg');
+  const outPath = getThumbPath(item.id);
+  const thumbDir = join(outPath, '..');
+  mkdirSync(thumbDir, { recursive: true });
   const quality = get('perf.thumbQuality', 10);
+  const thumbFileName = join(THUMBNAIL_DIR, item.id + '.jpg');
   try {
-    if (existingThumbs.has(item.id + '.jpg')) {
+    if (existingThumbs.has(item.id + '.jpg') || existsSync(outPath)) {
       stmts.updateThumbCachePath.run(outPath, item.id);
       return true;
     }

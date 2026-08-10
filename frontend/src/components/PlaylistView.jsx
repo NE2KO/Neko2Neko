@@ -5,6 +5,7 @@ import { Music, RefreshCw, Trash2, Plus, Upload, X, Check, ChevronDown } from 'l
 import usePlaylistStore from '../store/playlistStore';
 import { loadPlaylists, loadPlaylist, getPlaylistQueue, refreshPlaylists, importXSPFPlaylist, createEmptyPlaylist, removeTrackFromPlaylist, bulkRemoveTracksFromPlaylist } from '../utils/playlistApi';
 import { deletePlaylist } from '../utils/api';
+import { buildPlayableQueue, resolveClickedIndex } from '../utils/playlistQueue';
 import { useToast } from './Toast';
 import PlaylistGrid from './PlaylistGrid';
 import PlaylistRow from './PlaylistRow';
@@ -919,36 +920,25 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
     playTrackGuardRef.current = true;
     setTimeout(() => { playTrackGuardRef.current = false; }, 500);
 
-    const queue = sortedTracks.map((t, i) => ({
-      file_id: t.file_id,
-      track_index: i,
-      display_name: t.display_name,
-      artist: t.artist || '',
-      album: t.album || '',
-      duration: t.duration || 0,
-      path: t.resolved_path || t.location || '',
-      resolved_path: t.resolved_path,
-      location: t.location,
-      exists: !!t.exists && !!t.file_id,
-      type: 'audio',
-      ext: t.resolved_path ? t.resolved_path.split('.').pop()?.toLowerCase() || '' : '',
-      size: t.size || 0,
-      is_favorite: t.is_favorite || 0,
-      youtube_id: t.youtube_id || null,
-      video_offset: t.video_offset || 0,
-    })).filter(t => t.exists && (t.file_id || t.id));
+    // Build the playable queue from the SAME ordered list the user sees
+    // (displayTracks) so the clicked track's index maps directly into this
+    // queue — the old code built it from sortedTracks (which can diverge from
+    // the displayed/animating order) and then fell back to index 0 on any
+    // mismatch, which is why clicking the 3rd track played the 1st.
+    const playableTracks = buildPlayableQueue(displayTracks);
+    if (playableTracks.length === 0) return;
 
-    if (queue.length === 0) return;
+    // Resolve the clicked track by its stable id (fallback file_id) within this
+    // playable subset. Never fall back to 0 — that silently plays the wrong
+    // (first) track. If it isn't playable, tell the user instead.
+    const clickedIdx = resolveClickedIndex(track, playableTracks);
 
-    let clickedIdx = queue.findIndex(t => (t.file_id || t.id) === fileId);
-    if (clickedIdx < 0 && typeof index === 'number' && index >= 0 && index < queue.length) {
-      clickedIdx = index;
+    if (clickedIdx < 0 || clickedIdx >= playableTracks.length) {
+      showToast('Lagu belum tersedia', 'error');
+      return;
     }
-    if (clickedIdx < 0) clickedIdx = 0;
-
-    if (clickedIdx < 0 || clickedIdx >= queue.length) return;
-    onPlayTrack(track, queue, clickedIdx, selectedPlaylist);
-  }, [selectedPlaylist, onPlayTrack, loadingTracks, sortedTracks]);
+    onPlayTrack(track, playableTracks, clickedIdx, selectedPlaylist);
+  }, [selectedPlaylist, onPlayTrack, loadingTracks, displayTracks, showToast]);
 
   const listRowData = useMemo(() => ({
     tracks: displayTracks,

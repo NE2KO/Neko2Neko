@@ -134,7 +134,12 @@ export async function sendMediaToTargets(filePath, { channel = false, status = f
   if (channel) {
     try {
       const opts = caption ? { caption } : undefined;
-      await withTimeout(client.sendMessage('120363428745244070@newsletter', media, opts), 'Channel');
+      const sent = await withTimeout(client.sendMessage('120363428745244070@newsletter', media, opts), 'Channel');
+      // Hardened success contract: whatsapp-web.js returns a Message (with .id) on
+      // success and throws on failure. A falsy / id-less return is anomalous — NEVER
+      // treat it as success. The scheduler depends only on this normalized result.
+      const confirmed = sent && (sent.id || typeof sent !== 'object');
+      if (!confirmed) throw new Error('Message not confirmed sent (no return id)');
       results.channel = 'sent';
     } catch (err) {
       results.channel = 'err: ' + normalizeWaError(err).message;

@@ -11,17 +11,59 @@ const DEFAULT_LIMIT = 5000;
 
 const router = Router();
 
+// --- Binary media index (playback/navigation) ------------------------------
+// Per-folder ordered ID list served as raw 16-byte IDs (the DB id is a 32-char
+// hex string = 16 bytes). Client does `offset = i * 16` random access — no JSON.
+const INDEX_TYPES = new Set(['video', 'audio', 'image']);
+const ID_BYTES = 16;
+const SORT_CLAUSE = {
+  created_at: { asc: 'f.created_at ASC, f.id DESC', desc: 'f.created_at DESC, f.id DESC' },
+  name:       { asc: 'LOWER(f.name) ASC, f.id ASC', desc: 'LOWER(f.name) DESC, f.id DESC' },
+  mtime:      { asc: 'f.mtime ASC, f.id ASC',      desc: 'f.mtime DESC, f.id DESC' },
+  size:       { asc: 'f.size ASC, f.id ASC',       desc: 'f.size DESC, f.id DESC' },
+};
+const indexStmtCache = new Map();
+
+function getIndexStmt(sortBy, sortOrder, type, favoriteOnly) {
+  const order = SORT_CLAUSE[sortBy] || SORT_CLAUSE.created_at;
+  const dir = (sortOrder === 'asc') ? 'asc' : 'desc';
+  const key = `${sortBy}:${dir}:${type || '*'}:${favoriteOnly ? 'fav' : '0'}`;
+  let stmt = indexStmtCache.get(key);
+  if (stmt) return stmt;
+
+  const clauses = ['f.dir_id = ?'];
+  if (type && INDEX_TYPES.has(type)) clauses.push("f.type = ?");
+  if (favoriteOnly) clauses.push('f.is_favorite = 1');
+  const sql = `SELECT f.id FROM files f WHERE ${clauses.join(' AND ')} ORDER BY ${order[dir]}`;
+  stmt = db.prepare(sql);
+  indexStmtCache.set(key, stmt);
+  return stmt;
+}
+
+function queryIndex(dirId, sortBy, sortOrder, type, favoriteOnly) {
+  const stmt = getIndexStmt(
+    (sortBy === 'all' ? null : sortBy),
+    sortOrder,
+    (!type || type === 'folder' || type === 'all') ? null : type,
+    favoriteOnly === '1' || favoriteOnly === 'true'
+  );
+  const params = [dirId];
+  if (stmt.source.includes("f.type = ?")) params.push(type);
+  return stmt.all(...params);
+}
+
 // GET /api/files?path=&folder_id=&cursor=&limit=&view=&sortBy=&sortOrder=
 router.get('/', async (req, res) => {
   try {
     console.time('[files] API request');
     const folderPath = req.query.path || '';
     const folderIdQuery = req.query.folder_id ? parseInt(req.query.folder_id, 10) : null;
-    const cursor = req.query.cursor || null;
-    const limit = Math.min(parseInt(req.query.limit, 10) || DEFAULT_LIMIT, 10000);
-    const view = req.query.view || 'grid';
-    const sortBy = req.query.sortBy || 'created_at';
-    const sortOrder = req.query.sortOrder || 'desc';
+     const cursor = req.query.cursor || null;
+    const prevCursorParam = req.query.prev_cursor || null;
+     const limit = Math.min(parseInt(req.query.limit, 10) || DEFAULT_LIMIT, 10000);
+     const view = req.query.view || 'grid';
+     const sortBy = req.query.sortBy || 'created_at';
+     const sortOrder = req.query.sortOrder || 'desc';
 
     let folder;
     if (folderIdQuery) {
@@ -35,13 +77,13 @@ router.get('/', async (req, res) => {
           folder = stmts.getFolder.get(newId);
         } catch (e) {
           console.timeEnd('[files] API request');
-          return res.json({ items: [], folders: [], next_cursor: null, has_more: false, total_count: 0 });
+          return res.json({ items: [], folders: [], next_cursor: null, prev_cursor: null, has_more: false, total_count: 0 });
         }
       }
     }
     if (!folder) {
       console.timeEnd('[files] API request');
-      return res.json({ items: [], folders: [], next_cursor: null, has_more: false, total_count: 0 });
+      return res.json({ items: [], folders: [], next_cursor: null, prev_cursor: null, has_more: false, total_count: 0 });
     }
 
     const folders = stmts.getFoldersByParentDistinct.all(folder.id);
@@ -55,8 +97,11 @@ router.get('/', async (req, res) => {
       try { return JSON.parse(c); } catch { return null; }
     }
 
-    if (hasCursor && sortBy === 'created_at' && sortOrder === 'desc') {
-      // Cursor pagination for created_at DESC (original format, kept for backward compat)
+     if (prevCursorParam && sortBy === 'created_at' && sortOrder === 'desc') {
+      const [pc, pid] = prevCursorParam.split('_');
+      const pCreatedAt = parseInt(pc, 10) || 0;
+      items = stmts.getFilesCursorWithPathPrev.all(folder.id, pCreatedAt, pid, queryLimit);
+    } else if (hasCursor && sortBy === 'created_at' && sortOrder === 'desc') {
       const [cursorCreatedAt, cursorId] = cursor.split('_');
       const createdAtNum = parseInt(cursorCreatedAt, 10) || 0;
       items = stmts.getFilesCursorWithPath.all(folder.id, createdAtNum, cursorId, queryLimit);
@@ -117,7 +162,6 @@ router.get('/', async (req, res) => {
     let nextCursor = null;
     if (lastItem) {
       if (sortBy === 'created_at') {
-        // Use legacy format for desc, JSON for asc
         if (sortOrder === 'desc') {
           nextCursor = `${lastItem.created_at}_${lastItem.id}`;
         } else {
@@ -132,6 +176,12 @@ router.get('/', async (req, res) => {
       } else {
         nextCursor = `${lastItem.created_at}_${lastItem.id}`;
       }
+    }
+
+    const firstItem = items[0];
+    let prevCursor = null;
+    if (firstItem && sortBy === 'created_at' && sortOrder === 'desc') {
+      prevCursor = `${firstItem.created_at}_${firstItem.id}`;
     }
 
     const shapedItems = items.map((item) => ({
@@ -217,6 +267,7 @@ router.get('/', async (req, res) => {
         total_size: folder.total_size,
       },
       next_cursor: nextCursor,
+      prev_cursor: prevCursor,
       has_more: hasMore,
       total_count: folder.file_count,
     });
@@ -228,22 +279,39 @@ router.get('/', async (req, res) => {
 
 const SHUFFLE_LIMIT = 50000;
 
-// GET /api/files/shuffle — all playable files in random order
-router.get('/shuffle', (req, res) => {
+// GET /api/files/shuffle — deterministic shuffled playable files by folder + seed
+router.get('/shuffle', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit, 10) || SHUFFLE_LIMIT, 100000);
-    const items = db.prepare(`
-      SELECT f.id, f.name, f.type, f.ext, f.size, f.mtime, f.has_thumb, f.thumb_cache_path, f.dir_id, f.duration, f.created_at, f.uploaded_at, f.is_favorite,
-             d.path as dir_path
-      FROM files f
-      JOIN folders d ON f.dir_id = d.id
-      WHERE f.ROWID IN (
-        SELECT ROWID FROM files
-        WHERE type IN ('video', 'audio')
-        ORDER BY RANDOM()
+    const folderId = req.query.folder_id ? parseInt(req.query.folder_id, 10) : null;
+    const seed = req.query.seed ? parseInt(req.query.seed, 10) : Math.floor(Math.random() * 4294967296);
+
+    let items;
+    if (folderId) {
+      const { getShuffledFiles } = await import('../utils/deterministicShuffle.js');
+      items = await getShuffledFiles(folderId, seed, limit);
+    } else {
+      const idRows = db.prepare(`
+        SELECT f.id
+        FROM files f
+        WHERE f.type IN ('video', 'audio')
+        ORDER BY f.created_at DESC, f.id DESC
         LIMIT ?
-      )
-    `).all(limit);
+      `).all(limit);
+
+      const ids = idRows.map(r => r.id);
+      const { deterministicShuffle } = await import('../utils/deterministicShuffle.js');
+      const shuffled = deterministicShuffle(ids, seed);
+
+      const placeholders = shuffled.map(() => '?').join(',');
+      items = db.prepare(`
+        SELECT f.id, f.name, f.type, f.ext, f.size, f.mtime, f.has_thumb, f.thumb_cache_path, f.dir_id, f.duration, f.created_at, f.uploaded_at, f.is_favorite,
+               d.path as dir_path
+        FROM files f
+        JOIN folders d ON f.dir_id = d.id
+        WHERE f.id IN (${placeholders})
+      `).all(...shuffled);
+    }
 
     const shapedItems = items.map((item) => ({
       id: item.id,
@@ -261,7 +329,6 @@ router.get('/shuffle', (req, res) => {
       bitrate: item.duration > 0 ? Math.round(item.size / item.duration) : 0,
     }));
 
-    // Pre-generate thumbnails for first items in background (limited)
     if (shapedItems.length > 0) {
       const pregenLimit = Math.min(shapedItems.length, 4);
       for (let i = 0; i < pregenLimit; i++) {
@@ -274,7 +341,7 @@ router.get('/shuffle', (req, res) => {
       }
     }
 
-    res.json({ items: shapedItems, has_more: items.length === limit });
+    res.json({ items: shapedItems, has_more: shapedItems.length === limit, seed });
   } catch (err) {
     console.error('[files/shuffle] Error:', err);
     res.status(500).json({ error: 'Failed to fetch shuffle' });
@@ -339,6 +406,94 @@ router.get('/folders/:id', async (req, res) => {
   } catch (err) {
     console.error('[folders/:id] Error:', err);
     res.status(500).json({ error: 'Failed to fetch folder' });
+  }
+});
+
+// GET /api/folders/:id/index - ordered ID index (binary) for a folder
+router.get('/folders/:id/index', (req, res) => {
+  try {
+    const folderId = parseInt(req.params.id, 10);
+    if (isNaN(folderId)) {
+      return res.status(400).json({ error: 'Invalid folder ID' });
+    }
+    const folder = stmts.getFolder.get(folderId);
+    if (!folder) {
+      return res.status(404).json({ error: 'Folder not found' });
+    }
+
+    const sortBy = req.query.sortBy || 'created_at';
+    const sortOrder = req.query.sortOrder || 'desc';
+    const type = req.query.type || null;
+    const favoriteOnly = req.query.favoriteOnly;
+
+    const rows = queryIndex(folderId, sortBy, sortOrder, type, favoriteOnly);
+    const generationRow = stmts.getFolderGeneration.get(folderId);
+    const generation = generationRow?.generation || 0;
+
+    // ETag-style conditional revalidation: client can HEAD/GET with If-None-Match
+    // and only re-download the body when the folder's generation changed.
+    const etag = `W/"${folderId}:${generation}:${sortBy}:${sortOrder}:${type || 'all'}:${favoriteOnly ? 'fav' : '0'}"`;
+    if ((req.headers['if-none-match'] || '').trim() === etag) {
+      res.status(304).end();
+      return;
+    }
+
+    // 32-char hex id -> 16 raw bytes, concatenated.
+    const buf = Buffer.alloc(rows.length * ID_BYTES);
+    for (let i = 0; i < rows.length; i++) {
+      Buffer.from(rows[i].id, 'hex').copy(buf, i * ID_BYTES);
+    }
+
+    res.set({
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': buf.length,
+      'Cache-Control': 'max-age=5, must-revalidate',
+      'ETag': etag,
+      'X-Index-Version': String(generation),
+      'X-Index-Total': String(rows.length),
+    });
+    res.send(buf);
+  } catch (err) {
+    console.error('[folders/:id/index] Error:', err);
+    res.status(500).json({ error: 'Failed to fetch index' });
+  }
+});
+
+// POST /api/files/batch - hydrate full objects for a set of IDs (preserves order)
+router.post('/batch', (req, res) => {
+  try {
+    const idsParam = req.body?.ids;
+    if (!Array.isArray(idsParam) || idsParam.length === 0) {
+      return res.status(400).json({ error: 'ids array required' });
+    }
+    const ids = [...new Set(idsParam)].slice(0, 100);
+
+    const rows = stmts.getFilesBatch.all(JSON.stringify(ids));
+    const byId = new Map();
+    for (const item of rows) {
+      byId.set(item.id, {
+        id: item.id,
+        name: item.name,
+        type: item.type,
+        ext: item.ext,
+        size: item.size,
+        mtime: item.mtime,
+        created_at: item.created_at,
+        has_thumb: item.has_thumb,
+        dir_path: item.dir_path,
+        duration: item.duration || 0,
+        bitrate: item.duration > 0 ? Math.round(item.size / item.duration) : 0,
+        uploaded_at: item.uploaded_at || null,
+        is_favorite: item.is_favorite || 0,
+      });
+    }
+    const items = ids.filter(id => byId.has(id)).map(id => byId.get(id));
+    const missingIds = ids.filter(id => !byId.has(id));
+
+    res.json({ items, missingIds });
+  } catch (err) {
+    console.error('[files/batch] Error:', err);
+    res.status(500).json({ error: 'Failed to batch fetch' });
   }
 });
 
@@ -471,6 +626,32 @@ router.get('/search/suggest', async (req, res) => {
     res.json({ suggestions: suggestions.map(s => s.name) });
   } catch (err) {
     res.status(500).json({ error: 'Suggestions failed' });
+  }
+});
+
+// PATCH /api/files/:id/lock — toggle item lock (prevents sending)
+router.patch('/:id/lock', (req, res) => {
+  try {
+    const file = stmts.getFile.get(req.params.id);
+    if (!file) return res.status(404).json({ error: 'File not found' });
+    const newVal = file.is_locked ? 0 : 1;
+    db.prepare('UPDATE files SET is_locked = ? WHERE id = ?').run(newVal, req.params.id);
+    res.json({ id: req.params.id, is_locked: newVal });
+  } catch (err) {
+    console.error('[files/lock] Error:', err);
+    res.status(500).json({ error: 'Failed to toggle lock' });
+  }
+});
+
+// GET /api/files/:id/lock — current lock state
+router.get('/:id/lock', (req, res) => {
+  try {
+    const file = stmts.getFile.get(req.params.id);
+    if (!file) return res.status(404).json({ error: 'File not found' });
+    res.json({ id: req.params.id, is_locked: file.is_locked || 0 });
+  } catch (err) {
+    console.error('[files/lock] Error:', err);
+    res.status(500).json({ error: 'Failed to read lock' });
   }
 });
 

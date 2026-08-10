@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { ChevronLeft, Heart } from 'lucide-react';
+import CarouselLockToggle from './CarouselLockToggle';
 import MediaLayout from './MediaLayout';
 import MediaControls from './MediaControls';
 import NetworkImage from './NetworkImage';
@@ -26,6 +27,8 @@ export default function VaultAudioPlayer({
   audioReady,
   startPaused = false,
   embedded = false,
+  lockEnabled = true,
+  onToggleLock = null,
 }) {
   const { isPlaying, play, pause } = usePlaybackStore();
   const [activeFile, setActiveFile] = useState(file);
@@ -143,6 +146,41 @@ export default function VaultAudioPlayer({
     };
   }, [autoPlayPending, audioRef]);
 
+  // React to global play/pause state changes (e.g. Spacebar handler)
+  useEffect(() => {
+    const audio = audioRef?.current;
+    if (!audio || !audioReady) return;
+    if (isPlaying && audio.paused) {
+      audio.play().catch(() => {});
+    } else if (!isPlaying && !audio.paused) {
+      audio.pause();
+    }
+  }, [isPlaying, audioReady, audioRef]);
+
+  // Toggle play/pause when Spacebar is pressed from App-level handler
+  useEffect(() => {
+    const handler = () => {
+      const audio = audioRef?.current;
+      if (!audio || !audioReady) return;
+      try {
+        if (audio.paused) audio.play().catch(() => {});
+        else audio.pause();
+      } catch {}
+    };
+    window.addEventListener('global-media-toggle-play', handler);
+    return () => window.removeEventListener('global-media-toggle-play', handler);
+  }, [audioReady, audioRef]);
+
+  // Toggle favorite when L key is pressed from App-level handler
+  useEffect(() => {
+    const handler = () => {
+      if (!activeFile?.id || !onToggleFavorite) return;
+      onToggleFavorite(activeFile);
+    };
+    window.addEventListener('global-media-toggle-favorite', handler);
+    return () => window.removeEventListener('global-media-toggle-favorite', handler);
+  }, [activeFile, onToggleFavorite]);
+
   const carouselFiles = favoriteOnly ? folderFiles.filter(f => f.is_favorite === 1) : folderFiles;
 
   const handleCarouselSelect = useCallback((selectedFile) => {
@@ -181,13 +219,16 @@ export default function VaultAudioPlayer({
       >
         <ChevronLeft className="w-5 h-5 text-white" />
       </button>
-      <div className="absolute left-1/2 -translate-x-1/2 text-center pointer-events-none">
+      <div className="flex-1 min-w-0 text-center pl-16 pointer-events-none">
         <span className="text-[10px] font-bold text-purple-400 uppercase tracking-[0.2em]">Now Playing</span>
       </div>
       <div className="ml-auto flex items-center gap-1">
+        {onToggleLock && (
+          <CarouselLockToggle lockEnabled={lockEnabled} onToggleLock={onToggleLock} />
+        )}
         <button
           onClick={handleToggleFavorite}
-          className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/20 hover:text-white"
+          className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/20 hover:text-white focus:outline-none focus:ring-0"
           title="Add to favorites"
         >
           <Heart size={20} className={activeFile?.is_favorite ? 'fill-red-500 text-red-500' : ''} />

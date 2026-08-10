@@ -38,7 +38,9 @@ globalThis.stmts = stmts;
 
 import { startWatcher, addSseClient, runIncrementalScan } from './utils/watcher.js';
 import { startMaintenanceScheduler } from './utils/maintenance.js';
+import { startAdaptiveController } from './utils/adaptiveController.js';
 import { get } from './utils/runtimeSettings.js';
+import { getSnapshot as getResourceSnapshot } from './utils/resourceManager.js';
 import { sessionMiddleware } from './utils/sessionTracker.js';
 import { PATHS, SETTINGS } from './config/paths.js';
 import { createLogger } from './utils/logger.js';
@@ -109,6 +111,34 @@ app.use('/api/metadata', requireService('mediaVault'), metadataRouter);
 app.use('/api/scrcpy', scrcpyRouter);
 app.use('/api/send', sendRouter);
 app.use('/api/video-cache', videoCacheRouter);
+app.use('/api/debug/resources', (req, res) => {
+  try {
+    res.json(getResourceSnapshot());
+  } catch (err) {
+    console.error('[debug/resources]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/debug/stress/scanner', async (req, res) => {
+  try {
+    const { runIncrementalScan } = await import('./utils/watcher.js');
+    res.json({ status: 'started', message: 'Incremental scan triggered' });
+    runIncrementalScan().catch(() => {});
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/debug/stress/folders', (req, res) => {
+  try {
+    const count = stmts.countFolders.get().cnt;
+    res.json({ folders: count });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 setupWhatsAppRoutes(app);
 
 try { initTelegramInbound(); } catch (e) { console.warn('[startup] telegram inbound init failed:', e.message); }
@@ -384,6 +414,7 @@ function startServerWithPortFallback() {
       // Watcher + maintenance — lightweight, can start immediately
       startWatcher();
       startMaintenanceScheduler();
+      startAdaptiveController();
 
       // Proactively faststart-remux all cached videos so every play serves a
       // web-seekable copy (no green frame / offset-seek blank wait). Deferred

@@ -3,7 +3,7 @@ import db from '../db.js';
 import { sendFileToTelegram, getBot } from '../utils/telegramBot.js';
 import { getFileWithRelPath } from '../utils/fileResolver.js';
 import { incrementTelegramCount, incrementWhatsAppCount, isSeparatorNeeded } from '../utils/sendCounter.js';
-import { canSendNow, recordSend, enqueueSend, getActiveOrRecentSend, markProcessing, markSendDone, cancelSend, retrySend, removeSend, clearHistory, getStatusCounts, getQueueByStatus, getSendSettings, setSendSettings, clearHolds, clearDebugHistory, buildQueueTimeline, getPerDay, getPendingSends, getAllPendingSends, getRateState, setQueueCaption, reorderQueueItem, rescheduleQueueItem } from '../utils/sendRateLimit.js';
+import { canSendNow, recordSend, enqueueSend, getActiveOrRecentSend, markProcessing, markSendDone, cancelSend, retrySend, removeSend, clearHistory, getStatusCounts, getQueueByStatus, getSendSettings, setSendSettings, clearHolds, clearDebugHistory, buildQueueTimeline, getPerDay, getPendingSends, getAllPendingSends, getRateState, setQueueCaption, reorderQueueItem, rescheduleQueueItem, initScheduleIntegrity, claimPending, requeueForRetry, waPermanentMediaError } from '../utils/sendRateLimit.js';
 
 const router = Router();
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '-1002821903652';
@@ -179,17 +179,81 @@ async function performSend(fileId, target, qid, caption = '') {
   return { target, results };
 }
 
-// Build a short human-readable summary of any failed targets.
-function summarizeFailures(results) {
+// Result keys per logical target. The scheduler depends ONLY on these normalized
+// tokens (never on raw client.sendMessage return values) — see the contract
+// boundary in the plan. `sent` = delivered; anything else (including 'err: …') = failure.
+const TARGET_RESULT_KEYS = {
+  telegram: ['telegram'],
+  channel: ['whatsapp_channel'],
+  status: ['whatsapp_status'],
+  whatsapp: ['whatsapp_channel', 'whatsapp_status'],
+  all: ['telegram', 'whatsapp_channel', 'whatsapp_status'],
+};
+
+// Strict delivery: every requested target must be exactly 'sent'.
+function isDelivered(results, target) {
+  const keys = TARGET_RESULT_KEYS[target] || [];
+  if (keys.length === 0) return false;
+  return keys.every((k) => results[k] === 'sent');
+}
+
+// Rich, non-null root cause from the failed targets (they already carry the real
+// message from normalizeWaError). Empty → caller coerces to a generic message so
+// `error` is never NULL.
+function buildError(results, target) {
+  const keys = TARGET_RESULT_KEYS[target] || [];
   const failed = [];
-  if (results.telegram && results.telegram.startsWith('err')) failed.push('Telegram: ' + results.telegram.slice(4));
-  if (results.whatsapp_channel && results.whatsapp_channel.startsWith('err')) failed.push('WA Channel: ' + results.whatsapp_channel.slice(4));
-  if (results.whatsapp_status && results.whatsapp_status.startsWith('err')) failed.push('WA Status: ' + results.whatsapp_status.slice(4));
+  for (const k of keys) {
+    const v = results[k];
+    if (v && v.startsWith('err')) failed.push(v.slice(4));
+  }
   return failed.length ? failed.join(' | ') : null;
+}
+
+// WA media-decode failures are deterministic: no amount of retrying fixes a codec
+// WhatsApp can't stream. Detect them so they're marked 'failed' immediately
+// (PERMANENT_MEDIA_ERROR) instead of burning the retry budget.
+function isPermanentMediaError(msg) {
+  return /Media gagal diproses WA|codec .* tidak didukung|media type unsupported|media gagal diproses/i.test(msg || '');
+}
+
+// Unified send-outcome handler used by BOTH the direct-send path and the
+// scheduler tick. A failed attempt is retried (requeued with backoff) up to the
+// retry budget instead of being marked 'failed' immediately. This keeps a
+// transient failure (e.g. "File not found" when a file hasn't been scanned/
+// indexed yet, or a momentary storage hiccup) from permanently dropping an item
+// — previously only the scheduler retried, while the direct "send now" path
+// marked such items 'failed' on the very first attempt (retry_count stayed 0).
+// A permanent media error (see isPermanentMediaError) is failed immediately and
+// never retried.
+function recordSendOutcome(id, delivered, msg) {
+  if (delivered) {
+    markSendDone(id, true, msg || null);
+    return;
+  }
+  if (isPermanentMediaError(msg)) {
+    markSendDone(id, false, msg || 'Permanent media error: media not supported by WhatsApp');
+    return;
+  }
+  const row = db.prepare('SELECT retry_count FROM send_queue WHERE id = ?').get(id);
+  const rc = (row && Number.isFinite(row.retry_count)) ? row.retry_count : 0;
+  if (rc < 2) {
+    requeueForRetry(id, rc, msg || 'Send failed: unknown error');
+  } else {
+    markSendDone(id, false, msg || 'Send failed: unknown error');
+  }
 }
 
 // ── Enqueue or send directly ──
 async function enqueueOrSend(fileId, target, force = false) {
+  // Preflight: a known-incompatible (e.g. AV1) video can never stream to WhatsApp.
+  // Reject up front (defense-in-depth alongside the scheduler preflight) so we
+  // don't enqueue/attempt a deterministically-impossible send.
+  const permErr = waPermanentMediaError(fileId, target);
+  if (permErr) {
+    return { sent: false, queued: false, permanent: true, error: permErr };
+  }
+
   const settings = getSendSettings();
   const debugMode = settings.debugMode;
   const debugCaption = debugMode ? '[DEBUG]' : null;
@@ -244,29 +308,18 @@ async function enqueueOrSend(fileId, target, force = false) {
     try {
       const out = await performSend(fileId, target, id);
       recordSend();
-      const errSummary = summarizeFailures(out.results);
-      const waFailed = isWaFailed(out.results, target);
-      markSendDone(id, !waFailed, errSummary || null);
+      const delivered = isDelivered(out.results, target);
+      const errSummary = buildError(out.results, target);
+      recordSendOutcome(id, delivered, errSummary);
       scheduleClearProgress(id);
       return { sent: true, queued: false, queueId: id, results: out.results, error: errSummary };
     } catch (err) {
-      markSendDone(id, false, err.message);
+      recordSendOutcome(id, false, err.message);
       scheduleClearProgress(id);
       return { sent: false, queued: false, queueId: id, error: err.message };
     }
   }
   return { sent: false, queued: true, queueId: id, nextAllowedAt: policy.nextAllowedAt, remainingToday: policy.remainingToday };
-}
-
-// Did every WhatsApp target the user actually asked for fail? Used to decide
-// whether the queue row is 'done' or 'failed'. Targets not requested are ignored
-// (e.g. a 'channel'-only send isn't failed just because status wasn't attempted).
-function isWaFailed(results, target) {
-  const keys = [];
-  if (target === 'channel' || target === 'whatsapp' || target === 'all') keys.push('whatsapp_channel');
-  if (target === 'status' || target === 'whatsapp' || target === 'all') keys.push('whatsapp_status');
-  if (keys.length === 0) return false;
-  return keys.every(k => results[k] && results[k].startsWith('err'));
 }
 
 router.post('/telegram', async (req, res) => {
@@ -441,7 +494,7 @@ router.post('/queue/:id/retry', (req, res) => {
     const ok = retrySend(id);
     res.json({ ok });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(400).json({ ok: false, error: err.message });
   }
 });
 
@@ -514,13 +567,43 @@ router.post('/queue/:id/resend', async (req, res) => {
   }
 });
 
+// TEMP: direct-send a specific queue item by id (bypasses the scheduler + the
+// enqueueOrSend dedup guard) so we can test COPIES of the queue without the
+// still-pending originals blocking them via getActiveOrRecentSend. Used by the
+// full-queue video test; remove after the test.
+router.post('/_testsend/:id', async (req, res) => {
+  let id;
+  try {
+    id = parseInt(req.params.id, 10);
+    const row = db.prepare('SELECT id, file_id, target, caption FROM send_queue WHERE id = ?').get(id);
+    if (!row) return res.status(404).json({ error: 'Item not found' });
+    const out = await performSend(row.file_id, row.target, id, row.caption || '');
+    const delivered = isDelivered(out.results, row.target);
+    const msg = buildError(out.results, row.target);
+    recordSendOutcome(id, delivered, msg);
+    res.json({ ok: true, delivered, msg, results: out.results });
+  } catch (err) {
+    try { recordSendOutcome(id, false, err && err.message); } catch {}
+    res.status(500).json({ error: err && err.message });
+  }
+});
+
 let schedulerStarted = false;
 export function startSendScheduler() {
   if (schedulerStarted) return;
   schedulerStarted = true;
+  // Enforce the "one item per slot" invariant on boot (dedupe collisions + create
+  // the partial UNIQUE index). Idempotent.
+  try { initScheduleIntegrity(); } catch (e) { console.error('[send] initScheduleIntegrity failed:', e?.message || e); }
+  // Secondary guard: never let two intervals overlap within one process (the
+  // primary guard is the atomic DB claim in claimPending).
+  let tickInFlight = false;
+  let forceStopTick = false;
   setInterval(async () => {
+    if (tickInFlight) return;
+    tickInFlight = true;
+    if (forceStopTick) { tickInFlight = false; return; }
     try {
-
       const settings = getSendSettings();
       // Skip tick only when debug mode is ON without share-only target.
       // Share-only mode sends directly, so tick should still run for queued items.
@@ -531,39 +614,69 @@ export function startSendScheduler() {
       const inetOk = await checkInternet();
       if (!inetOk) return;
 
-      const pending = getPendingSends();
-      if (pending.length === 0) return;
-
       const now = Date.now();
       const rateState = getRateState();
-      const timeline = buildQueueTimeline({
-        now,
-        pendingItems: pending,
-        perDay: settings.perDay,
-        rateState,
+      const perDay = settings.perDay;
+
+      // Build the timeline over the FULL pending set so slot allocation matches
+      // the UI's merged calendar timeline (scheduled/held items occupy their
+      // absolute slots). Send order then follows display order follows ETA.
+      const fullPending = getAllPendingSends();
+      const timeline = buildQueueTimeline({ now, pendingItems: fullPending, perDay, rateState });
+      const etaById = new Map(timeline.map(t => [t.id, t.eta]));
+      const readyById = new Map(timeline.map(t => [t.id, t.ready]));
+
+      // Only due items are candidates to send this tick (mirrors getPendingSends:
+      // excludes held, future-scheduled, and fresh in-flight 'processing' rows so
+      // a direct send in progress is never double-sent).
+      const due = getPendingSends();
+      if (due.length === 0) return;
+
+      // Order candidates by their timeline eta so the scheduler sends in the
+      // same order the queue is displayed.
+      due.sort((a, b) => {
+        const ea = etaById.get(a.id) ?? Infinity;
+        const eb = etaById.get(b.id) ?? Infinity;
+        if (ea !== eb) return ea - eb;
+        const sa = a.sort_order ?? a.id;
+        const sb = b.sort_order ?? b.id;
+        if (sa !== sb) return sa - sb;
+        return a.id - b.id;
       });
 
-      if (timeline.length === 0 || !timeline[0].ready) return;
-
-      for (const item of timeline) {
-        if (!item.ready) break;
-        if (item.target === 'telegram') {
-          markSendDone(item.id, true);
+      for (const item of due) {
+        if (!readyById.get(item.id)) continue; // not yet due on the merged timeline
+        // Codec preflight: a known-incompatible (e.g. AV1) video can NEVER stream
+        // to WhatsApp, so fail it once as PERMANENT_MEDIA_ERROR — never claim it
+        // into 'processing', never retry. This keeps deterministic media failures
+        // off the retry budget entirely.
+        const permErr = waPermanentMediaError(item.file_id, item.target);
+        if (permErr) {
+          markSendDone(item.id, false, permErr);
+          scheduleClearProgress(item.id);
           continue;
         }
+        // Atomic claim is the PRIMARY dedup: only the worker that flips this row
+        // to 'processing' may send it. Overlapping ticks (or a restart) that find
+        // it already 'processing' are skipped — this is what stops duplicate/triple
+        // sends. retry_count is the count of completed attempts; we allow at most
+        // 3 total, so we only requeue while fewer than 2 attempts are done.
+        if (!claimPending(item.id, now)) continue;
         try {
-          const out = await performSend(item.fileId, item.target, item.id, item.caption);
+          const out = await performSend(item.file_id, item.target, item.id, item.caption);
           recordSend();
-          const errSummary = summarizeFailures(out.results);
-          const waFailed = isWaFailed(out.results, item.target);
-          markSendDone(item.id, !waFailed, errSummary || null);
+          const delivered = isDelivered(out.results, item.target);
+          const msg = buildError(out.results, item.target);
+          recordSendOutcome(item.id, delivered, msg);
           scheduleClearProgress(item.id);
         } catch (err) {
-          markSendDone(item.id, false, err.message);
+          const msg = err?.message || String(err) || 'Send failed: unknown error';
+          recordSendOutcome(item.id, false, msg);
           scheduleClearProgress(item.id);
         }
       }
     } catch {}
+    finally { tickInFlight = false; }
   }, 30 * 1000);
 }
 

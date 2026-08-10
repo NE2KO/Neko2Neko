@@ -1,8 +1,7 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { ChevronUp, ChevronDown } from 'lucide-react';
 import Carousel from './Carousel';
 import MediaControls from './MediaControls';
-import VaultActionBar from './VaultActionBar';
 import usePlaybackStore from '../store/playbackStore';
 
 // Idle time before controls + carousel auto-hide (matches the old controls timer
@@ -28,18 +27,26 @@ export default function VaultBottomCluster({
   sortOrder = 'asc',
   activeMediaRef,
   sharedAudioRef,
-  isAudioMode,
-  bottomBar = null,
   onClose,
   onToggleFavorite = null,
   cacheBust = '',
+  onNextEnd = null,
+  onPreviousEnd = null,
+  repo = null,
+  lockEnabled = true,
+  allFiles = null,
 }) {
-  const isPlaying = usePlaybackStore((s) => type === 'video' ? s.videoPlaying : s.isPlaying);
-  // Only video auto-hides its controls while playing; audio + image keep the
-  // cluster visible (mirrors the standalone players' MediaLayout behavior).
-  const autoHide = type === 'video' && isPlaying;
+  // Auto-hide is dropped entirely: the user reveals/hides the cluster + carousel
+  // manually with the toggle button. The lock toggle only gates the 30s idle
+  // re-center of the carousel (see Carousel), not the visibility timer.
+  const autoHide = false;
 
-  const showCarousel = files && files.length > 1;
+  // When a repo is provided we always render the carousel shell (virtual mode
+  // handles the empty/hydrating state internally). The old `repo.total() > 1`
+  // check was racy: it fires before the async ensureIndex/prefetch completes,
+  // so total() returns 0 and the carousel stays hidden permanently unless the
+  // user scrolls. Let Carousel decide whether to show items.
+  const showCarousel = !!repo || (files && files.length > 1);
 
   // User's explicit carousel hide (persisted). Independent of auto-hide: a
   // manually hidden carousel stays hidden no matter what the mouse does.
@@ -56,6 +63,17 @@ export default function VaultBottomCluster({
   // back up with no user activity.
   const [active, setActive] = useState(true);
 
+  // User activity ping — bumps the idle timer that auto-hides the cluster. Shared
+  // by the window listeners, the carousel's own scroll, and controls, so auto-
+  // hide never fires while the user is still interacting with the strip.
+  const idleTimerRef = useRef(null);
+  const reportActivity = useCallback(() => {
+    setActive(true);
+    if (!autoHide) { clearTimeout(idleTimerRef.current); return; }
+    clearTimeout(idleTimerRef.current);
+    idleTimerRef.current = setTimeout(() => setActive(false), IDLE_MS);
+  }, [autoHide]);
+
   useEffect(() => {
     if (!autoHide) {
       // Paused / audio / image: keep current visibility. Do NOT force-reveal on
@@ -63,27 +81,22 @@ export default function VaultBottomCluster({
       // a loop boundary) — that would pop the controls + carousel back up with no
       // user activity. A genuine user pause still reveals via the activity
       // listener below, because the pause gesture fires while still "playing".
+      clearTimeout(idleTimerRef.current);
       return undefined;
     }
-    let timer;
-    const onActivity = () => {
-      setActive(true);
-      clearTimeout(timer);
-      timer = setTimeout(() => setActive(false), IDLE_MS);
-    };
-    timer = setTimeout(() => setActive(false), IDLE_MS);
-    window.addEventListener('pointermove', onActivity);
-    window.addEventListener('pointerdown', onActivity);
-    window.addEventListener('keydown', onActivity);
-    window.addEventListener('touchstart', onActivity);
+    reportActivity();
+    window.addEventListener('pointermove', reportActivity);
+    window.addEventListener('pointerdown', reportActivity);
+    window.addEventListener('keydown', reportActivity);
+    window.addEventListener('touchstart', reportActivity);
     return () => {
-      clearTimeout(timer);
-      window.removeEventListener('pointermove', onActivity);
-      window.removeEventListener('pointerdown', onActivity);
-      window.removeEventListener('keydown', onActivity);
-      window.removeEventListener('touchstart', onActivity);
+      clearTimeout(idleTimerRef.current);
+      window.removeEventListener('pointermove', reportActivity);
+      window.removeEventListener('pointerdown', reportActivity);
+      window.removeEventListener('keydown', reportActivity);
+      window.removeEventListener('touchstart', reportActivity);
     };
-  }, [autoHide, currentFile?.id]);
+  }, [autoHide, currentFile?.id, reportActivity]);
 
   const toggleCarouselHidden = useCallback(() => {
     setManualHidden((h) => {
@@ -94,7 +107,7 @@ export default function VaultBottomCluster({
   }, []);
 
   const carouselVisible = active && !manualHidden;
-  const controlsVisible = active;
+  const controlsVisible = active && !manualHidden;
 
   // Controls node — fades / slides on the shared auto-hide timing. The controls
   // bind to the active media element via a ref bridge so they control the
@@ -106,10 +119,13 @@ export default function VaultBottomCluster({
       <MediaControls
         type={type}
         mediaRef={type === 'audio' ? sharedAudioRef : activeMediaRef}
-        folderFiles={files}
+        folderFiles={allFiles || files}
         currentFile={currentFile}
         onFileChange={onSelect}
         onSeek={(s) => usePlaybackStore.getState().setPosition?.(s)}
+        onPreviousEnd={onPreviousEnd}
+        onNextEnd={onNextEnd}
+        repo={repo}
       />
     </div>
   ) : null;
@@ -122,7 +138,7 @@ export default function VaultBottomCluster({
     }`}>
       <div className="overflow-hidden">
         <Carousel
-          files={files}
+          files={allFiles || files}
           currentFile={currentFile}
           onSelect={onSelect}
           sortBy={sortBy}
@@ -132,40 +148,34 @@ export default function VaultBottomCluster({
           autoHide={autoHide}
           hidden={!carouselVisible}
           onToggleHidden={toggleCarouselHidden}
+          onActivity={reportActivity}
+          lockEnabled={lockEnabled}
+          itemSize="lg"
           slide
         />
       </div>
     </div>
   ) : null;
 
-  // Carousel hide/unhide toggle — pinned to a stable corner, only shown while
-  // the overlay is active so it never floats during idle. Positioned 72px above
-  // the cluster bottom so it clears the (56px) send bar in video/image mode and
-  // stays ~16px above the bottom in audio mode (after the 56px slide).
+  // Carousel/controls hide/unhide toggle — pinned to a stable corner so you can
+  // always bring the cluster back after hiding it. It stays visible even while
+  // the cluster is manually hidden; when auto-hide (locked, playing video) is
+  // idle it fades with the cluster.
   const toggleNode = showCarousel ? (
     <button
       onClick={toggleCarouselHidden}
-      className="absolute right-3 z-40 p-2 rounded-full bg-neutral-800/90 hover:bg-neutral-700 text-neutral-300 shadow-lg transition-opacity bottom-[72px]"
+      className="absolute right-3 z-40 p-2 rounded-full bg-neutral-800/90 hover:bg-neutral-700 text-neutral-300 shadow-lg transition-opacity bottom-4"
       style={{ opacity: active ? 1 : 0, pointerEvents: active ? 'auto' : 'none' }}
-      title={manualHidden ? 'Tampilkan daftar' : 'Sembunyikan daftar'}
+      title={manualHidden ? 'Tampilkan daftar & kontrol' : 'Sembunyikan daftar & kontrol'}
     >
       {manualHidden ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
     </button>
   ) : null;
 
   return (
-    <div
-      className="absolute inset-x-0 bottom-0 z-40 transition-transform duration-300 ease-out"
-      style={{ transform: isAudioMode ? 'translateY(3.5rem)' : 'translateY(0)' }}
-    >
+    <div className="absolute inset-x-0 bottom-0 z-40">
       {controlsNode}
       {carouselNode}
-      {/* Send-bar slot: always 56px tall (h-14) so the audio-mode slide pushes
-          exactly this slot off-screen, landing the carousel flush at the bottom.
-          In audio mode bottomBar is null → an empty slot of the same height. */}
-      <div className="h-14 flex items-center justify-center">
-        {bottomBar}
-      </div>
       {toggleNode}
     </div>
   );

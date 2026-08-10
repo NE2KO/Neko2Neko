@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo, useLayoutEffect } from 'react';
 import VideoPlayer from './VideoPlayer';
 import VaultAudioPlayer from './VaultAudioPlayer';
 import ImageViewer from './ImageViewer';
@@ -9,9 +9,9 @@ import CaptionEditorModal from './CaptionEditorModal';
 import { useSendProgress } from '../hooks/useSendProgress';
 import usePlaybackStore from '../store/playbackStore';
 import {
-  cancelSendQueueItem, retrySendQueueItem, removeSendQueueItem,
+  cancelSendQueueItem, retrySendQueueItem,
 } from '../utils/api';
-import { Ban, RotateCw, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
+import { Ban, RotateCw, ChevronUp, ChevronDown } from 'lucide-react';
 
 // Standalone player for the Send Queue modal.
 //
@@ -31,6 +31,100 @@ const IDLE_MS = 3000;
 const sendBtn =
   'flex items-center gap-1.5 px-2.5 py-2 rounded-full border transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed';
 
+function PositionOdometer({ value }) {
+  const DIGIT_H = 14;
+  const DIGIT_W = 10;
+  const str = String(value);
+  const stripRefs = useRef([]);
+  const rafRef = useRef(null);
+  const prevRef = useRef(str);
+  const stateRef = useRef({
+    lastPositions: (() => {
+      const p = {};
+      [...str].forEach((ch, i) => { p[i] = Number(ch) * DIGIT_H; });
+      return p;
+    })(),
+  });
+
+  const chars = useMemo(() => [...str].map((ch, i) => ({ type: 'digit', key: `d${i}`, ch, digitIdx: i })), [str]);
+  const stripDigitMap = useMemo(() => chars.map(c => Number(c.ch || '0')), [chars]);
+  const charsToDigit = useMemo(() => {
+    const m = {};
+    chars.forEach((c, idx) => { m[idx] = c.digitIdx; });
+    return m;
+  }, [chars]);
+
+  useLayoutEffect(() => {
+    const st = stateRef.current;
+    stripRefs.current.forEach((strip, idx) => {
+      if (!strip) return;
+      const pos = st.lastPositions[charsToDigit[idx]];
+      if (pos !== undefined) strip.style.transform = `translateY(-${pos}px)`;
+    });
+  }, [charsToDigit]);
+
+  useEffect(() => {
+    if (str === prevRef.current) return;
+    prevRef.current = str;
+    const st = stateRef.current;
+    stripRefs.current.forEach((s) => { if (s) s.style.transition = ''; });
+
+    const starts = { ...st.lastPositions };
+    const targets = {};
+    stripDigitMap.forEach((d, idx) => { targets[idx] = d * DIGIT_H; });
+
+    const dur = 600;
+    const t0 = Date.now();
+    const anim = () => {
+      const p = Math.min((Date.now() - t0) / dur, 1);
+      const e = 1 - Math.pow(1 - p, 3);
+      stripRefs.current.forEach((strip, idx) => {
+        if (!strip || targets[idx] === undefined) return;
+        const from = starts[charsToDigit[idx]] ?? 0;
+        const to = targets[idx];
+        strip.style.transform = `translateY(-${Math.round(from + (to - from) * e)}px)`;
+        st.lastPositions[charsToDigit[idx]] = Math.round(from + (to - from) * e);
+      });
+      if (p < 1) rafRef.current = requestAnimationFrame(anim);
+      else rafRef.current = null;
+    };
+    rafRef.current = requestAnimationFrame(anim);
+  }, [str, stripDigitMap, charsToDigit]);
+
+  useEffect(() => {
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, []);
+
+  return (
+    <div className="inline-flex items-center justify-center" style={{ height: DIGIT_H }}>
+      {chars.map((item, idx) => (
+        <div
+          key={item.key}
+          className="relative overflow-hidden"
+          style={{ width: DIGIT_W, height: DIGIT_H }}
+        >
+          <div
+            ref={el => { stripRefs.current[idx] = el; }}
+            className="absolute left-0 top-0 will-change-transform"
+          >
+            {Array.from({ length: 10 }, (_, n) => (
+              <div
+                key={n}
+                className="text-xs font-bold text-white/90 tabular-nums flex items-center justify-center"
+                style={{ width: DIGIT_W, height: DIGIT_H }}
+              >
+                {n}
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function SendQueuePlayer({
   item,
   folderFiles = [],
@@ -40,9 +134,27 @@ export default function SendQueuePlayer({
   onNavigate,
   onChanged,
   onCaptionChange,
+  onToggleFavorite,
+  onReschedule,
 }) {
-  const file = { id: item.file_id, name: item.name, type: item.type, ext: item.ext };
-  const files = folderFiles.map((it) => ({ id: it.file_id || it.id, name: it.name, type: it.type, ext: it.ext, qid: it.qid, status: it.status, hold_until: it.hold_until }));
+  const file = useMemo(() => ({ id: item.file_id, name: item.name, type: item.type, ext: item.ext }), [item]);
+
+  // Keep `files` reference STABLE across renders that don't actually change the
+  // queue contents. The parent (SendQueueView) live-refreshes the item list every
+  // 2s, producing a brand-new `folderFiles` array each time — but the visible
+  // carousel only needs to rebuild when an item's qid/status/type/favorite
+  // actually changes. Without this, the new array reference defeats CarouselItem's
+  // React.memo every 2s, forcing ~25 thumbnail re-renders + a full prefix/Map
+  // rebuild on the heavy virtualized Carousel, which made the player laggy.
+  const filesSig = folderFiles.map((f) => `${f.qid || f.id}:${f.status}:${f.type}:${f.is_favorite ? 1 : 0}`).join('|');
+  const files = useMemo(() =>
+    folderFiles.map((it) => ({ id: it.file_id || it.id, name: it.name, type: it.type, ext: it.ext, qid: it.qid, status: it.status, hold_until: it.hold_until })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filesSig]
+  );
+
+  const queueIndex = folderFiles.findIndex((it) => (it.qid || it.id) === (item?.qid || item?.id));
+  const queuePosition = queueIndex >= 0 ? queueIndex + 1 : 0;
 
   const activeMediaRef = useRef(null);
   const sharedAudioRef = useRef(null);
@@ -75,18 +187,18 @@ export default function SendQueuePlayer({
     try { return localStorage.getItem('sq_carousel_hidden') === '1'; } catch { return false; }
   });
 
-  const displayFile = {
-    id: displayItem.file_id || displayItem.id,
-    name: displayItem.name,
-    type: displayItem.type,
-    ext: displayItem.ext,
-    is_favorite: displayItem.is_favorite,
-  };
+  const displayFile = useMemo(() => {
+    if (!displayItem) return null;
+    return {
+      id: displayItem.file_id || displayItem.id,
+      name: displayItem.name,
+      type: displayItem.type,
+      ext: displayItem.ext,
+      is_favorite: displayItem.is_favorite,
+    };
+  }, [displayItem]);
 
-  // `type` follows the currently displayed item so the cluster (controls /
-  // action bar / audio-mode slide) stays correct across a video<->audio<->image
-  // crossfade.
-  const type = displayItem?.type || item.type || 'image';
+  const type = displayFile?.type || item?.type || 'image';
 
 useEffect(() => {
      const t = requestAnimationFrame(() => setHydrated(true));
@@ -103,25 +215,33 @@ useEffect(() => {
    }, []);
 
   // Crossfade on media-type change (video <-> audio <-> image), like MediaModal.
+  // Skip crossfade for different media types to avoid mounting two heavy players
+  // simultaneously (e.g. video -> image). Only crossfade within the same type.
   const itemRef = useRef(item);
   const displayItemRef = useRef(displayItem);
   displayItemRef.current = displayItem;
   const transitionTimerRef = useRef(null);
   useEffect(() => () => { if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current); }, []);
   useEffect(() => {
-    if (item?.qid === itemRef.current?.qid && item?.type === itemRef.current?.type) return;
+    if (!item) return;
+    if (item?.qid === itemRef.current?.qid && item?.type === itemRef.current?.type) {
+      setDisplayItem(item);
+      return;
+    }
     const prevType = itemRef.current?.type;
     itemRef.current = item;
-    // Skip crossfade for same-type (especially video) - prevents unwanted pause on nav
-    if (item?.type === prevType) {
+    // Skip crossfade when switching between different media types — both players
+    // would mount heavy elements (video, audio, image) simultaneously.
+    if (item?.type !== prevType) {
       setPrevItem(null);
       setDisplayItem(item);
       return;
     }
+    // Same-type transition: brief crossfade for smoothness.
     setPrevItem(displayItemRef.current);
     setDisplayItem(item);
     if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
-    transitionTimerRef.current = setTimeout(() => setPrevItem(null), 320);
+    transitionTimerRef.current = setTimeout(() => setPrevItem(null), 200);
   }, [item]);
 
   useEffect(() => {
@@ -135,6 +255,55 @@ useEffect(() => {
       window.removeEventListener('keydown', onKey);
     };
   }, [onClose]);
+
+  // Toggle play/pause when Spacebar is pressed from App-level handler.
+  // Video items are handled directly by VideoPlayer's own listener, so we
+  // only handle audio here to avoid double-toggling the same element.
+  useEffect(() => {
+    const handler = () => {
+      if (type !== 'audio') return;
+      const el = sharedAudioRef.current;
+      if (!el) return;
+      try {
+        if (el.paused) { el.play().catch(() => {}); }
+        else { el.pause(); }
+      } catch {}
+    };
+    window.addEventListener('global-media-toggle-play', handler);
+    return () => window.removeEventListener('global-media-toggle-play', handler);
+  }, [type]);
+
+  // Toggle favorite when L key is pressed from App-level handler
+  useEffect(() => {
+    const handler = () => {
+      if (!displayItem?.id) return;
+      const file = { id: displayItem.file_id || displayItem.id, name: displayItem.name, type: displayItem.type, ext: displayItem.ext, is_favorite: displayItem.is_favorite };
+      onToggleFavorite?.(file);
+    };
+    window.addEventListener('global-media-toggle-favorite', handler);
+    return () => window.removeEventListener('global-media-toggle-favorite', handler);
+  }, [displayItem, onToggleFavorite]);
+
+  // Next / previous from App-level keyboard bindings — ONLY for images. Video &
+  // audio items have a MediaControls cluster (see below) that already owns
+  // N/M/shuffle/loop/skip, so listening here too would double-navigate.
+  useEffect(() => {
+    const handler = (e) => {
+      if (type === 'video' || type === 'audio') return;
+      if (!onNavigate || !files.length) return;
+      const curIdx = files.findIndex((f) => (f.qid || f.id) === (displayItem?.qid || displayItem?.id));
+      if (e.type === 'global-media-next') {
+        const nextIdx = curIdx < files.length - 1 ? curIdx + 1 : 0;
+        onNavigate(files[nextIdx]);
+      } else if (e.type === 'global-media-previous') {
+        const prevIdx = curIdx > 0 ? curIdx - 1 : files.length - 1;
+        onNavigate(files[prevIdx]);
+      }
+    };
+    const events = ['global-media-next', 'global-media-previous'];
+    events.forEach((evt) => window.addEventListener(evt, handler));
+    return () => events.forEach((evt) => window.removeEventListener(evt, handler));
+  }, [type, files, displayItem, onNavigate]);
 
   // Idle auto-hide (controls + carousel fade out together) — only for video.
   const videoPlaying = usePlaybackStore((s) => s.videoPlaying);
@@ -171,19 +340,23 @@ useEffect(() => {
   // in the embedded player's header; for audio (VaultAudioPlayer has no queue
   // header) we render a small overlay in the top-right instead.
   const handleQueueCancel = useCallback(() => {
-    if (displayItem?.qid) cancelSendQueueItem(displayItem.qid).then(() => onChanged && onChanged());
-  }, [displayItem?.qid, onChanged]);
+    if (!displayItem?.qid) return;
+    cancelSendQueueItem(displayItem.qid).then(() => {
+      if (onChanged) onChanged();
+      const idx = files.findIndex((f) => f.qid === displayItem.qid);
+      const next = files[idx + 1] || files[idx - 1];
+      if (next) {
+        setDisplayItem(next);
+        if (onNavigate) onNavigate(next);
+      } else {
+        if (onClose) onClose();
+      }
+    });
+  }, [displayItem?.qid, files, onChanged, onNavigate, onClose]);
+
   const handleQueueRetry = useCallback(() => {
     if (displayItem?.qid) retrySendQueueItem(displayItem.qid).then(() => onChanged && onChanged());
   }, [displayItem?.qid, onChanged]);
-  const handleQueueRemove = useCallback(() => {
-    if (displayItem?.qid) {
-      removeSendQueueItem(displayItem.qid).then(() => {
-        if (onChanged) onChanged();
-        if (onClose) onClose();
-      });
-    }
-  }, [displayItem?.qid, onChanged, onClose]);
 
   // Caption editing
   const [showCaptionModal, setShowCaptionModal] = useState(false);
@@ -214,6 +387,8 @@ useEffect(() => {
           queueItem={it}
           onQueueChanged={onChanged}
           onEditCaption={() => setShowCaptionModal(true)}
+          onReschedule={onReschedule}
+          onToggleFavorite={onToggleFavorite}
         />
       );
     }
@@ -230,6 +405,7 @@ useEffect(() => {
           audioReady
           startPaused={startPaused}
           embedded
+          onToggleFavorite={onToggleFavorite}
         />
       );
     }
@@ -247,11 +423,13 @@ useEffect(() => {
           queueItem={it}
           onQueueChanged={onChanged}
           onEditCaption={() => setShowCaptionModal(true)}
+          onReschedule={onReschedule}
+          onToggleFavorite={onToggleFavorite}
         />
       );
     }
     return null;
-  }, [files, currentSortBy, currentSortOrder, onClose, handleFileChange, onChanged, audioReady]);
+  }, [files, currentSortBy, currentSortOrder, onClose, handleFileChange, onChanged, audioReady, onReschedule, onToggleFavorite]);
 
   // Controls node (video + audio only). Bound to the active media ref so the
   // same controls drive the correct element during a crossfade.
@@ -331,15 +509,22 @@ useEffect(() => {
             {renderPlayer(displayItem, false, true)}
           </div>
 
+          {/* Queue position indicator — odometer number, no box */}
+          {queuePosition > 0 && (
+            <div className="absolute top-3 left-14 z-50 flex items-start h-5 max-w-[40px] pointer-events-none">
+              <PositionOdometer value={queuePosition} />
+            </div>
+          )}
+
           {/* Audio has no queue header (VaultAudioPlayer), so surface the
-              cancel / retry / remove actions as a top-right overlay. Video +
+              cancel / retry actions as a top-right overlay. Video +
               image already show these in their own player header. */}
           {type === 'audio' && (
             <div className="absolute top-3 right-3 z-50 flex items-center gap-1">
               {displayItem?.status === 'pending' && (
                 <button
                   onClick={handleQueueCancel}
-                  className="p-2 rounded-full bg-black/50 hover:bg-black/70 text-white/80 hover:text-red-400 transition-colors"
+                  className="p-2 rounded-full bg-black/50 hover:bg-black/70 text-white/80 hover:text-red-400 transition-colors focus:outline-none focus:ring-0"
                   title="Batalkan pengiriman"
                 >
                   <Ban size={20} />
@@ -348,19 +533,12 @@ useEffect(() => {
               {displayItem?.status === 'failed' && (
                 <button
                   onClick={handleQueueRetry}
-                  className="p-2 rounded-full bg-black/50 hover:bg-black/70 text-white/80 hover:text-emerald-400 transition-colors"
+                  className="p-2 rounded-full bg-black/50 hover:bg-black/70 text-white/80 hover:text-emerald-400 transition-colors focus:outline-none focus:ring-0"
                   title="Ulangi pengiriman"
                 >
                   <RotateCw size={20} />
                 </button>
               )}
-              <button
-                onClick={handleQueueRemove}
-                className="p-2 rounded-full bg-black/50 hover:bg-black/70 text-white/80 hover:text-red-400 transition-colors"
-                title="Hapus dari riwayat"
-              >
-                <Trash2 size={20} />
-              </button>
             </div>
           )}
 
@@ -385,7 +563,7 @@ useEffect(() => {
           {showCarousel && (
             <button
               onClick={toggleCarouselHidden}
-              className="absolute right-3 z-40 p-2 rounded-full bg-neutral-800/90 hover:bg-neutral-700 text-neutral-300 shadow-lg transition-opacity"
+              className="absolute right-3 z-40 p-2 rounded-full bg-neutral-800/90 hover:bg-neutral-700 text-neutral-300 shadow-lg transition-opacity focus:outline-none focus:ring-0"
               style={{ bottom: isAudio ? '88px' : '72px', opacity: active ? 1 : 0, pointerEvents: active ? 'auto' : 'none' }}
               title={manualHidden ? 'Tampilkan daftar' : 'Sembunyikan daftar'}
             >

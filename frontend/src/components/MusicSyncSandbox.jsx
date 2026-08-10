@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { ChevronLeft, Heart, Activity } from 'lucide-react';
 import CachedVideoPlayer from './CachedVideoPlayer';
-import { createVideoSyncEngine } from './Music';
+import { createVideoSyncEngine } from '../utils/videoSyncEngine';
 
 const ENGINE_PRESETS = {
   minimal: {

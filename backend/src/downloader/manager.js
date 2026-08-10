@@ -94,7 +94,13 @@ const SOURCE_FORMAT_PREFERENCE = {
 };
 
 const BOT_CONCURRENT = 1;
-const BOT_YT_FORMAT = 'bestvideo[height=1080][fps>=50][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[width=1080][fps>=50][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[width=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/bestvideo[width<=1080]+bestaudio/best[height<=1080]/best[width<=1080]/best';
+// Telegram video bot: MUST produce H.264 (avc1) so the result is streamable by
+// WhatsApp. Every branch below constrains vcodec to avc1 — unlike the old
+// BOT_H264_FORMAT whose fallback branches (bestvideo[height<=1080]+bestaudio,
+// best, …) had no codec filter and let yt-dlp pick AV1/HEVC for sub-1080p or
+// vertical sources. If a source genuinely has no avc1 variant the task fails
+// cleanly rather than landing an undeliverable file in the vault.
+const BOT_H264_FORMAT = 'bestvideo[height=1080][fps>=50][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[width=1080][fps>=50][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[width=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[width<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/best[vcodec^=avc1]';
 
 const MAX_AUTO_RETRIES = 3;
 const RETRY_BASE_DELAY = 5000;
@@ -1005,7 +1011,10 @@ export function createBulkTasks(urls, options = {}) {
     const taskOptions = { ...options, category: cat };
     if (options.botMode) {
       taskOptions.viaBot = true;
-      if (cat === 'youtube' && !options.audioExtract) taskOptions.formatId = BOT_YT_FORMAT;
+      // Force H.264 for every bot VIDEO download (YouTube, Twitter/X, TikTok, …),
+      // not just YouTube — the non-YT categories used to fall back to the
+      // unconstrained FORMAT_MAP default and could download AV1/HEVC.
+      if (!options.audioExtract) taskOptions.formatId = BOT_H264_FORMAT;
     }
     results.push(createTask(u, taskOptions));
   }

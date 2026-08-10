@@ -85,7 +85,7 @@ export function recordSend() {
 // Reset the daily rate counter so the scheduler recalculates slots from scratch.
 // Called when auto-send is re-enabled or debug mode is turned off.
 export function resetRateState() {
-  db.prepare("UPDATE send_rate_limit SET date = ?, count = 0, last_send_at = 0 WHERE id = 1").run();
+  db.prepare("UPDATE send_rate_limit SET date = ?, count = 0, last_send_at = 0 WHERE id = 1").run(todayStr());
 }
 
 // Clear stale scheduled_at timestamps so pending items get fresh ETAs on the
@@ -93,6 +93,60 @@ export function resetRateState() {
 // auto-send was off would either fire immediately or stay stuck.
 export function clearScheduledAt() {
   return db.prepare("UPDATE send_queue SET scheduled_at = NULL WHERE status = 'pending'").run().changes;
+}
+
+// Remove duplicate / misaligned `scheduled_at` values so the UNIQUE partial index
+// can be created and the invariant "one item per slot" holds. Only touches rows
+// that already have a scheduled_at — NULL (flowing) items are left untouched,
+// preserving the pending-queue semantics. Returns the number of rows changed.
+export function dedupeScheduledAt() {
+  const perDay = getPerDay();
+  if (perDay <= 0) return 0;
+  const intervalMs = (24 / perDay) * 60 * 60 * 1000;
+  if (intervalMs <= 0) return 0;
+  const today = dayStart(Date.now());
+  const rows = db.prepare(
+    "SELECT id, scheduled_at FROM send_queue WHERE status = 'pending' AND scheduled_at IS NOT NULL ORDER BY scheduled_at ASC, id ASC"
+  ).all();
+  if (rows.length === 0) return 0;
+  const seen = new Set();
+  const upd = db.prepare('UPDATE send_queue SET scheduled_at = ? WHERE id = ?');
+  let changes = 0;
+  const tx = db.transaction(() => {
+    for (const r of rows) {
+      let k = Math.round((Number(r.scheduled_at) - today) / intervalMs);
+      if (k < 0) k = 0;
+      while (seen.has(k)) k++;
+      seen.add(k);
+      const newTs = today + k * intervalMs;
+      if (newTs !== Number(r.scheduled_at)) {
+        upd.run(newTs, r.id);
+        changes++;
+      }
+    }
+  });
+  tx();
+  return changes;
+}
+
+// One-time integrity: dedupe overlapping scheduled_at and create a partial UNIQUE
+// index (per-day schedule, only pending rows with a slot). Idempotent; safe to
+// call on every boot.
+export function initScheduleIntegrity() {
+  dedupeScheduledAt();
+  const ddl =
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_send_queue_sched ON send_queue(scheduled_at) WHERE status = 'pending' AND scheduled_at IS NOT NULL";
+  try {
+    db.exec(ddl);
+  } catch (e) {
+    // A duplicate slipped through (e.g. concurrent writer) — dedupe again and retry.
+    try {
+      dedupeScheduledAt();
+      db.exec(ddl);
+    } catch (e2) {
+      console.error('[send] failed to enforce unique scheduled_at:', (e2 && e2.message) || e2);
+    }
+  }
 }
 
 export function canSendNow() {
@@ -200,6 +254,31 @@ export function buildQueueTimeline({ now, pendingItems, perDay, rateState }) {
     }
   }
 
+  // Sendable items get slot-based ETAs assigned in THIS deterministic order,
+  // independent of how `pendingItems` was pre-sorted by the caller. `scheduled_at`
+  // is an ABSOLUTE epoch (not an offset), so we can't sort by its raw value
+  // (NULL=0 would sort before a just-lapsed past timestamp). Instead:
+  //   group 0 = lapsed scheduled_at (past, but >0): send ASAP, earliest-lapsed first
+  //   group 1 = NULL/auto-flow: keep manual queue order (sort_order, then id)
+  // This guarantees an item whose scheduled slot just lapsed is placed on the
+  // next free slot rather than being pushed to the far end of the queue, and the
+  // same ordering is produced regardless of caller input order.
+  sendable.sort((a, b) => {
+    const sa = Number(a.scheduled_at) || 0;
+    const sb = Number(b.scheduled_at) || 0;
+    const ga = sa > 0 && sa <= now ? 0 : 1;
+    const gb = sb > 0 && sb <= now ? 0 : 1;
+    if (ga !== gb) return ga - gb;
+    if (ga === 0) {
+      if (sa !== sb) return sa - sb;
+    } else {
+      const soa = a.sort_order ?? a.id;
+      const sob = b.sort_order ?? b.id;
+      if (soa !== sob) return soa - sob;
+    }
+    return a.id - b.id;
+  });
+
   const result = [];
 
   // Held items: ETA = hold_until, not ready
@@ -226,10 +305,9 @@ export function buildQueueTimeline({ now, pendingItems, perDay, rateState }) {
     });
   }
 
-  // Sendable items: slot-based ETA
+  // Sendable items: slot-based ETA, collision-free.
   if (sendable.length > 0) {
     const today = dayStart(now);
-    const tomorrow = today + 24 * 60 * 60 * 1000;
     const intervalMs = perDay > 0 ? (24 / perDay) * 60 * 60 * 1000 : 0;
     const slots = perDay > 0 ? calculateSlotsForDay(now, perDay) : [];
 
@@ -251,16 +329,32 @@ export function buildQueueTimeline({ now, pendingItems, perDay, rateState }) {
         }
       }
 
-      for (let i = 0; i < sendable.length; i++) {
-        const item = sendable[i];
-        const slotIdx = nextSlotIdx + i;
-        let eta;
-        if (slotIdx < slots.length) {
-          eta = slots[slotIdx];
-        } else {
-          const tomorrowSlotIdx = slotIdx - slots.length;
-          eta = tomorrow + tomorrowSlotIdx * intervalMs;
+      // Slots already owned by scheduled / held items must not be reused by the
+      // computed (NULL) ETAs — otherwise two pending items would share a time
+      // ("numpuk jadwal"). Only slot-aligned timestamps count as occupied.
+      const occupied = new Set();
+      const alignTol = Math.min(1000, Math.floor(intervalMs / 2));
+      const markOccupied = (ts) => {
+        const offset = ts - today;
+        if (offset < 0) return;
+        const frac = offset % intervalMs;
+        const dist = Math.min(frac, intervalMs - frac);
+        if (dist <= alignTol) {
+          const k = Math.round(offset / intervalMs);
+          if (k >= 0) occupied.add(k);
         }
+      };
+      for (const it of scheduled) markOccupied(it._eta);
+      for (const it of held) markOccupied(it._eta);
+
+      // Walk global slot indices (today = 0..perDay-1, tomorrow = perDay..) and
+      // place each sendable item on the first free slot, skipping occupied ones.
+      let cursorIdx = nextSlotIdx;
+      let placed = 0;
+      while (placed < sendable.length) {
+        while (occupied.has(cursorIdx)) cursorIdx++;
+        const eta = today + cursorIdx * intervalMs;
+        const item = sendable[placed];
         result.push({
           id: item.id,
           fileId: item.file_id,
@@ -269,6 +363,8 @@ export function buildQueueTimeline({ now, pendingItems, perDay, rateState }) {
           eta,
           ready: eta <= now,
         });
+        placed++;
+        cursorIdx++;
       }
     } else if (perDay === 0) {
       // Unlimited mode: all sendable items are ready now
@@ -340,34 +436,76 @@ export function getActiveOrRecentSend(fileId, target, withinMs = DEDUP_WINDOW_MS
 }
 
 // Mark an item as in-flight so the scheduler (which only drains 'pending') won't
-// pick it up while the direct-send path is still performing the send.
+// pick it up while the direct-send path is still performing the send. Records
+// processing_started_at so a crash can be detected/reclaimed after STUCK_MS.
 export function markProcessing(id) {
-  db.prepare("UPDATE send_queue SET status = 'processing' WHERE id = ?").run(id);
+  db.prepare("UPDATE send_queue SET status = 'processing', processing_started_at = ? WHERE id = ?").run(Date.now(), id);
+}
+
+// ── Permanent-media-error preflight ──
+// A video whose codec WhatsApp cannot stream (is_stream_compatible = 0 AND already
+// probed) can NEVER succeed, so it must be failed immediately as a
+// PERMANENT_MEDIA_ERROR — never claimed into 'processing', never retried. This is
+// the scheduler's codec preflight: AV1/HEVC/etc. items never enter the send path.
+// Items not yet probed (codec_info NULL) fall through to the normal send path so a
+// future scan can still classify them; Telegram-only targets are exempt (Telegram
+// handles far more codecs than WhatsApp).
+const WA_TARGETS = new Set(['whatsapp', 'all', 'channel', 'status']);
+export function waPermanentMediaError(fileId, target) {
+  if (!WA_TARGETS.has(target)) return null; // Telegram-only: codec-agnostic
+  const row = db.prepare('SELECT codec_info, is_stream_compatible FROM files WHERE id = ?').get(fileId);
+  if (!row || row.codec_info == null) return null; // not probed yet → let send path decide
+  if (row.is_stream_compatible === 1) return null; // H.264 / streamable → OK
+  let detected = 'unknown codec';
+  try {
+    const ci = JSON.parse(row.codec_info);
+    detected = (ci.family || ci.videoCodec || 'unknown').toString();
+  } catch {}
+  return `Permanent media error: WhatsApp only supports H.264 video for this send path (detected codec: ${detected})`;
+}
+
+// Atomic claim: the PRIMARY dedup mechanism. A worker claims a 'pending' row (or
+// reclaims a 'processing' row that has been stuck longer than STUCK_MS) by
+// flipping it to 'processing' in a single conditional UPDATE. Returns true only if
+// exactly one row was changed — so two overlapping scheduler ticks (or a restart)
+// can never both send the same item. This is what actually fixes duplicate/triple
+// auto-sends; tickInFlight is only a secondary local guard.
+export function claimPending(id, now = Date.now()) {
+  const info = db.prepare(`
+    UPDATE send_queue
+    SET status = 'processing', processing_started_at = ?
+    WHERE id = ?
+      AND (status = 'pending'
+           OR (status = 'processing' AND COALESCE(processing_started_at, created_at) < ?))
+  `).run(Date.now(), id, now - STUCK_MS);
+  return info.changes === 1;
 }
 
 // The scheduler only drains 'pending'. A 'processing' row is one the direct-send
-// path is actively working on — it's excluded so it can't be double-sent. If a
-// process dies mid-send, such a row would be stuck, so we also recover any
-// 'processing' row older than STUCK_MS (treat it as a lost send to retry).
+// path is actively working on — it's excluded so it can't be double-sent. A
+// 'processing' row older than STUCK_MS is treated as a lost send (process died
+// mid-send) and reclaimed for retry. Returns retry_count + processing_started_at
+// so the scheduler can decide retry vs permanent-failure and detect stuck rows.
 const STUCK_MS = 10 * 60 * 1000;
 export function getPendingSends() {
+  const now = Date.now();
   return db.prepare(`
-    SELECT id, file_id, target, created_at, status, caption
+    SELECT id, file_id, target, created_at, status, caption, retry_count, processing_started_at
     FROM send_queue
     WHERE (status = 'pending' AND (hold_until IS NULL OR hold_until <= ?) AND (scheduled_at IS NULL OR scheduled_at <= ?))
-       OR (status = 'processing' AND created_at < ?)
-    ORDER BY COALESCE(sort_order, id) ASC, id ASC
-  `).all(Date.now(), Date.now(), Date.now() - STUCK_MS);
+       OR (status = 'processing' AND COALESCE(processing_started_at, created_at) < ?)
+    ORDER BY COALESCE(scheduled_at, 0) ASC, COALESCE(sort_order, id) ASC, id ASC
+  `).all(now, now, now - STUCK_MS);
 }
 
 // All pending/processing items regardless of hold/schedule status.
 // Used for the UI timeline so held/scheduled items still show an ETA.
 export function getAllPendingSends() {
   return db.prepare(`
-    SELECT id, file_id, target, created_at, status, caption, hold_until, scheduled_at
+    SELECT id, file_id, target, created_at, status, caption, hold_until, scheduled_at, sort_order
     FROM send_queue
     WHERE status IN ('pending', 'processing')
-    ORDER BY COALESCE(sort_order, id) ASC, id ASC
+    ORDER BY COALESCE(scheduled_at, 0) ASC, COALESCE(sort_order, id) ASC, id ASC
   `).all();
 }
 
@@ -382,17 +520,66 @@ export function getPendingDebugSends() {
   `).all();
 }
 
+// Append a structured attempt record to attempt_log (JSON, capped ~5). Shape:
+// { attempt, started_at, result: 'success'|'failed', error }. Lets us diagnose
+// "item X selalu gagal" at a glance instead of guessing.
+export function recordAttempt(id, attemptNo, ok, msg) {
+  const errMsg = ok ? null : (msg || 'Send failed: unknown error');
+  const row = db.prepare('SELECT attempt_log FROM send_queue WHERE id = ?').get(id);
+  let log = [];
+  try { if (row && row.attempt_log) log = JSON.parse(row.attempt_log); } catch {}
+  if (!Array.isArray(log)) log = [];
+  log.push({
+    attempt: attemptNo,
+    started_at: new Date().toISOString(),
+    result: ok ? 'success' : 'failed',
+    error: errMsg,
+  });
+  if (log.length > 5) log = log.slice(-5);
+  db.prepare('UPDATE send_queue SET attempt_log = ? WHERE id = ?').run(JSON.stringify(log), id);
+}
+
 export function markSendDone(id, ok, error) {
-  db.prepare('UPDATE send_queue SET status = ?, error = ?, completed_at = ? WHERE id = ?').run(ok ? 'done' : 'failed', error || null, Date.now(), id);
+  // `error` is NEVER stored as NULL on failure: the caller passes the real reason
+  // (or we coerce to a generic message) so a "failed" row always carries a cause.
+  const err = error || (ok ? null : 'Send failed: unknown error');
+  const row = db.prepare('SELECT retry_count FROM send_queue WHERE id = ?').get(id);
+  const attemptNo = (row && Number.isFinite(row.retry_count) ? row.retry_count : 0) + 1;
+  recordAttempt(id, attemptNo, ok, err);
+  db.prepare('UPDATE send_queue SET status = ?, error = ?, completed_at = ? WHERE id = ?').run(ok ? 'done' : 'failed', err, Date.now(), id);
+}
+
+// Requeue a failed attempt for another try. `retryCount` is the item's current
+// completed-attempt count (so the attempt number logged is retryCount+1). Applies
+// a backoff hold so retries don't hammer immediately. Increments retry_count.
+export function requeueForRetry(id, retryCount, msg) {
+  const errMsg = msg || 'Send failed: unknown error';
+  recordAttempt(id, retryCount + 1, false, errMsg);
+  const now = Date.now();
+  const hold = now + 60_000 * (retryCount + 1);
+  db.prepare("UPDATE send_queue SET status = 'pending', scheduled_at = NULL, hold_until = ?, retry_count = retry_count + 1 WHERE id = ?")
+    .run(hold, id);
 }
 
 export function cancelSend(id) {
   const info = db.prepare("UPDATE send_queue SET status = 'canceled' WHERE id = ? AND status = 'pending'").run(id);
+  if (info.changes > 0) {
+    db.prepare("UPDATE send_queue SET scheduled_at = NULL, hold_until = 0 WHERE status = 'pending'").run();
+  }
   return info.changes > 0;
 }
 
 export function retrySend(id) {
-  const info = db.prepare("UPDATE send_queue SET status = 'pending', error = NULL WHERE id = ? AND status = 'failed'").run(id);
+  // MANUAL retry: reset the attempt budget to a fresh 3 attempts. Distinct from
+  // rescheduleQueueItem (which only moves scheduled_at and keeps retry_count).
+  const row = db.prepare('SELECT id, file_id, target, status FROM send_queue WHERE id = ?').get(id);
+  if (!row || row.status !== 'failed') return false;
+  // A known-incompatible (e.g. AV1) video can NEVER succeed — reject the manual
+  // retry so we don't re-queue a deterministically-impossible send. The user must
+  // first transcode to H.264 and refresh the DB metadata before retrying.
+  const permErr = waPermanentMediaError(row.file_id, row.target);
+  if (permErr) throw new Error(permErr);
+  const info = db.prepare("UPDATE send_queue SET status = 'pending', error = NULL, scheduled_at = NULL, hold_until = 0, retry_count = 0, attempt_log = NULL WHERE id = ? AND status = 'failed'").run(id);
   return info.changes > 0;
 }
 
@@ -422,9 +609,42 @@ export function reorderQueueItem(id, direction) {
   return true;
 }
 
+// Reschedule inserts an item at a chosen ABSOLUTE calendar slot and cascade-
+// shifts everything at/after that slot down by one interval — like
+// `array.splice(index, 0, X)`. The relative order of the existing items is
+// always preserved (a uniform shift can never collide). This ONLY writes
+// `scheduled_at`; it must NOT touch `sort_order`. The two are independent axes:
+//   sort_order    = manual queue order (reorderQueueItem up/down + main queue list)
+//   scheduled_at  = absolute calendar slot (NULL = auto-flow)
+// Old behaviour only bumped the first colliding item, which leapfrogged the
+// next one (e.g. inserting 8 at slot 2 of 1..8 gave 1 8 3 2 …). The cascade
+// gives the correct 1 8 2 3 4 5 6 7 deterministically.
 export function rescheduleQueueItem(id, scheduledAt) {
-  const info = db.prepare("UPDATE send_queue SET scheduled_at = ?, hold_until = 0 WHERE id = ? AND status = 'pending'").run(scheduledAt || null, id);
-  return info.changes > 0;
+  if (!scheduledAt) {
+    const info = db.prepare("UPDATE send_queue SET scheduled_at = NULL, hold_until = 0 WHERE id = ? AND status = 'pending'").run(id);
+    return info.changes > 0;
+  }
+  const ts = Number(scheduledAt);
+  const perDay = getPerDay();
+  // Nudge step: real per-day interval when rate-limited, else a fixed 1-min
+  // guard so a shift still progresses (perDay=0 = unlimited).
+  const intervalMs = perDay > 0 ? (24 / perDay) * 60 * 60 * 1000 : 60 * 1000;
+
+  const updSched = db.prepare('UPDATE send_queue SET scheduled_at = ?, hold_until = 0 WHERE id = ?');
+  const tx = db.transaction(() => {
+    // Push every OTHER pending item currently at or after the target slot down
+    // by one interval, preserving their relative order (uniform shift = no
+    // collisions). NULL scheduled_at (auto-flow) is excluded (scheduled_at >= ts
+    // is false for NULL).
+    db.prepare(
+      "UPDATE send_queue SET scheduled_at = scheduled_at + ? " +
+      "WHERE status = 'pending' AND id <> ? AND scheduled_at >= ?"
+    ).run(intervalMs, id, ts);
+    // Pin the moved item exactly on the chosen slot.
+    updSched.run(ts, id);
+  });
+  tx();
+  return true;
 }
 
 // ── Queue behaviour settings (auto-send tick + debug hold mode) ──
@@ -448,15 +668,15 @@ export function setSendSettings({ tickEnabled, debugMode, perDay } = {}) {
   db.prepare('UPDATE send_settings SET tick_enabled = ?, debug_mode = ?, per_day = ? WHERE id = 1').run(nextTick, nextDebug, nextPerDay);
 
   // When auto-send is re-enabled (OFF→ON) or debug mode is turned OFF,
-  // reset the rate state and clear stale scheduled_at so the scheduler
-  // recalculates slots from scratch.  Without this, items that were scheduled
-  // for a slot that passed while auto-send was OFF would either fire
-  // immediately or stay stuck at the old time.
+  // reset the rate state and tidy overlapping scheduled_at. We deliberately do
+  // NOT clear scheduled_at for the whole pending set — that would destroy the
+  // user-chosen calendar slots (the explicit-slot feature). Pinned items keep
+  // their slot; only collisions are re-spaced.
   const turnedOn = !cur.tickEnabled && nextTick;
   const debugOff = cur.debugMode && !nextDebug;
   if (turnedOn || debugOff) {
     resetRateState();
-    clearScheduledAt();
+    dedupeScheduledAt();
   }
 
   return { tickEnabled: !!nextTick, debugMode: !!nextDebug, perDay: nextPerDay };
@@ -521,9 +741,63 @@ export function getQueueByStatus(status, cursor = 0, limit = 100, target, opts =
   const sortOrder = VALID_SORT_ORDER.has(opts.sortOrder) ? opts.sortOrder : 'desc';
   const typeFilter = VALID_TYPE_FILTER.has(opts.typeFilter) ? opts.typeFilter : null;
 
+  const isPending = status === 'pending';
+
+  // Pending with the default (queue) order follows the merged calendar timeline
+  // built by buildQueueTimeline: scheduled_at is an ABSOLUTE slot on a shared
+  // timeline, not a sort bucket that pushes items to the top/bottom. Slots are
+  // allocated globally (send_rate_limit is shared), so target/type filters are
+  // applied AFTER ordering and must not affect slot allocation.
+  if (isPending && !sortBy) {
+    const allRows = db.prepare(`
+      SELECT sq.id AS qid, sq.id AS id, sq.file_id, sq.target, sq.created_at, sq.status, sq.error,
+             sq.hold_until, sq.completed_at, sq.caption, sq.debug, sq.sort_order, sq.scheduled_at,
+             f.name, f.type, f.ext, f.has_thumb, f.size, f.duration
+      FROM send_queue sq
+      LEFT JOIN files f ON f.id = sq.file_id
+      WHERE sq.status IN ('pending','processing')
+      ORDER BY COALESCE(sq.sort_order, sq.id) ASC, sq.id ASC
+    `).all();
+
+    const now = Date.now();
+    const timeline = buildQueueTimeline({ now, pendingItems: allRows, perDay: getPerDay(), rateState: getRateState() });
+    const etaById = new Map(timeline.map(t => [t.id, t.eta]));
+
+    // Sort by merged-timeline eta (scheduled/held/auto-flow all share one axis),
+    // tie-break by manual queue order, then id. This is the single source of
+    // truth for the grid `#` position.
+    allRows.sort((a, b) => {
+      const ea = etaById.get(a.qid) ?? Infinity;
+      const eb = etaById.get(b.qid) ?? Infinity;
+      if (ea !== eb) return ea - eb;
+      const sa = a.sort_order ?? a.qid;
+      const sb = b.sort_order ?? b.qid;
+      if (sa !== sb) return sa - sb;
+      return a.qid - b.qid;
+    });
+
+    // Filter target/type in JS so global slot allocation is preserved.
+    const { condition, params } = targetFilter(target);
+    let filtered = allRows;
+    if (condition) {
+      const allowed = new Set(params);
+      filtered = filtered.filter(r => allowed.has(r.target));
+    }
+    if (typeFilter) {
+      filtered = filtered.filter(r => r.type === typeFilter);
+    }
+
+    // Offset-based pagination: the list is sorted in JS, so an id-based cursor
+    // no longer works. The frontend round-trips nextCursor and dedupes appends.
+    const offset = Number.isFinite(cursor) && cursor > 0 ? cursor : 0;
+    const page = filtered.slice(offset, offset + limit);
+    const nextCursor = offset + limit < filtered.length ? offset + limit : null;
+    return { items: page, nextCursor };
+  }
+
   const { condition, params } = targetFilter(target);
-  const statusClause = status === 'pending' ? "sq.status IN ('pending','processing')" : 'sq.status = ?';
-  const statusParam = status === 'pending' ? [] : [status];
+  const statusClause = isPending ? "sq.status IN ('pending','processing')" : 'sq.status = ?';
+  const statusParam = isPending ? [] : [status];
 
   const extraWhere = [];
   const extraParams = [];
@@ -532,12 +806,21 @@ export function getQueueByStatus(status, cursor = 0, limit = 100, target, opts =
     extraParams.push(typeFilter);
   }
 
-  const where = [statusClause, 'sq.id > ?', condition, ...extraWhere].filter(Boolean).join(' AND ');
-  const allParams = [...statusParam, cursor, ...extraParams, ...params];
+  const isDesc = !isPending && sortOrder === 'desc';
+  const whereParts = [statusClause];
+  const queryParams = [...statusParam];
 
-  const isPending = status === 'pending';
+  if (!(isDesc && cursor === 0)) {
+    const op = isDesc ? '<' : '>';
+    whereParts.push(`sq.id ${op} ?`);
+    queryParams.push(cursor);
+  }
+
+  whereParts.push(condition, ...extraWhere);
+  const where = whereParts.filter(Boolean).join(' AND ');
+  const allParams = [...queryParams, ...extraParams, ...params];
   let orderBy = isPending
-    ? 'COALESCE(sq.sort_order, sq.id) ASC, sq.id ASC'
+    ? 'COALESCE(sq.scheduled_at, 0) ASC, COALESCE(sq.sort_order, sq.id) ASC, sq.id ASC'
     : 'COALESCE(sq.completed_at, sq.created_at) DESC, sq.id DESC';
   if (sortBy === 'name') orderBy = 'f.name COLLATE NOCASE ASC, sq.id ASC';
   else if (sortBy === 'size') orderBy = 'COALESCE(f.size, 0) DESC, sq.id ASC';

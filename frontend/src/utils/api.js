@@ -40,7 +40,7 @@ export function clearResponseCache() {
 
 // === API FUNCTIONS ===
 
-export async function fetchFolder(path, cursor = null, limit = null, folderId = null, sortBy = null, sortOrder = 'asc') {
+export async function fetchFolder(path, cursor = null, limit = null, folderId = null, sortBy = null, sortOrder = 'asc', prevCursor = null) {
   const params = new URLSearchParams();
   if (folderId) {
     params.set('folder_id', String(folderId));
@@ -51,14 +51,13 @@ export async function fetchFolder(path, cursor = null, limit = null, folderId = 
   if (limit !== null) params.set('limit', String(limit));
   if (sortBy) params.set('sortBy', sortBy);
   params.set('sortOrder', sortOrder);
+  if (prevCursor) params.set('prev_cursor', prevCursor);
   const url = `${API}/api/files?${params}`;
-  // Non-cached for paginated/sorted requests (user expects fresh data)
-  if (cursor || sortBy) {
+  if (cursor || sortBy || prevCursor) {
     const res = await dedupFetch(url);
     if (!res.ok) throw new Error('Failed to fetch folder');
     return res.json();
   }
-  // Cached for root/folder listings (same page won't change in 2s)
   return cachedFetch(url, 2000);
 }
 
@@ -209,6 +208,18 @@ export async function sendScrcpyInput(device, command) {
 export async function toggleFavorite(fileId) {
   const res = await fetch(`${API}/api/files/${fileId}/favorite`, { method: 'PATCH' });
   if (!res.ok) throw new Error('Failed to toggle favorite');
+  return res.json();
+}
+
+export async function toggleLock(fileId) {
+  const res = await fetch(`${API}/api/files/${fileId}/lock`, { method: 'PATCH' });
+  if (!res.ok) throw new Error('Failed to toggle lock');
+  return res.json();
+}
+
+export async function getLock(fileId) {
+  const res = await fetch(`${API}/api/files/${fileId}/lock`);
+  if (!res.ok) throw new Error('Failed to read lock');
   return res.json();
 }
 

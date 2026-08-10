@@ -1,6 +1,6 @@
 import { readdirSync, statSync, lstatSync, realpathSync, existsSync, rmSync, accessSync, constants, openSync, readSync, closeSync, writeFileSync, readFileSync } from 'node:fs';
 import fs from 'node:fs';
-import { readdir, stat, realpath } from 'node:fs/promises';
+import { readdir, stat, realpath, opendir } from 'node:fs/promises';
 import { join, extname, basename, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
@@ -8,6 +8,7 @@ import db, { stmts, syncFTSIndex } from '../db.js';
 import { addFile, existingThumbs, buildThumbCache } from './thumbnailQueue.js';
 import { THUMBNAIL_DIR } from './thumbnailUtils.js';
 import { get } from './runtimeSettings.js';
+import { registerSubsystem, recordMemoryUsage, setPaused, getSnapshot } from './resourceManager.js';
 
 // Support multiple roots (colon-separated in MEDIA_ROOT env var)
 const DEFAULT_MEDIA_ROOTS = '/home/CATIAA/homelab';
@@ -16,6 +17,12 @@ const MEDIA_ROOTS = (process.env.MEDIA_ROOT || DEFAULT_MEDIA_ROOTS).split(':').f
 let scanRunning = false;
 let scanProgress = { phase: '', total: 0, current: 0 };
 const SCAN_TIMESTAMP_FILE = join(process.cwd(), 'data', '.last-scan-time');
+
+registerSubsystem('scanner', {
+  memoryBudget: 128 * 1024 * 1024,
+  ioPriority: 'low',
+  cpuPriority: 'low',
+});
 
 function getScannerStatus() {
   return {
@@ -201,97 +208,94 @@ function ensureFolder(relPath) {
   return stmts.getFolderByPath.get(relPath).id;
 }
 
-// Scan filesystem iteratively, return flat list of entries (non-blocking async I/O)
-async function scanFileSystem(rootPath, rootRelPath = '') {
-  const entries = [];
+// Scan filesystem with streaming directory traversal (opendir).
+// Yields entries immediately after stat, without collecting an entire
+// directory into memory. Directory handles are consumed one entry at a time.
+async function* streamFileSystem(rootPath, rootRelPath = '') {
   const queue = [{ dir: rootPath, relPath: rootRelPath }];
-  let fileCount = 0;
-  const STAT_BATCH = 16;
 
   while (queue.length > 0) {
     const { dir, relPath } = queue.shift();
 
-    let items;
+    let dirHandle;
     try {
-      items = await readdir(dir, { withFileTypes: true });
-    } catch { continue; }
+      dirHandle = await opendir(dir);
+    } catch {
+      continue;
+    }
 
-    items.sort((a, b) => a.name.localeCompare(b.name));
+    const batch = [];
+    for await (const dirent of dirHandle) {
+      if (dirent.name.startsWith('.')) continue;
+      const fullPath = join(dir, dirent.name);
+      const itemRelPath = relPath ? join(relPath, dirent.name) : dirent.name;
 
-    // Separate dirs and files
-    const dirs = [];
-    const files = [];
-    for (const item of items) {
-      if (item.name.startsWith('.')) continue;
-      const fullPath = join(dir, item.name);
-      const itemRelPath = relPath ? join(relPath, item.name) : item.name;
+      if (dirent.isSymbolicLink()) {
+        try {
+          const targetStat = await stat(fullPath);
+          if (targetStat.isDirectory()) {
+            queue.push({ dir: fullPath, relPath: itemRelPath });
+          }
+        } catch {}
+        continue;
+      }
 
-      if (item.isSymbolicLink()) {
-        let targetStat;
-        try { targetStat = await stat(fullPath); } catch { continue; }
-        if (targetStat.isDirectory()) {
+      if (dirent.isDirectory()) {
+        if (get('scan.recursive', true)) {
           queue.push({ dir: fullPath, relPath: itemRelPath });
         }
         continue;
       }
 
-      if (item.isDirectory()) {
-        if (get('scan.recursive', true)) {
-          dirs.push({ fullPath, itemRelPath });
-        }
-        continue;
-      }
-
-      const ext = extname(item.name).toLowerCase();
+      const ext = extname(dirent.name).toLowerCase();
       const type = detectType(ext);
       if (type === 'other') continue;
 
-      files.push({ item, fullPath, itemRelPath, type, ext });
-    }
+      batch.push({ dirent, fullPath, itemRelPath, type, ext });
 
-    // Queue all subdirectories at once
-    for (const d of dirs) {
-      queue.push({ dir: d.fullPath, relPath: d.itemRelPath });
-    }
-
-    // Process files in batches — yield between each batch to keep event loop free
-    for (let i = 0; i < files.length; i += STAT_BATCH) {
-      const batch = files.slice(i, i + STAT_BATCH);
-      const results = await Promise.all(batch.map(async ({ item, fullPath, itemRelPath, type, ext }) => {
-        try {
-          const st = await stat(fullPath);
-          let realFullPath;
-          try { realFullPath = await realpath(fullPath); } catch { realFullPath = fullPath; }
-          return {
-            id: getFileId(itemRelPath),
-            relPath: itemRelPath,
-            name: item.name,
-            type,
-            ext,
-            fullPath: realFullPath,
-            size: st.size,
-            mtime: Math.floor(st.mtimeMs),
-            birthtime: Math.floor(st.birthtimeMs) || Math.floor(st.mtimeMs),
-          };
-        } catch {
-          return null;
+      if (batch.length >= 16) {
+        for (const r of await Promise.all(batch.map(processFileEntry))) {
+          if (r) yield r;
         }
-      }));
-      for (const r of results) {
-        if (r) {
-          // Compute content hash only if scan.compareByHash is enabled
-          if (get('scan.compareByHash', false) && r.size > 0) {
-            r.checksum = await computeContentHash(r.fullPath, r.size);
-          }
-          entries.push(r);
-          fileCount++;
-        }
+        batch.length = 0;
+        await new Promise(r => setImmediate(r));
       }
-      // Yield to event loop between every batch
-      await new Promise(r => setImmediate(r));
     }
-  }
 
+    for (const r of await Promise.all(batch.map(processFileEntry))) {
+      if (r) yield r;
+    }
+    await new Promise(r => setImmediate(r));
+  }
+}
+
+async function processFileEntry({ dirent, fullPath, itemRelPath, type, ext }) {
+  try {
+    const st = await stat(fullPath);
+    let realFullPath;
+    try { realFullPath = await realpath(fullPath); } catch { realFullPath = fullPath; }
+    return {
+      id: getFileId(itemRelPath),
+      relPath: itemRelPath,
+      name: dirent.name,
+      type,
+      ext,
+      fullPath: realFullPath,
+      size: st.size,
+      mtime: Math.floor(st.mtimeMs),
+      birthtime: Math.floor(st.birthtimeMs) || Math.floor(st.mtimeMs),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Scan filesystem iteratively, return flat list of entries (non-blocking async I/O)
+async function scanFileSystem(rootPath, rootRelPath = '') {
+  const entries = [];
+  for await (const entry of streamFileSystem(rootPath, rootRelPath)) {
+    entries.push(entry);
+  }
   return entries;
 }
 
@@ -325,16 +329,28 @@ async function incrementalSync() {
     const fsEntries = await scanFileSystem(root, folderName);
     console.log(`[scanner] Found ${fsEntries.length} media files in ${useDirectRoot ? 'root' : folderName}`);
 
-    // Phase 2: Get existing DB entries for this root
+    // Phase 2: Get existing DB entries for this root (chunked to bound memory)
     const subfolderPattern = useDirectRoot ? '%' : folderName + '/%';
-    const existingFiles = db.prepare('SELECT id, size, mtime, dir_id, duration, checksum FROM files WHERE dir_id IN (SELECT id FROM folders WHERE path = ? OR path LIKE ?)').all(folderName, subfolderPattern);
     const existingIds = new Set();
     const existingLookup = new Map();
-
-    for (const row of existingFiles) {
-      existingIds.add(row.id);
-      existingLookup.set(row.id, { size: row.size, mtime: row.mtime, dir_id: row.dir_id, duration: row.duration, checksum: row.checksum });
+    const DB_BATCH = 5000;
+    let dbOffset = 0;
+    while (true) {
+      const batch = db.prepare(`
+        SELECT id, size, mtime, dir_id, duration, checksum
+        FROM files
+        WHERE dir_id IN (SELECT id FROM folders WHERE path = ? OR path LIKE ?)
+        LIMIT ? OFFSET ?
+      `).all(folderName, subfolderPattern, DB_BATCH, dbOffset);
+      if (batch.length === 0) break;
+      for (const row of batch) {
+        existingIds.add(row.id);
+        existingLookup.set(row.id, { size: row.size, mtime: row.mtime, dir_id: row.dir_id, duration: row.duration, checksum: row.checksum });
+      }
+      dbOffset += DB_BATCH;
+      await new Promise(r => setImmediate(r));
     }
+    recordMemoryUsage('scanner', Buffer.byteLength(JSON.stringify({ existingLookup: Array.from(existingLookup.keys()), fsEntries: fsEntries.length })));
 
     // Phase 3: Ensure all subfolders exist
     const folderPaths = new Set([folderName]);

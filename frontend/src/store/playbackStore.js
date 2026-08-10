@@ -1,6 +1,16 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
+const buildShuffleOrder = (queue) => {
+  if (!queue || queue.length === 0) return [];
+  const order = queue.map((_, i) => i);
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  return order;
+};
+
 const usePlaybackStore = create(
   persist(
     (set, get) => ({
@@ -8,15 +18,15 @@ const usePlaybackStore = create(
       queue: [],
       currentTrackIndex: 0,
       isPlaying: false,
-      // Separate flag for the VAULT VIDEO player. Video and audio share one
-      // control surface (MediaControls) but must NOT share `isPlaying` — if they
-      // did, playing a vault video would flip the audio player's play state and
-      // make the MiniPlayer (shared audio element) start a track on its own.
       videoPlaying: false,
       shuffle: false,
       loopMode: 'off',
       playerMode: 'full',
       position: 0,
+
+      // Shuffle state: fixed shuffled order of queue indices.
+      shuffleOrder: [],
+      shufflePosition: -1,
 
       // Playlist mode
       hasPlaylist: false,
@@ -33,6 +43,8 @@ const usePlaybackStore = create(
         currentTrackIndex: startIndex,
         hasPlaylist: queue.length > 0,
         position: 0,
+        shuffleOrder: [],
+        shufflePosition: -1,
       }),
 
       play: () => set({ isPlaying: true }),
@@ -44,14 +56,23 @@ const usePlaybackStore = create(
       setCurrentTrackIndex: (index) => set({ currentTrackIndex: index, position: 0 }),
 
       next: () => {
-        const { queue, currentTrackIndex, loopMode, shuffle } = get();
+        const { queue, currentTrackIndex, loopMode, shuffle, shuffleOrder, shufflePosition } = get();
         if (queue.length === 0) return;
 
-        if (shuffle) {
-          let nextIndex;
-          do { nextIndex = Math.floor(Math.random() * queue.length); }
-          while (nextIndex === currentTrackIndex && queue.length > 1);
-          set({ currentTrackIndex: nextIndex, isPlaying: true, position: 0 });
+        if (shuffle && shuffleOrder.length === queue.length) {
+          const len = shuffleOrder.length;
+          const nextPos = shufflePosition + 1;
+          if (nextPos >= len) {
+            if (loopMode === 'all') {
+              set({ currentTrackIndex: shuffleOrder[0], shufflePosition: 0, isPlaying: true, position: 0 });
+            } else if (loopMode === 'one') {
+              set({ isPlaying: true, position: 0 });
+            } else {
+              set({ isPlaying: false });
+            }
+            return;
+          }
+          set({ currentTrackIndex: shuffleOrder[nextPos], shufflePosition: nextPos, isPlaying: true, position: 0 });
           return;
         }
 
@@ -65,14 +86,23 @@ const usePlaybackStore = create(
       },
 
       previous: () => {
-        const { queue, currentTrackIndex, loopMode, shuffle } = get();
+        const { queue, currentTrackIndex, loopMode, shuffle, shuffleOrder, shufflePosition } = get();
         if (queue.length === 0) return;
 
-        if (shuffle) {
-          let prevIndex;
-          do { prevIndex = Math.floor(Math.random() * queue.length); }
-          while (prevIndex === currentTrackIndex && queue.length > 1);
-          set({ currentTrackIndex: prevIndex, isPlaying: true, position: 0 });
+        if (shuffle && shuffleOrder.length === queue.length) {
+          const len = shuffleOrder.length;
+          const prevPos = shufflePosition - 1;
+          if (prevPos < 0) {
+            if (loopMode === 'all') {
+              set({ currentTrackIndex: shuffleOrder[len - 1], shufflePosition: len - 1, isPlaying: true, position: 0 });
+            } else if (loopMode === 'one') {
+              set({ isPlaying: true, position: 0 });
+            } else {
+              set({ isPlaying: false });
+            }
+            return;
+          }
+          set({ currentTrackIndex: shuffleOrder[prevPos], shufflePosition: prevPos, isPlaying: true, position: 0 });
           return;
         }
 
@@ -101,11 +131,32 @@ const usePlaybackStore = create(
         activePlaybackId: null,
         playerMode: 'full',
         position: 0,
+        shuffle: false,
+        shuffleOrder: [],
+        shufflePosition: -1,
       }),
 
       setActiveFile: (fileId) => set({ activePlaybackId: fileId }),
 
-      setShuffle: (shuffle) => set({ shuffle }),
+      setShuffle: (shuffle) => set((state) => {
+        if (shuffle && !state.shuffle) {
+          const order = buildShuffleOrder(state.queue);
+          const startPos = order.indexOf(state.currentTrackIndex);
+          return {
+            shuffle: true,
+            shuffleOrder: order,
+            shufflePosition: startPos >= 0 ? startPos : 0,
+          };
+        }
+        if (!shuffle && state.shuffle) {
+          return {
+            shuffle: false,
+            shuffleOrder: [],
+            shufflePosition: -1,
+          };
+        }
+        return { shuffle };
+      }),
       setLoopMode: (mode) => set({ loopMode: mode }),
 
       setPlayerMode: (mode) => set({ playerMode: mode }),
@@ -119,9 +170,6 @@ const usePlaybackStore = create(
         shuffle: state.shuffle,
         loopMode: state.loopMode,
         playerMode: state.playerMode,
-        // Persist the active track so a page reload reopens the last-played
-        // track instead of resetting to the first one. (isPlaying is omitted
-        // on purpose — browsers block autoplay without a user gesture.)
         queue: state.queue,
         currentTrackIndex: state.currentTrackIndex,
         activePlaybackId: state.activePlaybackId,
