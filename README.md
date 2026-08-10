@@ -95,7 +95,7 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | Send Queue | Optional | Monitors sent/failed/cancelled files to Telegram and WA; tick-based queue for WA status (1-6 posts per day in 24h format) | Tick-based precision, SSE, WA/Telegram APIs |
 | WhatsApp | Optional | WhatsApp Web pairing (QR), connection status, and bot/message controls | whatsapp-web.js, whatsapp-bot, /api/whatsapp |
 | AI Chat | Optional | Conversational AI assistant with provider-based models, context awareness, and a settings UI | ai.js, ai-providers.js, ai-context.js, AIChat.jsx, AISettings.jsx |
-| Git Integration | API-only | Full Git operations without terminal (status, branches, tags, stash, commit, push, pull, diff, file editor, tree browser); web UI menu under development | Simple Git wrapper |
+| Git Integration | API-only (not mounted) | Full Git operations without terminal (status, branches, tags, stash, commit, push, pull, diff, file editor, tree browser); routes defined in `git.js` but not yet wired into the server; web UI menu under development | Simple Git wrapper |
 
 > **Note:** All menus are still actively worked on and under development. New menus may be added in the future.
 
