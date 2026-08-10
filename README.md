@@ -148,11 +148,11 @@ flowchart LR
     GIT --> GR[git.js - defined, not mounted]
 
     classDef wip fill:#fff0f0,stroke:#d11,stroke-width:2px,stroke-dasharray:6 4;
-    DASH -->|Scrcpy| SCR[Scrcpy (WIP)]
+    DASH -->|Scrcpy| SCR["Scrcpy (WIP)"]
     SCR:::wip --> PTY[node-pty · scrcpy]
-    DASH -->|ADB Transfer| ADB[ADB Transfer (WIP)]
+    DASH -->|ADB Transfer| ADB["ADB Transfer (WIP)"]
     ADB:::wip --> ADBT[adb push / pull]
-    DASH -->|AI Chat| AIC[AI Chat (WIP)]
+    DASH -->|AI Chat| AIC["AI Chat (WIP)"]
     AIC:::wip --> AIS[ai.js · providers]
 ```
 
