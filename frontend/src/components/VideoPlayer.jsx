@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Heart, Send, Share2, Trash2, Ban, RotateCw, Pencil } from 'lucide-react';
+import { Heart, Ban, RotateCw, Pencil, Calendar, ShieldBan, ShieldCheck } from 'lucide-react';
 import MediaLayout from './MediaLayout';
 import MediaControls from './MediaControls';
 import Hls from 'hls.js';
@@ -7,10 +7,12 @@ import usePlaybackStore from '../store/playbackStore';
 import { useIsFavorite } from '../store/favoritesStore';
 import { useSendProgress } from '../hooks/useSendProgress';
 import { useWaUnsupported } from '../hooks/useWaUnsupported';
-import { sendToTelegram, sendToChannel, sendToStatus, sendToAll, removeSendQueueItem, cancelSendQueueItem, retrySendQueueItem } from '../utils/api';
+import { sendToTelegram, sendToChannel, sendToStatus, sendToAll, cancelSendQueueItem, retrySendQueueItem } from '../utils/api';
 import SendProgressPills from './SendProgressPills';
-import WaLogo from './icons/WaLogo';
 import VaultActionBar from './VaultActionBar';
+import CarouselLockToggle from './CarouselLockToggle';
+import WaLogo from './icons/WaLogo';
+import SendStatusPill from './SendStatusPill';
 import './VideoPlayer.css';
 
 export default function VideoPlayer({
@@ -24,15 +26,29 @@ export default function VideoPlayer({
      queueMode = false,
      queueItem = null,
      onQueueChanged = null,
-     onEditCaption = null,
-      bottomClusterAnim = null,
+      onEditCaption = null,
+      onReschedule = null,
+       bottomClusterAnim = null,
       embedded = false,
       mediaRef = null,
       startPaused = false,
-      }) {
+       onSend = null,
+       lockEnabled = true,
+       onToggleLock = null,
+       onToggleItemLock = null,
+       isFileLocked = false,
+       onRepoNext = null,
+      onRepoPrev = null,
+       isFileQueued = false,
+       isFileSent = false,
+       sendStatus = 'idle',
+       sendMessage = '',
+       sendExtraInfo = null,
+       }) {
    const localVideoRef = useRef(null);
    const videoRef = mediaRef || localVideoRef;
    const hlsRef = useRef(null);
+   const titleRef = useRef(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -44,6 +60,7 @@ export default function VideoPlayer({
     }, [file, onToggleFavorite]);
 
     const waUnsupported = useWaUnsupported(file);
+    const sendBlocked = isFileQueued || isFileSent || waUnsupported;
     const { progress, start: startProgress } = useSendProgress();
 
 const handleSend = useCallback(async (target) => {
@@ -55,18 +72,11 @@ const handleSend = useCallback(async (target) => {
           else if (target === 'status') res = await sendToStatus(file.id);
           else if (target === 'all') res = await sendToAll(file.id);
           if (res && res.qid) startProgress(res.qid);
-          if (res) try { window.dispatchEvent(new CustomEvent('media-vault:send-changed')); } catch {}
         } catch {}
       }, [file?.id, startProgress]);
 
-     // In queue mode the header's right side shows "Hapus dari riwayat" instead
+     // In queue mode the header's right side shows send/cancel actions instead
      // of the favorite (love) button — the queue item has no favorite concept.
-     const handleQueueRemove = useCallback(async () => {
-       if (!queueItem?.qid) return;
-       try { await removeSendQueueItem(queueItem.qid); } catch {}
-       if (onQueueChanged) onQueueChanged();
-       if (onClose) onClose();
-     }, [queueItem?.qid, onQueueChanged, onClose]);
 
     useEffect(() => {
       const video = videoRef.current;
@@ -204,73 +214,189 @@ const handleSend = useCallback(async (target) => {
          hlsRef.current = null;
          try { video.pause(); } catch {}
        };
-     }, [file?.id]);
+      }, [file?.id]);
 
-     const displayName = file
+  // Toggle play/pause when Spacebar is pressed from App-level handler
+  useEffect(() => {
+    const handler = () => {
+      const video = videoRef.current;
+      if (!video) return;
+      try {
+        if (video.paused) video.play().catch(() => {});
+        else video.pause();
+      } catch {}
+    };
+    window.addEventListener('global-media-toggle-play', handler);
+    return () => window.removeEventListener('global-media-toggle-play', handler);
+  }, []);
+
+  // Toggle favorite when L key is pressed from App-level handler
+  useEffect(() => {
+    const handler = () => {
+      if (!onToggleFavorite) return;
+      onToggleFavorite();
+    };
+    window.addEventListener('global-media-toggle-favorite', handler);
+    return () => window.removeEventListener('global-media-toggle-favorite', handler);
+  }, [onToggleFavorite]);
+
+  // Next / previous / shuffle / skip / send from App-level keyboard bindings
+  useEffect(() => {
+    const handler = (e) => {
+      const video = videoRef.current;
+      if (e.type === 'global-media-next') {
+        if (onRepoNext) { onRepoNext(); return; }
+        if (!onFileChange || !folderFiles.length) return;
+        const curIdx = folderFiles.findIndex(f => f.id === file?.id);
+        const nextIdx = curIdx < folderFiles.length - 1 ? curIdx + 1 : 0;
+        if (video) video.pause();
+        onFileChange(folderFiles[nextIdx]);
+      } else if (e.type === 'global-media-previous') {
+        if (onRepoPrev) { onRepoPrev(); return; }
+        if (!onFileChange || !folderFiles.length) return;
+        const curIdx = folderFiles.findIndex(f => f.id === file?.id);
+        const prevIdx = curIdx > 0 ? curIdx - 1 : folderFiles.length - 1;
+        if (video) video.pause();
+        onFileChange(folderFiles[prevIdx]);
+      } else if (e.type === 'global-media-toggle-shuffle') {
+        // No-op for video player; shuffle is handled at playlist level
+      } else if (e.type === 'global-media-skip-minus5') {
+        if (video) video.currentTime = Math.max(0, video.currentTime - 5);
+      } else if (e.type === 'global-media-skip-plus5') {
+        if (video) video.currentTime = Math.min(video.duration || 0, video.currentTime + 5);
+      } else if (e.type === 'global-media-send-status') {
+        if (onSend && !isFileLocked) onSend('status');
+      }
+    };
+    // When the vault provides repo-native navigation (onRepoNext/onRepoPrev),
+    // the bottom cluster's MediaControls is the single n/m handler — if this
+    // player ALSO listened to these events we'd get two racing navigators per
+    // keypress (one could wrap inside the hydrated window, showing "old" items).
+    // Same in queue mode: SendQueuePlayer owns n/m on the queue list. So we only
+    // register next/previous here when nothing else is navigating for us.
+    const singleNavigator = (onRepoNext && onRepoPrev) || queueMode;
+    const events = singleNavigator
+      ? [
+          // Skip ±5 is intentionally omitted here: the bottom cluster (MediaControls)
+          // owns G/H in vault & queue mode — having the player also apply ±5 would
+          // double the jump to ±10s per press.
+          'global-media-toggle-shuffle',
+          'global-media-send-status',
+        ]
+      : [
+          'global-media-next', 'global-media-previous',
+          'global-media-toggle-shuffle',
+          'global-media-skip-minus5', 'global-media-skip-plus5', 'global-media-send-status',
+        ];
+    events.forEach((evt) => window.addEventListener(evt, handler));
+    return () => events.forEach((evt) => window.removeEventListener(evt, handler));
+  }, [onFileChange, folderFiles, file, onSend, onRepoNext, onRepoPrev, queueMode, isFileLocked]);
+
+  const displayName = file
       ? file.displayName || file.name.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ')
       : 'Memutar Video...';
 
-     const headerNode = (
-       <>
-         <button onClick={onClose} className="p-2 rounded-full hover:bg-white/10 transition-colors shrink-0">
-           <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>
-         </button>
-          <div className="absolute left-1/2 -translate-x-1/2 text-center pointer-events-none px-2 max-w-[70%]">
+      const headerNode = (
+        <>
+          <button onClick={onClose} className="p-2 rounded-full hover:bg-white/10 transition-colors shrink-0 focus:outline-none focus:ring-0">
+            <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>
+          </button>
+          <div ref={titleRef} className="flex-1 min-w-0 text-center px-2 pl-16 pointer-events-none">
             <div className="text-[10px] font-bold text-purple-400 uppercase tracking-[0.2em]" title={displayName ? 'Now Playing: ' + displayName : 'Now Playing'}>Now Playing</div>
             <div className="text-sm font-semibold text-white truncate" title={displayName}>{displayName}</div>
           </div>
-           <div className="ml-auto flex items-center gap-1">
+          <div className="ml-auto flex items-center gap-1">
+            {onToggleItemLock && (
+              <button
+                onClick={onToggleItemLock}
+                className={`flex items-center gap-1.5 rounded-full px-2.5 py-2 transition-all duration-150 active:scale-90 focus:outline-none focus:ring-0 ${
+                  isFileLocked
+                    ? 'bg-red-500/15 text-red-300 hover:bg-red-500/25'
+                    : 'text-white/60 hover:bg-white/10 hover:text-white'
+                }`}
+                title={isFileLocked ? 'Kirim diblokir — tombol kirim & K dimatikan (klik untuk buka)' : 'Blokir kirim — matikan tombol kirim & K'}
+              >
+                {isFileLocked ? <ShieldBan size={15} className="text-red-400 fill-red-400/20" /> : <ShieldCheck size={15} />}
+                <span className="text-[11px] font-semibold leading-none">{isFileLocked ? 'Blok' : 'Buka'}</span>
+              </button>
+            )}
+            {onToggleLock && (
+              <CarouselLockToggle lockEnabled={lockEnabled} onToggleLock={onToggleLock} />
+            )}
              {queueMode ? (
-               <>
-              {queueItem?.status === 'pending' && (
-                    <>
-                      <button
-                        onClick={() => { cancelSendQueueItem(queueItem.qid).then(() => onQueueChanged && onQueueChanged()); }}
-                        className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/10 hover:text-red-400"
-                        title="Batalkan pengiriman"
-                       >
-                         <Ban size={20} />
-                       </button>
-                       {onEditCaption && (
+                 <>
+                 {queueItem?.status === 'pending' && (
+                       <>
                         <button
-                          onClick={onEditCaption}
-                          className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/10 hover:text-cyan-400"
-                          title="Edit caption"
-                        >
-                          <Pencil size={18} />
-                        </button>
-                      )}
-                    </>
-                  )}
-                 {queueItem?.status === 'failed' && (
-                   <button
-                     onClick={() => { retrySendQueueItem(queueItem.qid).then(() => onQueueChanged && onQueueChanged()); }}
-                     className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/10 hover:text-emerald-400"
-                     title="Ulangi pengiriman"
-                   >
-                     <RotateCw size={20} />
-                   </button>
-                 )}
+                          onClick={() => { cancelSendQueueItem(queueItem.qid).then(() => onQueueChanged && onQueueChanged()); }}
+                          className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/10 hover:text-red-400 focus:outline-none focus:ring-0"
+                          title="Batalkan pengiriman"
+                         >
+                           <Ban size={20} />
+                         </button>
+                         {onReschedule && (
+                           <button
+                             onClick={() => onReschedule(queueItem)}
+                             className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/10 hover:text-cyan-400 focus:outline-none focus:ring-0"
+                             title="Jadwalkan ulang"
+                           >
+                             <Calendar size={20} />
+                           </button>
+                         )}
+                         {onEditCaption && (
+                          <button
+                            onClick={onEditCaption}
+                            className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/10 hover:text-cyan-400 focus:outline-none focus:ring-0"
+                            title="Edit caption"
+                          >
+                            <Pencil size={18} />
+                          </button>
+                        )}
+                      </>
+                    )}
+                   {queueItem?.status === 'failed' && (
+                     <button
+                       onClick={() => { retrySendQueueItem(queueItem.qid).then(() => onQueueChanged && onQueueChanged()); }}
+                       className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/10 hover:text-emerald-400 focus:outline-none focus:ring-0"
+                       title="Ulangi pengiriman"
+                     >
+                       <RotateCw size={20} />
+                     </button>
+                   )}
+                 </>
+              ) : (
+                 <>
                  <button
-                   onClick={handleQueueRemove}
-                   className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/10 hover:text-red-400"
-                   title="Hapus dari riwayat"
+                   onClick={handleToggleFavorite}
+                   className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/10 hover:text-white focus:outline-none focus:ring-0"
+                   title={isFav ? 'Remove from favorites' : 'Add to favorites'}
                  >
-                   <Trash2 size={20} />
+                   <Heart size={20} className={isFav ? 'fill-red-500 text-red-500' : ''} />
                  </button>
+                     {embedded && !queueMode && onSend && (
+                       <>
+                          <button
+                            onClick={() => !sendBlocked && !isFileLocked && onSend('status')}
+                            disabled={sendBlocked || isFileLocked}
+                            className={`p-2 rounded-full transition-colors ${sendBlocked || isFileLocked ? 'text-neutral-500 cursor-not-allowed' : 'text-white/70 hover:bg-white/10 hover:text-emerald-400'} focus:outline-none focus:ring-0`}
+                            title={isFileLocked ? 'Item terkunci — buka kunci dulu untuk mengirim' : isFileQueued ? 'Sudah dalam antrian' : isFileSent ? 'Sudah pernah dikirim' : waUnsupported ? 'Codec tidak didukung WhatsApp (bukan H.264)' : 'Kirim ke WhatsApp Status'}
+                          >
+                           <WaLogo size={18} />
+                         </button>
+                         <SendStatusPill
+                           visible={!!onSend}
+                           status={sendStatus}
+                           message={sendMessage}
+                           extraInfo={sendExtraInfo}
+                           anchorRef={titleRef}
+                         />
+                       </>
+                     )}
                </>
-             ) : (
-               <button
-                 onClick={handleToggleFavorite}
-                 className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/10 hover:text-white"
-                 title={isFav ? 'Remove from favorites' : 'Add to favorites'}
-               >
-                 <Heart size={20} className={isFav ? 'fill-red-500 text-red-500' : ''} />
-               </button>
              )}
-           </div>
-       </>
-     );
+            </div>
+        </>
+      );
 
       const mainContent = (
         <div className="media-wrapper">
@@ -314,16 +440,19 @@ const handleSend = useCallback(async (target) => {
                controls={embedded ? undefined : (
                  <MediaControls type="video" mediaRef={videoRef} folderFiles={folderFiles} currentFile={file} onFileChange={onFileChange} />
               )}
-               bottomBar={embedded ? undefined : (queueMode ? undefined : (
-                 <VaultActionBar
-                   file={file}
-                   isFav={isFav}
-                   onToggleFavorite={handleToggleFavorite}
-                   onSend={handleSend}
-                   waUnsupported={waUnsupported}
-                   hideLove
-                 />
-               ))}
+                bottomBar={embedded ? undefined : (queueMode ? undefined : (
+                  <VaultActionBar
+                    file={file}
+                    isFav={isFav}
+                    onToggleFavorite={handleToggleFavorite}
+                    onSend={handleSend}
+                    waUnsupported={waUnsupported}
+                    hideLove
+                    isFileQueued={isFileQueued}
+                    isFileSent={isFileSent}
+                    isFileLocked={isFileLocked}
+                  />
+                ))}
             >
               {mainContent}
             </MediaLayout>

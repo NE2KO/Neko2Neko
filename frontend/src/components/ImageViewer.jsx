@@ -3,11 +3,14 @@ import MediaLayout from './MediaLayout';
 import VaultActionBar from './VaultActionBar';
 import { useSendProgress } from '../hooks/useSendProgress';
 import { useWaUnsupported } from '../hooks/useWaUnsupported';
-import { sendToTelegram, sendToChannel, sendToStatus, sendToAll, cancelSendQueueItem, retrySendQueueItem, removeSendQueueItem } from '../utils/api';
-import { Ban, RotateCw, Trash2, Pencil } from 'lucide-react';
+import { sendToTelegram, sendToChannel, sendToStatus, sendToAll, cancelSendQueueItem, retrySendQueueItem } from '../utils/api';
+import { Ban, RotateCw, Pencil, Calendar } from 'lucide-react';
 import SendProgressPills from './SendProgressPills';
+import CarouselLockToggle from './CarouselLockToggle';
+import WaLogo from './icons/WaLogo';
+import SendStatusPill from './SendStatusPill';
 
-function ImageViewer({ file, folderFiles, currentSortBy, currentSortOrder, onClose, onImageChange, onLoadFolderFiles, onToggleFavorite, queueMode = false, queueItem = null, onQueueChanged = null, onEditCaption = null, bottomClusterAnim = null, embedded = false }) {
+function ImageViewer({ file, folderFiles, currentSortBy, currentSortOrder, onClose, onImageChange, onLoadFolderFiles, onToggleFavorite, queueMode = false, queueItem = null, onQueueChanged = null, onEditCaption = null, onReschedule = null, bottomClusterAnim = null, embedded = false, lockEnabled = true, onToggleLock = null, onRepoNext = null, onRepoPrev = null, onSend = null, isFileQueued = false, isFileSent = false, sendStatus = 'idle', sendMessage = '', sendExtraInfo = null }) {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -15,12 +18,14 @@ function ImageViewer({ file, folderFiles, currentSortBy, currentSortOrder, onClo
   const initialPinchDistRef = useRef(null);
   const imageRef = useRef(null);
   const containerRef = useRef(null);
+  const titleRef = useRef(null);
 
   const currentIndex = folderFiles?.findIndex((f) => f.id === file.id) ?? -1;
   const [isFav, setIsFav] = useState(false);
   useEffect(() => { setIsFav(file?.is_favorite === 1); }, [file?.id]);
 
   const waUnsupported = useWaUnsupported(file);
+  const sendBlocked = isFileQueued || isFileSent || waUnsupported;
   const { progress, start: startProgress } = useSendProgress();
 
   const handleToggleFavorite = useCallback(async () => {
@@ -40,11 +45,6 @@ function ImageViewer({ file, folderFiles, currentSortBy, currentSortOrder, onClo
     retrySendQueueItem(queueItem.qid).then(() => onQueueChanged && onQueueChanged());
   }, [queueItem?.qid, onQueueChanged]);
 
-  const handleQueueRemove = useCallback(() => {
-    if (!queueItem?.qid) return;
-    removeSendQueueItem(queueItem.qid).then(() => { if (onQueueChanged) onQueueChanged(); if (onClose) onClose(); });
-  }, [queueItem?.qid, onQueueChanged, onClose]);
-
   const handleSend = useCallback(async (target) => {
     if (!file?.id) return;
     let res;
@@ -54,7 +54,6 @@ function ImageViewer({ file, folderFiles, currentSortBy, currentSortOrder, onClo
       else if (target === 'status') res = await sendToStatus(file.id);
       else if (target === 'all') res = await sendToAll(file.id);
       if (res && res.qid) startProgress(res.qid);
-      if (res) try { window.dispatchEvent(new CustomEvent('media-vault:send-changed')); } catch {}
     } catch {}
   }, [file?.id, startProgress]);
 
@@ -270,6 +269,24 @@ function ImageViewer({ file, folderFiles, currentSortBy, currentSortOrder, onClo
     ? file.display_name || file.name
     : 'Image';
 
+  // The image player has no bottom-cluster controls (MediaControls is only
+  // mounted for video/audio), so n/m keyboard listening is owned HERE. We
+  // navigate through the repo (onRepoNext/onRepoPrev) exactly like the cluster
+  // does for video → same behaviour, and no other handler races with it.
+  useEffect(() => {
+    if (!onRepoNext && !onRepoPrev) return;
+    const handler = (e) => {
+      if (e.type === 'global-media-next') {
+        onRepoNext && onRepoNext();
+      } else if (e.type === 'global-media-previous') {
+        onRepoPrev && onRepoPrev();
+      }
+    };
+    const events = ['global-media-next', 'global-media-previous'];
+    events.forEach((evt) => window.addEventListener(evt, handler));
+    return () => events.forEach((evt) => window.removeEventListener(evt, handler));
+  }, [onRepoNext, onRepoPrev]);
+
   const headerNode = (
     <>
       <button
@@ -280,11 +297,14 @@ function ImageViewer({ file, folderFiles, currentSortBy, currentSortOrder, onClo
           <path d="M19 12H5M12 19l-7-7 7-7" />
         </svg>
       </button>
-      <div className="absolute left-1/2 -translate-x-1/2 text-center pointer-events-none px-2 max-w-[70%]">
+      <div ref={titleRef} className="flex-1 min-w-0 text-center px-2 pl-16 pointer-events-none">
         <div className="text-[10px] font-bold text-green-400 uppercase tracking-[0.2em]">Image</div>
         <div className="text-sm font-semibold text-white truncate" title={displayName}>{displayName}</div>
       </div>
       <div className="ml-auto flex items-center gap-1">
+        {onToggleLock && (
+          <CarouselLockToggle lockEnabled={lockEnabled} onToggleLock={onToggleLock} />
+        )}
         {queueMode ? (
           <>
             {queueItem?.status === 'pending' && (
@@ -292,6 +312,11 @@ function ImageViewer({ file, folderFiles, currentSortBy, currentSortOrder, onClo
                 <button onClick={handleQueueCancel} className="p-2.5 rounded-full bg-neutral-900/50 border border-white/5 active:bg-white/10 transition-colors text-white/70 hover:text-red-400" title="Batalkan pengiriman">
                   <Ban size={18} />
                 </button>
+                {onReschedule && (
+                  <button onClick={() => onReschedule(queueItem)} className="p-2.5 rounded-full bg-neutral-900/50 border border-white/5 active:bg-white/10 transition-colors text-white/70 hover:text-cyan-400" title="Jadwalkan ulang">
+                    <Calendar size={18} />
+                  </button>
+                )}
                 {onEditCaption && (
                   <button onClick={onEditCaption} className="p-2.5 rounded-full bg-neutral-900/50 border border-white/5 active:bg-white/10 transition-colors text-white/70 hover:text-cyan-400" title="Edit caption">
                     <Pencil size={16} />
@@ -304,18 +329,36 @@ function ImageViewer({ file, folderFiles, currentSortBy, currentSortOrder, onClo
                 <RotateCw size={18} />
               </button>
             )}
-            <button onClick={handleQueueRemove} className="p-2.5 rounded-full bg-neutral-900/50 border border-white/5 active:bg-white/10 transition-colors text-white/70 hover:text-red-400" title="Hapus dari riwayat">
-              <Trash2 size={18} />
-            </button>
           </>
         ) : (
-          <button
-            onClick={handleToggleFavorite}
-            className="p-2.5 rounded-full bg-neutral-900/50 border border-white/5 active:bg-white/10 transition-colors"
-            title={isFav ? 'Remove from favorites' : 'Add to favorites'}
-          >
-            <svg className="w-5 h-5" viewBox="0 0 24 24" fill={isFav ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2"><path d="M12 21s-7-4.35-9.5-8.5C.5 9 2 5.5 5.5 5.5 7.5 5.5 9 6.5 12 9c3-2.5 4.5-3.5 6.5-3.5 3.5 0 5 3.5 3 7-2.5 4.15-9.5 8.5-9.5 8.5z" /></svg>
-          </button>
+          <>
+            <button
+              onClick={handleToggleFavorite}
+              className="p-2.5 rounded-full bg-neutral-900/50 border border-white/5 active:bg-white/10 transition-colors"
+              title={isFav ? 'Remove from favorites' : 'Add to favorites'}
+            >
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill={isFav ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2"><path d="M12 21s-7-4.35-9.5-8.5C.5 9 2 5.5 5.5 5.5 7.5 5.5 9 6.5 12 9c3-2.5 4.5-3.5 6.5-3.5 3.5 0 5 3.5 3 7-2.5 4.15-9.5 8.5-9.5 8.5z" /></svg>
+            </button>
+            {embedded && !queueMode && onSend && (
+              <>
+                  <button
+                    onClick={() => !sendBlocked && onSend('status')}
+                    disabled={sendBlocked}
+                    className={`p-2.5 rounded-full bg-neutral-900/50 border border-white/5 active:bg-white/10 transition-colors ${sendBlocked ? 'text-neutral-500 cursor-not-allowed' : 'text-white/70 hover:text-emerald-400'}`}
+                    title={isFileQueued ? 'Sudah dalam antrian' : isFileSent ? 'Sudah pernah dikirim' : waUnsupported ? 'Codec tidak didukung WhatsApp (bukan H.264)' : 'Kirim ke WhatsApp Status'}
+                  >
+                  <WaLogo size={16} />
+                </button>
+                <SendStatusPill
+                  visible={!!onSend}
+                  status={sendStatus}
+                  message={sendMessage}
+                  extraInfo={sendExtraInfo}
+                  anchorRef={titleRef}
+                />
+              </>
+            )}
+          </>
         )}
       </div>
     </>
@@ -399,6 +442,8 @@ function ImageViewer({ file, folderFiles, currentSortBy, currentSortOrder, onClo
           onToggleFavorite={handleToggleFavorite}
           onSend={handleSend}
           waUnsupported={waUnsupported}
+          isFileQueued={isFileQueued}
+          isFileSent={isFileSent}
         />
       ))}
     >

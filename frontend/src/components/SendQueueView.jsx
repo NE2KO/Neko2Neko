@@ -7,6 +7,8 @@ import { getSendQueueStatuses, getSendQueue, clearSendQueueHistory, getThumbnail
 
 import SendQueuePlayer from './SendQueuePlayer';
 import CaptionEditorModal from './CaptionEditorModal';
+import RescheduleModal from './RescheduleModal';
+import { useToast } from './Toast';
 
 const STATUS_META = {
   pending: { key: 'pending', label: 'Antrian', icon: Inbox, color: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/30' },
@@ -105,11 +107,11 @@ const StatusFolderCard = memo(function StatusFolderCard({ meta, count, coverId, 
   const nextSlotLabel = displayEta > now ? `${nextSlotHours}h ${nextSlotMins}m` : 'Siap';
 
 return (
-     <button
-       onClick={onClick}
-       className={`relative flex flex-col items-start gap-2 p-5 rounded-2xl border ${meta.border} ${meta.bg} hover:brightness-125 transition-all text-left overflow-hidden`}
-       style={{ minHeight: '180px' }}
-    >
+      <button
+        onClick={onClick}
+        className={`relative flex flex-col items-start gap-2 p-5 rounded-2xl border ${meta.border} ${meta.bg} hover:brightness-125 transition-all text-left overflow-hidden focus:outline-none focus:ring-0`}
+        style={{ minHeight: '180px' }}
+     >
       <div className={`flex items-center gap-2 ${meta.color}`}>
         <Icon size={24} />
         <span className="text-lg font-semibold">{meta.label}</span>
@@ -144,31 +146,13 @@ return (
  );
 });
 
-const ItemCard = memo(function ItemCard({ item, onOpen, onAction, onCaptionChange, sendEta, ready, index, scheduleActive }) {
+export const ItemCard = memo(function ItemCard({ item, onOpen, onAction, onCaptionChange, sendEta, ready, index, scheduleActive, interactive = true, isScrolling = false }) {
   const now = useClock();
   const meta = STATUS_META[item.status] || STATUS_META.pending;
   const Icon = meta.icon;
   const [showCaptionModal, setShowCaptionModal] = useState(false);
 
-  const formatDateTime = (ts) => {
-    if (!ts) return '';
-    const d = new Date(ts);
-    const pad = (n) => String(n).padStart(2, '0');
-    return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear().toString().slice(-2)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  };
-  
   const displayName = item.name || '(file dihapus)';
-  const displayDate = item.completed_at ? formatDateTime(item.completed_at) : formatDateTime(item.created_at);
-  
-  let sendTimeLabel = null;
-  if (item.status === 'pending' && sendEta && Number(sendEta) > now) {
-    sendTimeLabel = `Kirim ${formatDateTime(sendEta)}`;
-  } else if (item.status === 'done' && item.completed_at) {
-    sendTimeLabel = `Terkirim ${formatDateTime(item.completed_at)}`;
-  } else if (item.status === 'failed' && item.completed_at) {
-    sendTimeLabel = `Gagal ${formatDateTime(item.completed_at)}`;
-  }
-  
   const captionText = item.caption || null;
 
   let eta = null;
@@ -197,13 +181,12 @@ const ItemCard = memo(function ItemCard({ item, onOpen, onAction, onCaptionChang
     <div
       onClick={() => onOpen(item)}
       className="group relative flex flex-col h-full bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden hover:border-neutral-600 transition-colors cursor-pointer"
-      style={{ contentVisibility: 'auto' }}
     >
       {/* Thumbnail area — centered vertically in available space */}
       <div className="flex-1 flex items-center justify-center min-h-0 bg-neutral-950 relative">
         <div className="w-full relative" style={{ aspectRatio: '1/1' }}>
         {item.file_id ? (
-          <img src={getThumbnailUrl({ id: item.file_id })} alt={item.name || ''} loading="lazy" className="w-full h-full object-cover"
+          <img src={getThumbnailUrl({ id: item.file_id })} alt={item.name || ''} decoding="async" className="w-full h-full object-cover"
             onError={(e) => { e.currentTarget.style.display = 'none'; }} />
         ) : (
           <div className="w-full h-full flex items-center justify-center text-neutral-700">
@@ -225,6 +208,14 @@ const ItemCard = memo(function ItemCard({ item, onOpen, onAction, onCaptionChang
            <Icon size={9} />
            <span>{etaLabel || meta.label}</span>
         </span>
+        {/* Gradient overlay to keep badge readable over any image */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent pointer-events-none" />
+        <SendTimeBadge
+          sendEta={sendEta}
+          ready={ready}
+          item={item}
+          scheduleActive={scheduleActive}
+        />
         </div>
       </div>
       {/* Metadata area — sits at bottom of card */}
@@ -232,11 +223,6 @@ const ItemCard = memo(function ItemCard({ item, onOpen, onAction, onCaptionChang
         <p className="text-[11px] font-medium truncate text-neutral-200 w-full leading-tight">
           {displayName}
         </p>
-        {sendTimeLabel ? (
-          <p className="text-[10px] text-neutral-400 mt-0.5 font-mono truncate">{sendTimeLabel}</p>
-        ) : (
-          <p className="text-[10px] text-neutral-500 mt-0.5 font-mono truncate">{displayDate}</p>
-        )}
         {/* ETA row — always rendered for consistent card height */}
         <div className="flex items-center gap-0.5 mt-0.5 min-h-[18px]">
             {eta != null && eta > 0 ? (
@@ -249,14 +235,14 @@ const ItemCard = memo(function ItemCard({ item, onOpen, onAction, onCaptionChang
         {/* Caption */}
         <div className="flex items-center gap-1 mt-0.5 group/cap">
           <p
-            className={`text-[10px] truncate flex-1 min-w-0 ${captionText ? 'text-neutral-400' : 'text-neutral-600 italic'}`}
+            className={`text-[13px] truncate flex-1 min-w-0 ${captionText ? 'text-neutral-400' : 'text-neutral-600 italic'}`}
           >
             {captionText ? `Caption: ${captionText}` : 'Tanpa caption'}
           </p>
-          {item.status === 'pending' && (
+          {interactive && item.status === 'pending' && (
             <button
               onClick={(e) => { e.stopPropagation(); setShowCaptionModal(true); }}
-              className="p-0.5 rounded opacity-0 group-hover/cap:opacity-100 text-neutral-600 hover:text-cyan-400 hover:bg-cyan-500/10 transition-all flex-shrink-0"
+              className="p-0.5 rounded opacity-0 group-hover/cap:opacity-100 text-neutral-600 hover:text-cyan-400 hover:bg-cyan-500/10 transition-all flex-shrink-0 focus:outline-none focus:ring-0"
               title="Edit caption"
             >
               <Pencil size={10} />
@@ -265,31 +251,36 @@ const ItemCard = memo(function ItemCard({ item, onOpen, onAction, onCaptionChang
         </div>
       </div>
       {/* Hover quick actions */}
+      {interactive && (
       <div className="absolute bottom-[80px] right-1.5 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
         {item.status === 'pending' && (
           <>
             <button title="Geser ke atas" onClick={(e) => quick(e, () => onAction('moveUp', item))}
-              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
+              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white focus:outline-none focus:ring-0">
               <ChevronUp size={12} />
             </button>
             <button title="Geser ke bawah" onClick={(e) => quick(e, () => onAction('moveDown', item))}
-              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
+              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white focus:outline-none focus:ring-0">
               <ChevronDown size={12} />
             </button>
             <button title="Batalkan" onClick={(e) => quick(e, () => onAction('cancel', item))}
-              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
+              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white focus:outline-none focus:ring-0">
               <Ban size={12} />
+            </button>
+            <button title="Jadwalkan ulang" onClick={(e) => quick(e, () => onAction('reschedule', item))}
+              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-cyan-400 focus:outline-none focus:ring-0">
+              <Calendar size={12} />
             </button>
           </>
         )}
         {item.status === 'failed' && (
           <>
             <button title="Ulangi" onClick={(e) => quick(e, () => onAction('retry', item))}
-              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
+              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white focus:outline-none focus:ring-0">
               <XCircle size={12} />
             </button>
             <button title="Hapus" onClick={(e) => quick(e, () => onAction('remove', item))}
-              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
+              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white focus:outline-none focus:ring-0">
               <Trash2 size={12} />
             </button>
           </>
@@ -297,26 +288,23 @@ const ItemCard = memo(function ItemCard({ item, onOpen, onAction, onCaptionChang
         {item.status === 'done' && (
           <>
             <button title="Kirim lagi" onClick={(e) => quick(e, () => onAction('resend', item))}
-              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-emerald-400">
+              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-emerald-400 focus:outline-none focus:ring-0">
               <RotateCw size={12} />
             </button>
-            <button title="Jadwalkan ulang" onClick={(e) => quick(e, () => onAction('reschedule', item))}
-              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-cyan-400">
-              <Calendar size={12} />
-            </button>
             <button title="Hapus dari riwayat" onClick={(e) => quick(e, () => onAction('remove', item))}
-              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
+              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white focus:outline-none focus:ring-0">
               <Trash2 size={12} />
             </button>
           </>
         )}
         {item.status === 'canceled' && (
           <button title="Hapus dari riwayat" onClick={(e) => quick(e, () => onAction('remove', item))}
-            className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white">
+            className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white focus:outline-none focus:ring-0">
             <Trash2 size={12} />
           </button>
         )}
       </div>
+      )}
       {showCaptionModal && (
         <CaptionEditorModal
           open={showCaptionModal}
@@ -380,6 +368,58 @@ function CounterOdometer({ value, className = '' }) {
     </div>
   );
 }
+const SendTimeBadge = memo(function SendTimeBadge({ sendEta, ready, item, scheduleActive }) {
+  const now = useClock();
+  const fmt = (ts) => {
+    if (!ts) return null;
+    const d = new Date(ts);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${String(d.getFullYear()).slice(-2)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  const bestEta = useMemo(() => {
+    if (!sendEta && item.status === 'pending') {
+      const hold = Number(item.hold_until) || 0;
+      const sched = Number(item.scheduled_at) || 0;
+      const candidates = [hold, sched].filter(v => v > now);
+      return candidates.length ? Math.min(...candidates) : null;
+    }
+    if (!sendEta) return null;
+    const timelineEta = Number(sendEta);
+    if (item.status !== 'pending') return timelineEta > now ? timelineEta : null;
+    const hold = Number(item.hold_until) || 0;
+    const sched = Number(item.scheduled_at) || 0;
+    const candidates = [hold, sched, timelineEta].filter(v => v > now);
+    return candidates.length ? Math.min(...candidates) : null;
+  }, [sendEta, item, now]);
+
+  const label = useMemo(() => {
+    if (item.status === 'done' && item.completed_at) return fmt(item.completed_at);
+    if (item.status === 'failed' && item.completed_at) return fmt(item.completed_at);
+    if (item.status === 'canceled') return null;
+    if (bestEta) return fmt(bestEta);
+    return 'Siap';
+  }, [item, bestEta]);
+
+  if (!label) return null;
+
+  const color = item.status === 'pending' ? 'cyan'
+    : item.status === 'done' ? 'emerald'
+    : item.status === 'failed' ? 'red' : 'neutral';
+
+  const bgCls = color === 'cyan' ? 'bg-black/60 text-cyan-300 border-cyan-500/40 shadow-[0_0_10px_rgba(34,211,238,0.3)]'
+    : color === 'emerald' ? 'bg-black/60 text-emerald-300 border-emerald-500/40'
+    : color === 'red' ? 'bg-black/60 text-red-300 border-red-500/40'
+    : 'bg-black/60 text-neutral-300 border-neutral-600/40';
+
+  return (
+    <div className="absolute bottom-2 left-2 flex flex-col items-start gap-0.5 z-20">
+      <div className={`px-2 py-0.5 rounded-md text-[11px] font-mono font-bold tracking-wide border backdrop-blur-md ${bgCls}`}>
+        {label}
+      </div>
+    </div>
+  );
+});
+
 function Odometer({ value, digits = 2, className = '', placeholder = false, format = null, size = 'md', countdown = null, color = 'neutral' }) {
   const isXs = size === 'xs';
   const isSmall = size === 'sm';
@@ -849,6 +889,30 @@ function parseQueueHash() {
   return { group: parts[1] || null, status: parts[2] || null, qid: parts[3] || null };
 }
 
+// Merge a freshly-fetched first page into the currently-loaded list WITHOUT
+// dropping the deeper pages the user already scrolled to and WITHOUT producing
+// duplicates. The server page arrives in current sort order, so any item that is
+// present both in the fresh page and in the existing list keeps the FRESH
+// (updated) instance and takes its position from the fresh page (this is what
+// makes newly-arrived / status-changed items surface at the top live). Items
+// that only exist in the previously-loaded deeper pages are kept at the tail.
+function mergeRefresh(prev, fresh) {
+  const seen = new Set();
+  const out = [];
+  const freshById = new Map();
+  for (const it of fresh) freshById.set(it.qid, it);
+  for (const it of fresh) {
+    if (seen.has(it.qid)) continue;
+    seen.add(it.qid);
+    out.push(it);
+  }
+  for (const p of prev) {
+    if (seen.has(p.qid)) continue;
+    seen.add(p.qid);
+    out.push(freshById.has(p.qid) ? freshById.get(p.qid) : p);
+  }
+  return out;
+}
 // Write a queue URL. replace=true swaps history (e.g. when opening an item
 // without adding a new back entry we still want reload to land on the item).
 function writeQueueUrl(group, status, qid = null, replace = false) {
@@ -864,7 +928,8 @@ function writeQueueUrl(group, status, qid = null, replace = false) {
   else history.pushState(data, '', url);
 }
 
-export default function SendQueueView({ onMenuOpen }) {
+export default function SendQueueView({ onMenuOpen, onToggleFavorite }) {
+  const { showToast } = useToast();
   const initHash = parseQueueHash();
   const initSelected = (initHash.group && initHash.status)
     ? { groupKey: initHash.group, status: initHash.status }
@@ -887,6 +952,8 @@ const [items, setItems] = useState([]);
    const [sortBy, setSortBy] = useState(null);
    const [sortOrder, setSortOrder] = useState("desc");
    const [typeFilter, setTypeFilter] = useState(null);
+   const [rescheduleItem, setRescheduleItem] = useState(null);
+   const [showRescheduleModal, setShowRescheduleModal] = useState(false);
     // const scrollRef = useRef(null); // removed – scroll handled by react-window
 
   // Surface WA connection state in the queue UI: if WhatsApp drops while debug
@@ -927,8 +994,12 @@ const [items, setItems] = useState([]);
   // Refresh immediately whenever a send happens anywhere in the app (player,
   // image viewer, music, queue actions) — without needing a tab reload.
   const refreshRef = useRef(() => {});
+  const flipAndRefreshRef = useRef(null);
   useEffect(() => {
-    const onChanged = () => refreshRef.current();
+    const onChanged = () => {
+      if (flipAndRefreshRef.current) flipAndRefreshRef.current();
+      else refreshRef.current();
+    };
     window.addEventListener('media-vault:send-changed', onChanged);
     return () => window.removeEventListener('media-vault:send-changed', onChanged);
   }, []);
@@ -1003,6 +1074,10 @@ const [items, setItems] = useState([]);
   cursorRef.current = cursor;
   // Track the last loaded sentinel ID to avoid duplicate loads
   const lastLoadedRef = useRef(null);
+  // True once the user has scrolled and appended pages beyond the first page.
+  // While set, the 2s poll must NOT reset-replace the list (that would wipe the
+  // appended pages and make the strip repeat the first batch forever).
+  const loadedMoreRef = useRef(false);
   // Mutable ref mirroring the items state for stable scroll callbacks
   const itemsRef = useRef([]);
   const loadItems = useCallback(async (groupKey, status, reset) => {
@@ -1022,14 +1097,36 @@ const [items, setItems] = useState([]);
       if (listJson !== prevItemsJsonRef.current) {
         prevItemsJsonRef.current = listJson;
         if (reset) {
-          setItems(list);
+          // Reset = fetch the CURRENT first page. If the user has scrolled and
+          // appended deeper pages, MERGE the fresh page into the front (live
+          // status updates + newly-arrived items at top) WITHOUT dropping the
+          // deeper pages and WITHOUT producing duplicates. If we're on a fresh
+          // selection with nothing appended, just replace.
+          setItems(loadedMoreRef.current
+            ? (cur) => mergeRefresh(cur, list)
+            : list);
+          setEverLoaded(true);
         } else {
-          setItems((prev) => [...prev, ...list]);
+          // Append (defensive): never add an id we already hold, so a backend
+          // that ever returns an overlapping/identical page can't double the list.
+          setItems((prev) => {
+            if (list.length > 0) loadedMoreRef.current = true;
+            const seen = new Set(prev.map((p) => p.qid));
+            const fresh = list.filter((it) => !seen.has(it.qid));
+            if (fresh.length === 0) return prev;
+            return [...prev, ...fresh];
+          });
+          setEverLoaded(true);
         }
-        setEverLoaded(true);
       }
-      setCursor(r && r.nextCursor ? r.nextCursor : 0);
-      setHasMore(!!(r && r.nextCursor));
+      // Keep the cursor pointing past the deepest appended page after a live
+      // merge, so "load more" continues from the end instead of re-requesting.
+      // A plain first-page reset (or a first-load replace) updates the cursor
+      // normally.
+      if (!(reset && loadedMoreRef.current)) {
+        setCursor(r && r.nextCursor ? r.nextCursor : 0);
+        setHasMore(!!(r && r.nextCursor));
+      }
     } catch {
       // On error, keep existing items instead of clearing - prevents flicker on temp network issue
     } finally {
@@ -1058,35 +1155,42 @@ const [items, setItems] = useState([]);
   const loadCoversRef = useRef(loadCovers);
   const loadItemsRef = useRef(loadItems);
   const selectedRef = useRef(selected);
+  const selectedItemRef = useRef(selectedItem);
   loadCountsRef.current = loadCounts;
   loadCoversRef.current = loadCovers;
   loadItemsRef.current = loadItems;
   selectedRef.current = selected;
+  selectedItemRef.current = selectedItem;
 
   const refresh = useCallback(() => {
     loadStatuses();
-    if (selected) loadItems(selected.groupKey, selected.status, true);
+    // Return the loadItems promise so callers (e.g. flipAndRefresh) can await
+    // the data commit before measuring layout for the FLIP animation.
+    if (selected) return loadItems(selected.groupKey, selected.status, true);
   }, [loadStatuses, loadItems, selected]);
   refreshRef.current = refresh;
 
 // Live-refresh: counts + covers every 2s, and the open folder's items too, so
 // a send made elsewhere shows up without a manual reload.
+// Skip item refresh while the grid is being scrolled to avoid jank.
 useEffect(() => {
   const tick = () => {
     loadCountsRef.current();
     loadCoversRef.current();
-    const sel = selectedRef.current;
-    if (sel) loadItemsRef.current(sel.groupKey, sel.status, true);
+    // Drive the open folder's items through FLIP so background reorders
+    // (e.g. auto-send pushing a freshly-sent item to the top of its status
+    // folder) slide smoothly instead of hard-cutting the grid down.
+    liveRefreshRef.current();
   };
   tick();
   const t = setInterval(tick, 2000);
   const onVisibility = () => {
-    if (document.visibilityState === 'visible' && selectedRef.current) {
+    if (document.visibilityState === 'visible' && selectedRef.current && !scrollingRef.current && !selectedItemRef.current) {
       loadItemsRef.current(selectedRef.current.groupKey, selectedRef.current.status, true);
     }
   };
   const onFocus = () => {
-    if (selectedRef.current) {
+    if (selectedRef.current && !scrollingRef.current && !selectedItemRef.current) {
       loadItemsRef.current(selectedRef.current.groupKey, selectedRef.current.status, true);
     }
   };
@@ -1117,6 +1221,7 @@ useEffect(() => {
   }, [showSettings]);
 
 useEffect(() => {
+  loadedMoreRef.current = false;
   if (selected) loadItems(selected.groupKey, selected.status, true);
 }, [selected]);
 
@@ -1149,9 +1254,8 @@ const openStatus = (groupKey, status) => {
 
   const onAction = async (action, item) => {
     const id = item.qid;
-    // Optimistic UI updates
+    // Optimistic UI updates for reorder (visual move before the backend commit).
     let optimisticPatch = null;
-    let optimisticStatus = null;
     if (action === 'moveUp' || action === 'moveDown') {
       const idx = items.findIndex((it) => it.qid === id);
       if (idx > 0 && action === 'moveUp') {
@@ -1160,33 +1264,55 @@ const openStatus = (groupKey, status) => {
         optimisticPatch = { fromIdx: idx, toIdx: idx + 1 };
       }
     }
-    if (action === 'resend' || action === 'retry') {
-      optimisticStatus = 'pending';
-    }
+    const applyLocal = () => {
+      // Apply the optimistic reorder before refresh. Status flips for
+      // retry/resend are NOT applied here — they only happen after a
+      // successful backend call (see below) so a failed retry never shows
+      // a fake "Siap".
+      if (optimisticPatch) {
+        setItems((prev) => {
+          const next = [...prev];
+          const [moved] = next.splice(optimisticPatch.fromIdx, 1);
+          next.splice(optimisticPatch.toIdx, 0, moved);
+          return next;
+        });
+      }
+    };
+    const flipToPending = () => {
+      setItems((prev) => prev.map((it) => it.qid === id ? { ...it, status: 'pending' } : it));
+    };
     try {
+      if (action === 'moveUp' || action === 'moveDown') {
+        // Slide the moved card(s) to their new grid position via FLIP.
+        await flipAndRefresh(async () => {
+          if (action === 'moveUp') await reorderQueueItem(id, 'up');
+          if (action === 'moveDown') await reorderQueueItem(id, 'down');
+          applyLocal();
+        });
+        return;
+      }
       if (action === 'cancel') await cancelSendQueueItem(id);
       if (action === 'retry') await retrySendQueueItem(id);
       if (action === 'remove') await removeSendQueueItem(id);
-      if (action === 'moveUp') { await reorderQueueItem(id, 'up'); }
-      if (action === 'moveDown') { await reorderQueueItem(id, 'down'); }
-      if (action === 'resend') { await resendQueueItem(id); }
+      if (action === 'resend') await resendQueueItem(id);
       if (action === 'reschedule') {
-        await resendQueueItem(id);
+        if (item && item.status === 'pending') {
+          setRescheduleItem(item);
+          setShowRescheduleModal(true);
+        }
       }
-    } catch {}
-    // Apply optimistic updates before refresh
-    if (optimisticPatch) {
-      setItems((prev) => {
-        const next = [...prev];
-        const [moved] = next.splice(optimisticPatch.fromIdx, 1);
-        next.splice(optimisticPatch.toIdx, 0, moved);
-        return next;
-      });
+      // Only now (success) flip a failed item to "pending" for retry/resend.
+      if (action === 'retry' || action === 'resend') flipToPending();
+      refresh();
+    } catch (err) {
+      // Surface the real backend error instead of lying with "Siap".
+      if (action === 'retry' || action === 'resend' || action === 'cancel' || action === 'remove') {
+        const msg = err?.message || 'Tindakan gagal';
+        showToast({ message: msg, type: 'error', duration: 6000 });
+      }
+      // Reconcile to the true server state.
+      refresh();
     }
-    if (optimisticStatus) {
-      setItems((prev) => prev.map((it) => it.qid === id ? { ...it, status: optimisticStatus } : it));
-    }
-    refresh();
   };
 
   const handleCaptionChange = async (item, caption) => {
@@ -1199,16 +1325,30 @@ const openStatus = (groupKey, status) => {
   };
 
   // Refresh the list when a queue action happens inside the player, and reflect
-  // the item's possibly-changed status back onto the open player. `remove` is
-  // handled via closeItem (the player calls onClose itself after removing).
+  // the item's possibly-changed status back onto the open player. If the current
+  // item was removed, advance to the next item in the list instead of keeping
+  // a stale selection.
   const onDetailChanged = () => {
     refresh();
     setSelectedItem((cur) => {
       if (!cur) return cur;
-      const updated = items.find((it) => it.qid === cur.qid);
-      return updated ? updated : cur;
+      const currentItems = itemsRef.current;
+      const updated = currentItems.find((it) => it.qid === cur.qid);
+      if (updated) return updated;
+      return cur;
     });
   };
+
+  // Auto-advance selection when the current item is no longer in the refreshed
+  // list (e.g. after a remove action from the grid or the player).
+  useEffect(() => {
+    if (!selectedItem) return;
+    const stillInList = items.some((it) => it.qid === selectedItem.qid);
+    if (!stillInList && items.length > 0) {
+      const next = items[0];
+      if (next) openItemRef.current(next);
+    }
+  }, [items, selectedItem]);
 
   const openItem = (item) => {
     setSelectedItem(item);
@@ -1223,6 +1363,14 @@ const openStatus = (groupKey, status) => {
   const timelineMap = useMemo(() => {
     const m = {};
     for (const t of timeline) m[t.id] = t;
+    return m;
+  }, [timeline]);
+
+  // Map queue item id -> its real send ETA (from backend timeline). Most pending
+  // items have scheduled_at = NULL, so their true slot comes from the timeline.
+  const etaMap = useMemo(() => {
+    const m = {};
+    for (const t of timeline) m[t.id] = t.eta;
     return m;
   }, [timeline]);
 
@@ -1244,6 +1392,12 @@ const openStatus = (groupKey, status) => {
   // paused while the user scrolls (keeps the grid light during fast scrolling).
   const scrollingRef = useRef(false);
 
+  // Maps each mounted card's qid -> its react-window wrapper element so we can
+  // run a FLIP animation (capture positions, then slide to the new ones) when
+  // items are reordered / rescheduled. Off-screen cards aren't mounted, so
+  // they simply snap into place instead of sliding.
+  const cardElsRef = useRef(new Map());
+
   // Resume the clock when leaving the folder grid back to the folder cards.
   useEffect(() => {
     if (!selected) {
@@ -1260,6 +1414,103 @@ const openStatus = (groupKey, status) => {
     };
   }, []);
 
+  // FLIP helpers: capture the current on-screen rect of every mounted card,
+  // then after a layout change animate each card from its old position to the
+  // new one. Only mounted (visible) cards can animate.
+  const captureRects = useCallback(() => {
+    const snap = new Map();
+    cardElsRef.current.forEach((el, qid) => {
+      snap.set(qid, el.getBoundingClientRect());
+    });
+    return snap;
+  }, []);
+
+  const flipTo = useCallback((snap) => {
+    snap.forEach((prev, qid) => {
+      const el = cardElsRef.current.get(qid);
+      if (!el) return; // off-screen (not mounted) -> snap instead of slide
+      const now = el.getBoundingClientRect();
+      const dx = prev.left - now.left;
+      const dy = prev.top - now.top;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+      el.style.transition = 'none';
+      el.style.transform = `translate(${dx}px, ${dy}px)`;
+      // Force reflow so the starting transform is committed before animating.
+      void el.offsetWidth;
+      requestAnimationFrame(() => {
+        el.style.transition = 'transform 320ms ease';
+        el.style.transform = '';
+      });
+      const cleanup = () => {
+        el.style.transition = '';
+        el.style.transform = '';
+        el.removeEventListener('transitionend', cleanup);
+      };
+      el.addEventListener('transitionend', cleanup);
+      setTimeout(cleanup, 400); // fallback if transitionend doesn't fire
+    });
+  }, []);
+
+  const flipAndRefresh = useCallback(async (fn) => {
+    const snap = captureRects();
+    await fn();
+    // Two frames so the post-refresh layout is committed before measuring.
+    await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+    flipTo(snap);
+  }, [captureRects, flipTo]);
+
+  // Send-made-elsewhere refresh (media-vault:send-changed): FLIP so the newly
+  // inserted card doesn't hard-cut in and shove the others down abruptly. The
+  // 2s tick handles background reorders; this handles the immediate send event.
+  flipAndRefreshRef.current = () => {
+    if (selectedItemRef.current) { refresh(); return; } // don't churn the open player
+    if (scrollingRef.current) { refresh(); return; }    // keep fast scrolling light
+    flipAndRefresh(() => refresh());
+  };
+
+  // Background live-refresh (the 2s tick) wrapped in FLIP so reorders caused by
+  // auto-send / other live sends animate smoothly. Without this, react-window
+  // hard-cuts cards to their new index positions — the grid appears to "jump
+  // down" abruptly with a clipped/cut animation and feels janky. Cards that
+  // didn't move are skipped by flipTo, and we bail out of concurrent FLIPs so
+  // two ticks can't fight each other mid-animation.
+  const flippingRef = useRef(false);
+  const liveRefreshRef = useRef(async () => {});
+  liveRefreshRef.current = async () => {
+    const sel = selectedRef.current;
+    if (!sel) return;
+    if (selectedItemRef.current) return; // don't churn the open player
+    if (scrollingRef.current) return;   // keep fast scrolling light
+    if (flippingRef.current) return;
+    flippingRef.current = true;
+    try {
+      const snap = captureRects();
+      await loadItemsRef.current(sel.groupKey, sel.status, true);
+      // Two frames so the post-refresh layout is committed before measuring.
+      await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+      // Only freeze the per-second ETA clock + run the heavy FLIP slide when a
+      // card actually moved. Most 2s refreshes change nothing, so leave them
+      // invisible: the countdown keeps ticking every second (light, no stutter).
+      let moved = false;
+      snap.forEach((prev, qid) => {
+        const el = cardElsRef.current.get(qid);
+        if (!el) return;
+        const now = el.getBoundingClientRect();
+        if (Math.abs(prev.left - now.left) >= 1 || Math.abs(prev.top - now.top) >= 1) moved = true;
+      });
+      if (!moved) {
+        flippingRef.current = false;
+        return;
+      }
+      setClockPaused(true);
+      flipTo(snap);
+      // Release after the 320ms slide finishes so the next tick can FLIP again.
+      setTimeout(() => { flippingRef.current = false; setClockPaused(false); }, 360);
+    } catch {
+      flippingRef.current = false;
+    }
+  };
+
   const selectedGroup = selected ? GROUPS[selected.groupKey] : null;
   const selectedMeta = selected ? STATUS_META[selected.status] : null;
 
@@ -1269,7 +1520,7 @@ const openStatus = (groupKey, status) => {
       <div className="flex items-center gap-3 px-4 py-3 border-b border-neutral-800 flex-shrink-0">
         {/* Hamburger menu - only visible at root level (not inside a folder) */}
         {!selected && (
-          <button onClick={onMenuOpen} className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 transition-colors flex-shrink-0" title="Menu">
+          <button onClick={onMenuOpen} className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 transition-colors flex-shrink-0 focus:outline-none focus:ring-0" title="Menu">
             <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="3" y1="6" x2="21" y2="6" />
               <line x1="3" y1="12" x2="21" y2="12" />
@@ -1278,7 +1529,7 @@ const openStatus = (groupKey, status) => {
           </button>
         )}
         {selected && (
-          <button onClick={back} className="p-2 rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-800" title="Kembali">
+          <button onClick={back} className="p-2 rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-800 focus:outline-none focus:ring-0" title="Kembali">
             <ArrowLeft size={18} />
           </button>
         )}
@@ -1298,7 +1549,7 @@ const openStatus = (groupKey, status) => {
           <>
             <button
               onClick={() => setShowSettings(true)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border focus:outline-none focus:ring-0 ${
                 settings?.debugMode
                   ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
                   : settings && !settings.tickEnabled
@@ -1312,7 +1563,7 @@ const openStatus = (groupKey, status) => {
             </button>
             <button
               onClick={async () => { await clearSendQueueHistory(); refresh(); }}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-neutral-800/70 border border-neutral-700 text-neutral-300 hover:text-white hover:bg-neutral-700/70"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-neutral-800/70 border border-neutral-700 text-neutral-300 hover:text-white hover:bg-neutral-700/70 focus:outline-none focus:ring-0"
               title="Hapus semua riwayat (selain antrian)"
             >
               <Trash2 size={14} /> Bersihkan riwayat
@@ -1388,8 +1639,8 @@ const openStatus = (groupKey, status) => {
             ))}
           </div>
 ) : (
-           <div className="h-full">
-             {items.length === 0 && !loading && !everLoaded ? (
+           <div className="h-full max-w-[1100px] mx-auto">
+              {items.length === 0 && !loading && !everLoaded ? (
                <div className="text-center text-neutral-500 py-20">Tidak ada item di status ini.</div>
              ) : (
                <AutoSizer>
@@ -1400,27 +1651,40 @@ const openStatus = (groupKey, status) => {
                                           // horizontally (which drew a horizontal slider +
                                           // a white corner box where both sliders met).
                     const META_HEIGHT = 88; // fixed metadata block (name / date / ETA / caption)
-                    const columnCount = width >= 1024 ? 5 : width >= 768 ? 4 : width >= 640 ? 3 : 2;
+                    const columnCount = width >= 768 ? 4 : width >= 640 ? 3 : 2;
                     // Card width = available width minus reserved scrollbar minus the gutters
                     // between columns. Total content width stays <= width so no horizontal scroll.
                     const cardW = Math.max(1, Math.floor((width - SCROLLBAR - (columnCount - 1) * GUTTER) / columnCount));
                     const cardH = cardW + META_HEIGHT; // square thumbnail (1:1, = cardW) + metadata
                     const columnWidth = cardW + GUTTER;
                     const rowHeight = cardH + GUTTER;
-                    const rowCount = Math.ceil(items.length / columnCount);
-                   const handleItemsRendered = ({ visibleRowStopIndex }) => {
-                     if (visibleRowStopIndex >= rowCount - 1 && !loadingMoreRef.current) {
-                       const sel = selectedRef.current;
-                       if (sel) {
-                         const last = itemsRef.current[itemsRef.current.length - 1];
-                         const sentinel = last ? last.qid : null;
-                         if (!sentinel || sentinel !== lastLoadedRef.current) {
-                           lastLoadedRef.current = sentinel;
-                           loadItemsRef.current(sel.groupKey, sel.status, false);
-                         }
-                       }
-                     }
-                   };
+                    // Real rows of actual items, plus a reserved scroll zone at the
+                    // bottom (2 empty rows). When the user reaches the end they see
+                    // safe blank space, and appended items render into that zone
+                    // seamlessly instead of pushing/jumping up against the page edge.
+                    const REAL_ROWS = Math.max(1, Math.ceil(items.length / columnCount));
+                    const RESERVE_ROWS = 2;
+                    const rowCount = REAL_ROWS + RESERVE_ROWS;
+                    // How many rows before the real end we start fetching the next
+                    // page. Because row height = card height (~180-400px), a small
+                    // prefetch here hides the network latency / big-append recompute,
+                    // so the user never scrolls into an empty gap or a slow stall.
+                    const PREFETCH_ROWS = 3;
+                    const handleItemsRendered = ({ visibleRowStopIndex }) => {
+                      // Start loading as soon as we get near the last real item
+                      // (the reserved rows are only scroll-cushion, not content).
+                      if (visibleRowStopIndex >= REAL_ROWS - PREFETCH_ROWS && !loadingMoreRef.current) {
+                        const sel = selectedRef.current;
+                        if (sel) {
+                          const last = itemsRef.current[itemsRef.current.length - 1];
+                          const sentinel = last ? last.qid : null;
+                          if (!sentinel || sentinel !== lastLoadedRef.current) {
+                            lastLoadedRef.current = sentinel;
+                            loadItemsRef.current(sel.groupKey, sel.status, false);
+                          }
+                        }
+                      }
+                    };
                     return (
                       <Grid
                         height={height}
@@ -1430,7 +1694,7 @@ const openStatus = (groupKey, status) => {
                         columnWidth={columnWidth}
                         rowHeight={rowHeight}
                         onItemsRendered={handleItemsRendered}
-                        overscanRowCount={2}
+                        overscanRowCount={1}
                         useIsScrolling
                         style={{ overflowX: 'hidden' }}
                       >
@@ -1449,11 +1713,15 @@ const openStatus = (groupKey, status) => {
                           const isLastCol = columnIndex === columnCount - 1;
                           const isLastRow = rowIndex === rowCount - 1;
                           return (
-                            <div style={{ ...style, paddingRight: isLastCol ? 0 : GUTTER, paddingBottom: isLastRow ? 0 : GUTTER }}>
+                            <div
+                              ref={(el) => { if (el) cardElsRef.current.set(it.qid, el); else cardElsRef.current.delete(it.qid); }}
+                              style={{ ...style, paddingRight: isLastCol ? 0 : GUTTER, paddingBottom: isLastRow ? 0 : GUTTER }}
+                            >
                               <ItemCard
                                key={it.qid}
                                item={it}
                                index={idx}
+                               isScrolling={isScrolling}
                                onOpen={stableOnOpen}
                                onAction={stableOnAction}
                                onCaptionChange={stableOnCaptionChange}
@@ -1482,6 +1750,26 @@ const openStatus = (groupKey, status) => {
           onClose={closeItem}
           onChanged={onDetailChanged}
           onCaptionChange={handleCaptionChange}
+          onToggleFavorite={onToggleFavorite}
+          onReschedule={(it) => { if (it && it.status === 'pending') { setRescheduleItem(it); setShowRescheduleModal(true); } }}
+        />
+      )}
+
+      {showRescheduleModal && (
+        <RescheduleModal
+          open={showRescheduleModal}
+          item={rescheduleItem}
+          allItems={items}
+          etaMap={etaMap}
+          onClose={() => { setShowRescheduleModal(false); setRescheduleItem(null); }}
+          onConfirm={async (qid, timestamp) => {
+            await flipAndRefresh(async () => {
+              await rescheduleQueueItem(qid, timestamp);
+              setShowRescheduleModal(false);
+              setRescheduleItem(null);
+              await refresh();
+            });
+          }}
         />
       )}
 
