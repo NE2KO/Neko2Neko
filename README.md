@@ -49,6 +49,7 @@ Self-hosted media server — stream, download, manage, and monitor from one dash
 
 - [About](#about)
 - [Features](#features)
+- [Menu Workflow](#menu-workflow)
 - [Tech Stack](#tech-stack)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
@@ -98,6 +99,64 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | Git Integration | API-only (not mounted) | Full Git operations without terminal (status, branches, tags, stash, commit, push, pull, diff, file editor, tree browser); routes defined in `git.js` but not yet wired into the server; web UI menu under development | Simple Git wrapper |
 
 > **Note:** All menus are still actively worked on and under development. New menus may be added in the future.
+
+## Menu Workflow
+
+How each sidebar menu flows from the UI to the backend and external tools:
+
+```mermaid
+flowchart LR
+    U([User / Phone]) -->|opens| DASH{{Media Vault Dashboard}}
+
+    DASH -->|Media Vault| MV[Media Vault]
+    MV --> FILES[files · stream · thumbnails]
+    FILES --> DB[(media.db)]
+    FILES --> FF[ffmpeg / HLS]
+
+    DASH -->|Library Mgmt| LIB[Library Management]
+    LIB --> SCAN[incremental watcher scan]
+    SCAN --> FILES
+
+    DASH -->|Playlists| PL[Playlists]
+    PL --> XSPF[XSPF / folder scan]
+    PL --> DB
+
+    DASH -->|Metadata| MD[Metadata Editing]
+    MD --> FP[ffprobe · MusicBrainz · LRCLIB]
+
+    DASH -->|Monitoring| MON[Monitoring]
+    MON --> NB[nbfc · ryzenadj]
+    MON --> DK[dockerode]
+    MON --> WS[WebSocket / SSE]
+
+    DASH -->|Downloader| DL[Downloader]
+    DL --> YT[yt-dlp · gallery-dl · aria2c]
+    DL --> TG1[Telegram bot auto-download]
+
+    DASH -->|Send Queue| SQ[Send Queue]
+    SQ --> TG[Telegram]
+    SQ --> WAQ[WhatsApp status - tick queue]
+
+    DASH -->|WhatsApp| WA[WhatsApp]
+    WA --> WB[whatsapp-web.js - in-process]
+
+    DASH -->|Music Player| MUS[Music Player]
+    MUS --> SYNC[Precision Sync Engine]
+    MUS --> HLSh[hls.js · waveform · LRC]
+
+    DASH -->|Git| GIT[Git Integration]
+    GIT --> GR[git.js - defined, not mounted]
+
+    classDef wip fill:#fff0f0,stroke:#d11,stroke-width:2px,stroke-dasharray:6 4;
+    DASH -->|Scrcpy| SCR[Scrcpy (WIP)]
+    SCR:::wip --> PTY[node-pty · scrcpy]
+    DASH -->|ADB Transfer| ADB[ADB Transfer (WIP)]
+    ADB:::wip --> ADBT[adb push / pull]
+    DASH -->|AI Chat| AIC[AI Chat (WIP)]
+    AIC:::wip --> AIS[ai.js · providers]
+```
+
+> **Legend:** Boxes outlined in **red dashed** — **Scrcpy Monitor**, **ADB Transfer**, and **AI Chat** — are *not* the current development focus. They are usable but still rough, with known bugs and incomplete UX. Current effort concentrates on Media Vault, Music sync, Monitoring, Downloader, and Send Queue polish. Git Integration routes exist but are not yet mounted (see [ARCHITECTURE.md](ARCHITECTURE.md)).
 
 ## Tech Stack
 
