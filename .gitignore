@@ -134,3 +134,4 @@ docs/
 
 # Shell scripts
 *.sh
+/plans/
