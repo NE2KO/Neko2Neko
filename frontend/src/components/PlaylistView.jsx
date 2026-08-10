@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { VariableSizeList as List } from 'react-window';
 import AutoSizer from 'react-virtualized-auto-sizer';
-import { Music, RefreshCw, Trash2, Plus, Upload, X, Check, ChevronDown } from 'lucide-react';
+import { Music, RefreshCw, Trash2, Plus, Upload, X, Check, ChevronDown, Shuffle, Heart, Image as ImageIcon, ListMusic, Play } from 'lucide-react';
 import usePlaylistStore from '../store/playlistStore';
-import { loadPlaylists, loadPlaylist, getPlaylistQueue, refreshPlaylists, importXSPFPlaylist, createEmptyPlaylist, removeTrackFromPlaylist, bulkRemoveTracksFromPlaylist } from '../utils/playlistApi';
+import { loadPlaylists, loadPlaylist, getPlaylistQueue, refreshPlaylists, importXSPFPlaylist, createEmptyPlaylist, removeTrackFromPlaylist, bulkRemoveTracksFromPlaylist, loadFavorites, uploadPlaylistCover, playlistImageUrl } from '../utils/playlistApi';
 import { deletePlaylist } from '../utils/api';
 import { buildPlayableQueue, resolveClickedIndex } from '../utils/playlistQueue';
 import { useToast } from './Toast';
@@ -231,6 +231,191 @@ function DropdownMenu({ trigger, items, position = 'right' }) {
   );
 }
 
+// ========== SIDEBAR (playlists + Loved) ==========
+function PlaylistSidebar({ playlists, favoritesCount, activeId, lovedActive, onSelect, onSelectLoved }) {
+  return (
+    <div style={{
+      width: 260,
+      flexShrink: 0,
+      borderRight: `1px solid ${COLORS.border.primary}`,
+      background: COLORS.bg.secondary,
+      display: 'flex',
+      flexDirection: 'column',
+      minHeight: 0,
+    }}>
+      <div style={{
+        padding: '16px 16px 8px',
+        fontSize: 11,
+        fontWeight: 700,
+        letterSpacing: '0.06em',
+        textTransform: 'uppercase',
+        color: COLORS.text.tertiary,
+      }}>
+        Playlist
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '0 8px 8px' }}>
+        {playlists.map((p) => {
+          const active = String(p.id) === String(activeId) && !lovedActive;
+          const rawCover = playlistImageUrl(p);
+          const cover = rawCover
+            ? (rawCover.startsWith('/') && !rawCover.startsWith('//') ? `${API_BASE}${rawCover}` : rawCover)
+            : null;
+          return (
+            <button
+              key={p.id}
+              onClick={() => onSelect(p)}
+              onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = COLORS.bg.primary; }}
+              onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                width: '100%',
+                padding: '8px',
+                borderRadius: 8,
+                border: 'none',
+                cursor: 'pointer',
+                textAlign: 'left',
+                marginBottom: 2,
+                background: active ? COLORS.bg.primary : 'transparent',
+              }}
+            >
+              <div style={{
+                width: 40, height: 40, borderRadius: 6, overflow: 'hidden', flexShrink: 0,
+                background: '#262626', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                {cover
+                  ? <img src={cover} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  : <Music size={18} color="#737373" />}
+              </div>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{
+                  fontSize: 13, fontWeight: active ? 600 : 500,
+                  color: active ? COLORS.text.primary : COLORS.text.secondary,
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }}>{p.title}</div>
+                <div style={{ fontSize: 11, color: COLORS.text.tertiary }}>{p.track_count ?? 0} lagu</div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ padding: '8px', borderTop: `1px solid ${COLORS.border.primary}` }}>
+        <button
+          onClick={onSelectLoved}
+          onMouseEnter={(e) => { if (!lovedActive) e.currentTarget.style.background = COLORS.bg.primary; }}
+          onMouseLeave={(e) => { if (!lovedActive) e.currentTarget.style.background = 'transparent'; }}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px',
+            borderRadius: 8, border: 'none', cursor: 'pointer', textAlign: 'left',
+            background: lovedActive ? COLORS.bg.primary : 'transparent',
+          }}
+        >
+          <div style={{
+            width: 40, height: 40, borderRadius: 6, flexShrink: 0,
+            background: 'linear-gradient(135deg,#4f46e5,#db2777)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <Heart size={18} color="#fff" fill="#fff" />
+          </div>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{
+              fontSize: 13, fontWeight: lovedActive ? 600 : 500,
+              color: lovedActive ? COLORS.text.primary : COLORS.text.secondary,
+            }}>Loved</div>
+            <div style={{ fontSize: 11, color: COLORS.text.tertiary }}>{favoritesCount} lagu</div>
+          </div>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ========== SPOTIFY-STYLE HERO HEADER ==========
+function PlaylistHeroHeader({ playlist, trackCount, totalDurationSeconds, onPlay, onShuffle, onCoverChange, isLoved }) {
+  const rawCover = isLoved ? null : playlistImageUrl(playlist);
+  const cover = rawCover
+    ? (rawCover.startsWith('/') && !rawCover.startsWith('//') ? `${API_BASE}${rawCover}` : rawCover)
+    : null;
+  const durationLabel = formatTotalDuration(totalDurationSeconds);
+  return (
+    <div style={{
+      position: 'relative',
+      padding: '24px 24px 16px',
+      background: 'linear-gradient(180deg, rgba(40,40,40,0.95), rgba(10,10,10,1))',
+    }}>
+      <div style={{ display: 'flex', gap: 24, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <div style={{
+          position: 'relative', width: 200, height: 200, flexShrink: 0, borderRadius: 8,
+          overflow: 'hidden', background: '#262626', boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+        }}>
+          {cover ? (
+            <img src={cover} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          ) : isLoved ? (
+            <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg,#4f46e5,#db2777)' }}>
+              <Heart size={72} color="#fff" fill="#fff" />
+            </div>
+          ) : (
+            <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Music size={64} color="#737373" />
+            </div>
+          )}
+          {!isLoved && (
+            <button
+              onClick={onCoverChange}
+              title="Ubah cover"
+              style={{
+                position: 'absolute', right: 8, bottom: 8, width: 34, height: 34, borderRadius: '50%',
+                background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.2)', color: '#fff',
+                cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >
+              <ImageIcon size={16} />
+            </button>
+          )}
+        </div>
+        <div style={{ flex: 1, minWidth: 0, paddingBottom: 4 }}>
+          <div style={{
+            fontSize: 12, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
+            color: COLORS.text.secondary,
+          }}>{isLoved ? 'Loved' : 'Playlist'}</div>
+          <h1 style={{
+            margin: '8px 0 0', fontSize: 'clamp(28px, 5vw, 48px)', fontWeight: 800, color: '#fff',
+            lineHeight: 1.1, wordBreak: 'break-word',
+          }}>{playlist?.title || ''}</h1>
+          <div style={{ marginTop: 10, fontSize: 14, color: COLORS.text.secondary }}>
+            {trackCount} lagu • {durationLabel}
+          </div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginTop: 18 }}>
+        <button
+          onClick={onPlay}
+          title="Putar"
+          style={{
+            width: 56, height: 56, borderRadius: '50%', background: '#1db954', border: 'none',
+            color: '#000', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            boxShadow: '0 8px 16px rgba(29,185,84,0.4)',
+          }}
+        >
+          <Play size={26} fill="#000" style={{ marginLeft: 3 }} />
+        </button>
+        <button
+          onClick={onShuffle}
+          title="Acak"
+          style={{
+            width: 48, height: 48, borderRadius: '50%', background: 'transparent',
+            border: '1px solid rgba(255,255,255,0.3)', color: '#fff', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <Shuffle size={20} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ========== VIRTUALIZED TRACK GRID (memoized) ==========
 // Isolated + memoized so it does NOT re-render (and does NOT rebuild the row
 // layout / itemData object) on every PlaylistView render. `rows`, `gridData`
@@ -414,6 +599,17 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
   const cachedTracksRef = useRef(null);
   const gridColsRef = useRef(0);
 
+  // ---- Spotify-style layout state ----
+  const mainRowRef = useRef(null);
+  const coverInputRef = useRef(null);
+  const [containerWidth, setContainerWidth] = useState(
+    typeof window !== 'undefined' ? window.innerWidth : 1280
+  );
+  const [showLoved, setShowLoved] = useState(false);
+  const [favorites, setFavorites] = useState([]);
+  const [lovedLoading, setLovedLoading] = useState(false);
+  const showSidebar = containerWidth >= 760;
+
   // Persist displayMode
   useEffect(() => {
     sessionStorage.setItem('playlistDisplayMode', displayMode);
@@ -536,6 +732,23 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
     }).catch(() => {});
   }, []);
 
+  // Track available width so the left sidebar only shows when the tab is wide enough.
+  useEffect(() => {
+    const el = mainRowRef.current;
+    if (!el) return;
+    const update = () => setContainerWidth(el.getBoundingClientRect().width);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Load loved tracks once for the sidebar count (and reuse when Loved is opened).
+  const refreshFavorites = useCallback(() => {
+    loadFavorites().then(setFavorites).catch(() => {});
+  }, []);
+  useEffect(() => { refreshFavorites(); }, [refreshFavorites]);
+
   const handleRefresh = useCallback(async () => {
     setLoading(true);
     try {
@@ -582,6 +795,7 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
     cachedTracksRef.current = null;
     setSelectedPlaylist(null);
     setPlaylistTracks([]);
+    setShowLoved(false);
     clearCurrentPlaylist();
     setViewMode('list');
     onBackToPlaylistList?.();
@@ -590,6 +804,70 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
       window.history.pushState({}, '', url);
     }
   }, [clearCurrentPlaylist, onBackToPlaylistList]);
+
+  // ---- Spotify-style helpers ----
+  function formatTotalDuration(totalSeconds) {
+    const s = Math.max(0, Math.floor(totalSeconds || 0));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    if (h > 0) return `${h} jam ${m} menit`;
+    if (m > 0) return `${m} menit ${sec} detik`;
+    return `${sec} detik`;
+  }
+
+  function shuffleArray(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  const selectLoved = useCallback(async () => {
+    setShowLoved(true);
+    setLovedLoading(true);
+    setSelectedPlaylist({ id: 'loved', title: 'Loved', isLoved: true, image: null, track_count: favorites.length });
+    setPlaylistTracks(favorites);
+    setCurrentPlaylistTracks(favorites);
+    sessionStorage.removeItem('selectedPlaylistId');
+    try {
+      const favs = await loadFavorites();
+      setFavorites(favs);
+      cachedTracksRef.current = favs;
+      setPlaylistTracks(favs);
+      setCurrentPlaylistTracks(favs);
+      setSelectedPlaylist({ id: 'loved', title: 'Loved', isLoved: true, image: null, track_count: favs.length });
+    } catch {
+      showToast('Gagal memuat musik yang disukai', 'error');
+    } finally {
+      setLovedLoading(false);
+    }
+  }, [favorites, setCurrentPlaylistTracks, showToast]);
+
+  const handlePlayShuffle = useCallback(() => {
+    if (lovedLoading || sortedTracks.length === 0) return;
+    const queue = shuffleArray(fullQueueMemo.filter(t => t.exists));
+    if (queue.length === 0) return;
+    onPlayPlaylist({ queue, playlist: selectedPlaylist });
+  }, [lovedLoading, sortedTracks, fullQueueMemo, selectedPlaylist, onPlayPlaylist]);
+
+  const handleCoverFileChange = useCallback(async (e) => {
+    const file = e.target.files?.[0];
+    if (e.target) e.target.value = '';
+    if (!file || !selectedPlaylist || selectedPlaylist.isLoved) return;
+    try {
+      const image = await uploadPlaylistCover(selectedPlaylist.id, file);
+      setSelectedPlaylist(prev => prev ? { ...prev, image } : prev);
+      setCurrentPlaylist(prev => prev ? { ...prev, image } : prev);
+      setPlaylists(prev => prev.map(p => p.id === selectedPlaylist.id ? { ...p, image } : p));
+      cachedPlaylistRef.current = { ...(cachedPlaylistRef.current || {}), image };
+      showToast('Cover diperbarui', 'success');
+    } catch {
+      showToast('Gagal mengunggah cover', 'error');
+    }
+  }, [selectedPlaylist, setCurrentPlaylist, showToast]);
 
   const handleDeletePlaylist = useCallback((playlistId, e) => {
     if (e) e.stopPropagation();
@@ -694,6 +972,11 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
     });
     return list;
   }, [playlistTracks, trackSort, trackFilterType, trackSearchQuery]);
+
+  const totalDurationSeconds = useMemo(
+    () => sortedTracks.reduce((sum, t) => sum + (Number(t.duration) || 0), 0),
+    [sortedTracks]
+  );
 
   // ---- Search filter animation (fade-out + slide) ----
   // Keeps the previously-rendered list for ~200ms after a filter/search change,
@@ -1193,10 +1476,22 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
   );
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <div ref={mainRowRef} style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <ServiceStoppedBanner service="playlists" />
-      {/* List View */}
-      {!selectedPlaylist && (
+      <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
+        {showSidebar && (
+          <PlaylistSidebar
+            playlists={sortedPlaylists}
+            favoritesCount={favorites.length}
+            activeId={selectedPlaylist?.id}
+            lovedActive={showLoved}
+            onSelect={handleSelectPlaylist}
+            onSelectLoved={selectLoved}
+          />
+        )}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
+          {/* List View */}
+          {!selectedPlaylist && (
         <>
         <PlaylistListHeader
           playlistCount={sortedPlaylists.length}
@@ -1313,6 +1608,15 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
       {/* Detail View */}
       {selectedPlaylist && (
     <div data-debug-id="5.1" data-debug-name="PlaylistView" data-debug-type="panel" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+          <PlaylistHeroHeader
+            playlist={selectedPlaylist}
+            isLoved={!!selectedPlaylist.isLoved}
+            trackCount={sortedTracks.length}
+            totalDurationSeconds={totalDurationSeconds}
+            onPlay={handlePlay}
+            onShuffle={handlePlayShuffle}
+            onCoverChange={() => coverInputRef.current?.click()}
+          />
           {/* Detail Header */}
           <div data-debug-id="5.2.1" data-debug-name="PlaylistDetailHeader" data-debug-type="other">
           <PlaylistDetailHeader
@@ -1376,17 +1680,19 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
               <div style={{ height: '100%' }} data-debug-id="5.2.2" data-debug-name="TrackListView" data-debug-type="list">
                 <AutoSizer>
                   {({ height, width }) => (
-                    <List
-                      key={`track-list-${displayMode}`}
-                      height={height}
-                      width={width}
-                      itemCount={displayTracks.length}
-                      itemSize={listItemSize}
-                      overscanCount={5}
-                      itemData={listRowData}
-                    >
-                      {PlaylistListRow}
-                    </List>
+                    <div style={{ height, width, display: 'flex', justifyContent: 'center' }}>
+                      <List
+                        key={`track-list-${displayMode}`}
+                        height={height}
+                        width={Math.min(width, 1100)}
+                        itemCount={displayTracks.length}
+                        itemSize={listItemSize}
+                        overscanCount={5}
+                        itemData={listRowData}
+                      >
+                        {PlaylistListRow}
+                      </List>
+                    </div>
                   )}
                 </AutoSizer>
               </div>
@@ -1410,6 +1716,9 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
           </div>
         </div>
       )}
+
+        </div>
+      </div>
 
       {/* Filter Panel */}
       <FilterPanel
@@ -1454,6 +1763,14 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
       {/* Modals */}
       {createModal}
       {deleteConfirmModal}
+
+      <input
+        ref={coverInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        style={{ display: 'none' }}
+        onChange={handleCoverFileChange}
+      />
 
       <style>{`
         @keyframes spin {

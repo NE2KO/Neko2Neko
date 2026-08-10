@@ -669,6 +669,50 @@ router.patch('/:id/favorite', (req, res) => {
   }
 });
 
+// GET /api/files/favorites - all loved (favorited) audio files
+// Returns track-shaped objects so the client can reuse its playlist track rendering.
+router.get('/favorites', (req, res) => {
+  try {
+    const rows = db.prepare(`
+      SELECT f.id, f.name, f.ext, f.size, f.mtime, f.type, f.duration, f.created_at,
+             f.has_thumb, fo.path as dir_path
+      FROM files f
+      JOIN folders fo ON f.dir_id = fo.id
+      WHERE f.is_favorite = 1 AND f.type = 'audio'
+      ORDER BY f.created_at DESC
+    `).all();
+    const files = rows.map((f) => {
+      const name = f.name || '';
+      const displayName = name.replace(/\.[^/.]+$/, '') || name;
+      const resolved = f.dir_path ? `${f.dir_path}/${name}` : name;
+      return {
+        id: f.id,
+        file_id: f.id,
+        display_name: displayName,
+        resolved_path: resolved,
+        location: `/file/${f.id}`,
+        title: displayName,
+        artist: '',
+        album: '',
+        duration: f.duration || 0,
+        track_num: 0,
+        exists: true,
+        size: f.size || 0,
+        mtime: f.mtime || 0,
+        created_at: f.created_at || 0,
+        type: f.type || 'audio',
+        ext: (f.ext || '').replace(/^\./, ''),
+        is_favorite: 1,
+        has_thumb: f.has_thumb || 0,
+      };
+    });
+    res.json({ files, total: files.length });
+  } catch (err) {
+    console.error('[files/favorites] Error:', err);
+    res.status(500).json({ error: 'Failed to load favorites' });
+  }
+});
+
 // GET /api/files/:id - get single file by ID
 router.get('/:id', async (req, res) => {
   try {

@@ -224,3 +224,57 @@ export async function removeTrackFromPlaylist(playlistId, trackId) {
     throw err;
   }
 }
+
+/**
+ * Get all favorited ("loved") audio files as track-shaped objects.
+ */
+export async function loadFavorites() {
+  try {
+    const res = await fetch('/api/files/favorites');
+    if (!res.ok) throw new Error('Failed to load favorites');
+    const data = await res.json();
+    return data.files || [];
+  } catch (err) {
+    console.error('[playlistApi] Failed to load favorites:', err);
+    throw err;
+  }
+}
+
+/**
+ * Upload a cover image for a playlist. Returns the stored image (base64 data URL).
+ */
+export async function uploadPlaylistCover(playlistId, file) {
+  try {
+    const fd = new FormData();
+    fd.append('image', file);
+    const res = await fetch(`/api/playlists/${playlistId}/image`, {
+      method: 'POST',
+      body: fd,
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Failed to upload cover');
+    }
+    const data = await res.json();
+    return data.image;
+  } catch (err) {
+    console.error('[playlistApi] Failed to upload cover:', err);
+    throw err;
+  }
+}
+
+/**
+ * Resolve the display src for a playlist cover.
+ * - data: URLs (uploaded) are returned as-is.
+ * - absolute http(s)/protocol-relative URLs (XSPF) are returned as-is.
+ * - any other non-empty value is treated as a server-hosted image under
+ *   /api/playlists/:id/image.
+ */
+export function playlistImageUrl(playlist) {
+  const img = playlist?.image;
+  if (!img) return null;
+  if (/^(data:|https?:|undefined:|\/\/)/i.test(img)) return img;
+  const id = playlist.id ?? playlist._id;
+  if (id == null) return null;
+  return `/api/playlists/${id}/image`;
+}

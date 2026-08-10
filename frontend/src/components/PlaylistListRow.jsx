@@ -134,6 +134,13 @@ const PlaylistListRow = memo(({ index, style, data }) => {
       onClick={() => onSelect?.(track, index)}
     >
       <div style={{
+        width: 32, flexShrink: 0, textAlign: 'right',
+        fontSize: '13px', fontWeight: 700, color: COLORS.text.secondary,
+        fontVariantNumeric: 'tabular-nums', userSelect: 'none',
+      }}>
+        {index + 1}
+      </div>
+      <div style={{
         width: 48, height: 48, borderRadius: '8px',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         flexShrink: 0, overflow: 'hidden', background: '#262626',

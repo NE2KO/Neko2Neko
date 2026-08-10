@@ -221,6 +221,67 @@ router.get('/:id', (req, res) => {
 });
 
 /**
+ * POST /api/playlists/:id/image - Upload / replace a playlist's cover image.
+ * Stores the image as a base64 data URL in the playlist `image` column
+ * (kept small via a hard size cap + PNG/JPEG/WebP allow-list).
+ */
+router.post('/:id/image', (req, res) => {
+  const playlistId = parseInt(req.params.id, 10);
+  if (isNaN(playlistId)) {
+    return res.status(400).json({ error: 'Invalid playlist ID' });
+  }
+  const playlist = stmts.getPlaylistById.get(playlistId);
+  if (!playlist) {
+    return res.status(404).json({ error: 'Playlist not found' });
+  }
+
+  let busboy;
+  try {
+    busboy = Busboy({ headers: req.headers, limits: { fileSize: 3 * 1024 * 1024, files: 1 } });
+  } catch (e) {
+    return res.status(400).json({ error: 'Invalid multipart request' });
+  }
+
+  let fileData = Buffer.alloc(0);
+  let mime = '';
+  let aborted = false;
+
+  busboy.on('file', (fieldname, stream, info) => {
+    if (fieldname !== 'image') {
+      stream.resume();
+      return;
+    }
+    mime = info.mimeType || '';
+    if (!/^image\/(png|jpeg|jpg|webp)$/i.test(mime)) {
+      aborted = true;
+      stream.resume();
+      return res.status(415).json({ error: 'Unsupported image type' });
+    }
+    const chunks = [];
+    stream.on('data', (c) => chunks.push(c));
+    stream.on('end', () => { fileData = Buffer.concat(chunks); });
+  });
+
+  busboy.on('close', () => {
+    if (aborted) return;
+    if (fileData.length === 0) {
+      return res.status(400).json({ error: 'No image provided' });
+    }
+    const dataUrl = `data:${mime};base64,${fileData.toString('base64')}`;
+    try {
+      db.prepare('UPDATE playlists SET image = ? WHERE id = ?').run(dataUrl, playlistId);
+      res.json({ id: playlistId, image: dataUrl });
+    } catch (err) {
+      console.error('[playlists/:id/image] Error:', err);
+      res.status(500).json({ error: 'Failed to save cover image' });
+    }
+  });
+
+  busboy.on('error', () => res.status(500).json({ error: 'Upload failed' }));
+  req.pipe(busboy);
+});
+
+/**
  * GET /api/playlists/:id/play - Get playback-ready queue
  */
 router.get('/:id/play', (req, res) => {
