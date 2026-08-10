@@ -1,3 +1,14 @@
+> ## 🚧 Project Status: In Progress
+>
+> - **Project started:** May 1, 2026
+> - **Status:** Actively being worked on.
+> - **Current focus (as fast as possible):**
+>   - Performance optimization
+>   - UI polish / beautification
+>   - Bug fixing
+>   - Making the logic more proper and robust
+>   - Improving the menus and making them better
+
 # Media Vault
 
 ![Node](https://img.shields.io/badge/Node-%3E%3D18-green)
