@@ -446,6 +446,7 @@ homelab-media-server/
 
 - **Authentication System**: The auth design is still under consideration — ranging from user login and multi-user support to account recovery in case a user loses their password.
 - **Web Stream-based Remote Control (GSR-inspired)**: Direct frame copying from the GPU block encoder for zero-overhead screen capture.
+- **Modular Web / Menu Splitting**: Break the web app into independent modules so a deployment does not need the full repo or every menu. Users could pick only 1–2 menus (e.g. just Media Vault + Music, or just Downloader) and run a lighter build with only the selected backend routes, frontend bundles, and dependencies loaded.
 
 ## Documentation
 
