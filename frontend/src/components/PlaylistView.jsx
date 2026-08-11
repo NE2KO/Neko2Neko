@@ -369,7 +369,7 @@ function PlaylistHeroHeader({ playlist, trackCount, totalDurationSeconds, onPlay
           overflow: 'hidden', background: '#262626', boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
         }}>
           {cover ? (
-            <img src={cover} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            <img src={cover} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
           ) : isLoved ? (
             <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg,#4f46e5,#db2777)' }}>
               <Heart size={72} color="#fff" fill="#fff" />
@@ -628,6 +628,20 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
   const [favorites, setFavorites] = useState([]);
   const [lovedLoading, setLovedLoading] = useState(false);
   const showSidebar = containerWidth >= 760;
+
+  // Width of the detail content area (used so the track list can be virtualized
+  // while the whole detail view — hero + toolbar + list — scrolls as one tab).
+  const detailScrollRef = useRef(null);
+  const [detailWidth, setDetailWidth] = useState(0);
+  useEffect(() => {
+    const el = detailScrollRef.current;
+    if (!el) return;
+    const update = () => setDetailWidth(el.clientWidth);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [selectedPlaylist]);
 
   // Persist displayMode
   useEffect(() => {
@@ -1606,17 +1620,8 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
 
       {/* Detail View */}
       {selectedPlaylist && (
-    <div data-debug-id="5.1" data-debug-name="PlaylistView" data-debug-type="panel" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-          <PlaylistHeroHeader
-            playlist={selectedPlaylist}
-            isLoved={!!selectedPlaylist.isLoved}
-            trackCount={sortedTracks.length}
-            totalDurationSeconds={totalDurationSeconds}
-            onPlay={handlePlay}
-            onShuffle={handlePlayShuffle}
-            onCoverChange={() => coverInputRef.current?.click()}
-          />
-          {/* Detail Header */}
+    <div ref={detailScrollRef} data-debug-id="5.1" data-debug-name="PlaylistView" data-debug-type="panel" style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
+          {/* Detail Header (toolbar with search/filter/actions) — kept at the top */}
           <div data-debug-id="5.2.1" data-debug-name="PlaylistDetailHeader" data-debug-type="other">
           <PlaylistDetailHeader
             playlistName={selectedPlaylist?.title || ''}
@@ -1644,15 +1649,28 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
             onSearchChange={setTrackSearchQuery}
           />
           </div>
+          <PlaylistHeroHeader
+            playlist={selectedPlaylist}
+            isLoved={!!selectedPlaylist.isLoved}
+            trackCount={sortedTracks.length}
+            totalDurationSeconds={
+              selectedPlaylist?.isLoved
+                ? favorites.reduce((sum, t) => sum + (Number(t.duration) || 0), 0)
+                : (Number(selectedPlaylist?.total_duration) || totalDurationSeconds)
+            }
+            onPlay={handlePlay}
+            onShuffle={handlePlayShuffle}
+            onCoverChange={() => coverInputRef.current?.click()}
+          />
 
-          {/* Content */}
-          <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
+          {/* Content (scrolls together with hero + toolbar as one tab) */}
+          <div style={{ padding: '0 24px 24px', minHeight: 0 }}>
             {loadingTracks ? (
               <div style={{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                height: '100%',
+                minHeight: '50vh',
               }}>
                 <div style={{
                   width: '32px',
@@ -1669,47 +1687,49 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
                 flexDirection: 'column',
                 alignItems: 'center',
                 justifyContent: 'center',
-                height: '100%',
+                minHeight: '50vh',
                 color: COLORS.text.secondary,
               }}>
                 <Music size={48} style={{ marginBottom: '12px', opacity: 0.3 }} />
                 <p style={{ margin: 0, fontSize: '14px' }}>No tracks in this playlist</p>
               </div>
             ) : displayMode === 'list' ? (
-              <div style={{ height: '100%' }} data-debug-id="5.2.2" data-debug-name="TrackListView" data-debug-type="list">
-                <AutoSizer>
-                  {({ height, width }) => (
-                    <div style={{ height, width, display: 'flex', justifyContent: 'center' }}>
-                      <List
-                        key={`track-list-${displayMode}`}
-                        height={height}
-                        width={Math.min(width, 1100)}
-                        itemCount={displayTracks.length}
-                        itemSize={listItemSize}
-                        overscanCount={5}
-                        itemData={listRowData}
-                      >
-                        {PlaylistListRow}
-                      </List>
-                    </div>
-                  )}
-                </AutoSizer>
+              <div data-debug-id="5.2.2" data-debug-name="TrackListView" data-debug-type="list" style={{ minHeight: 300 }}>
+                <div style={{ display: 'flex', justifyContent: 'center' }}>
+                  <List
+                    key={`track-list-${displayMode}`}
+                    height={displayTracks.length * 64}
+                    width={Math.min(detailWidth || 0, 1100)}
+                    itemCount={displayTracks.length}
+                    itemSize={listItemSize}
+                    overscanCount={5}
+                    itemData={listRowData}
+                  >
+                    {PlaylistListRow}
+                  </List>
+                </div>
               </div>
             ) : (
-              <div style={{ height: '100%' }} data-debug-id="5.2.3" data-debug-name="TrackGridView" data-debug-type="grid">
-                <AutoSizer>
-                  {({ height, width }) => (
+              <div data-debug-id="5.2.3" data-debug-name="TrackGridView" data-debug-type="grid">
+                {(() => {
+                  const effW = Math.min(detailWidth || 0, CONTAINER_MAX);
+                  const iw = Math.min(MAX_CARD, Math.max(MIN_CARD, Math.round(effW * 0.10)));
+                  const ch = Math.round(iw * 180 / 140);
+                  const cols = Math.max(1, Math.min(MAX_COLUMNS, Math.floor((effW - GUTTER) / (iw + GUTTER))));
+                  const rows = Math.ceil(gridItems.length / cols);
+                  const gh = Math.max(0, rows * (ch + GUTTER));
+                  return (
                     <PlaylistTrackGridInner
-                      height={height}
-                      width={width}
+                      height={gh}
+                      width={detailWidth}
                       gridItems={gridItems}
                       onSelect={handleTrackGridSelect}
                       selectedForDelete={selectedForDelete}
                       deletingTrackIds={deletingTrackIds}
                       selectMode={deleteMode}
                     />
-                  )}
-                </AutoSizer>
+                  );
+                })()}
               </div>
             )}
           </div>
