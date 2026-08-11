@@ -126,6 +126,32 @@ function getDuration(filePath) {
   });
 }
 
+// Canonical codec names used by the WhatsApp preflight. Maps ffprobe codec_name
+// (and a few codec tags) to a small normalized vocabulary so the send path can
+// reason about "H.264" / "AAC" without re-parsing tags everywhere.
+const VIDEO_CANON = {
+  h264: 'h264', avc1: 'h264', avc3: 'h264',
+  hevc: 'hevc', h265: 'hevc', hev1: 'hevc', hvc1: 'hevc',
+  av1: 'av1', av01: 'av1',
+  vp9: 'vp9', vp09: 'vp9', vp8: 'vp8',
+  mpeg4: 'mpeg4', mpeg2video: 'mpeg2', mjpeg: 'mjpeg',
+};
+const AUDIO_CANON = {
+  aac: 'aac', mp4a: 'aac',
+  opus: 'opus',
+  mp3: 'mp3', mp3float: 'mp3',
+  ac3: 'ac3', eac3: 'eac3', 'ac-3': 'ac3',
+  vorbis: 'vorbis', flac: 'flac',
+  pcm_s16le: 'pcm', pcm_s24le: 'pcm', pcm_s32le: 'pcm', pcm_f32le: 'pcm',
+  alac: 'alac', amr_nb: 'amr', amr_wb: 'amr',
+};
+function normalizeVideoCodec(name) {
+  return VIDEO_CANON[(name || '').toLowerCase()] || (name || '').toLowerCase() || 'unknown';
+}
+function normalizeAudioCodec(name) {
+  return AUDIO_CANON[(name || '').toLowerCase()] || (name || '').toLowerCase() || '';
+}
+
 function probeVideoMetadata(filePath) {
   try {
     const result = spawnSync('ffprobe', [
@@ -156,6 +182,13 @@ function probeVideoMetadata(filePath) {
       video_codec_tag: vTag,
       audio_codec: aCodec,
       audio_codec_tag: aTag,
+      // Normalized, target-agnostic vocabulary (H.264 / HEVC / AAC / Opus …).
+      // `is_stream_compatible` is intentionally the BROWSER/HLS streamability
+      // flag (video codec + muxable container); it is NOT the WhatsApp contract.
+      // The WA preflight must compute its own whole-media check from
+      // videoCodec + audioCodec instead of trusting is_stream_compatible.
+      videoCodec: normalizeVideoCodec(vCodec),
+      audioCodec: normalizeAudioCodec(aCodec),
       width: video.width || 0,
       height: video.height || 0,
       profile: video.profile || '',

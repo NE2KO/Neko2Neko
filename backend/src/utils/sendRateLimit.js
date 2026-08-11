@@ -443,25 +443,45 @@ export function markProcessing(id) {
 }
 
 // ── Permanent-media-error preflight ──
-// A video whose codec WhatsApp cannot stream (is_stream_compatible = 0 AND already
-// probed) can NEVER succeed, so it must be failed immediately as a
-// PERMANENT_MEDIA_ERROR — never claimed into 'processing', never retried. This is
-// the scheduler's codec preflight: AV1/HEVC/etc. items never enter the send path.
-// Items not yet probed (codec_info NULL) fall through to the normal send path so a
-// future scan can still classify them; Telegram-only targets are exempt (Telegram
-// handles far more codecs than WhatsApp).
+// WhatsApp (Status / Channel — and therefore 'whatsapp' / 'all') requires whole-
+// media compatibility, not just a streamable video: the VIDEO must be H.264
+// (avc1/avc3/h264) AND, when an AUDIO stream is present, it must be AAC. A video
+// that fails either check can NEVER succeed on WhatsApp, so it is failed
+// immediately as a PERMANENT_MEDIA_ERROR — never claimed into 'processing', never
+// retried, and a manual retry/reschedule is rejected (changing the time doesn't
+// fix the media). This closes the same gap as the earlier AV1 fix: the previous
+// check only looked at video compatibility (is_stream_compatible), so an H.264
+// video with an incompatible audio codec (e.g. Opus) slipped through to the send
+// and failed at WhatsApp. The check now reads the normalized videoCodec /
+// audioCodec fields instead of the browser-only is_stream_compatible flag.
+// Items not yet probed (codec_info NULL) fall through to the normal send path so
+// a future scan can still classify them; Telegram-only targets are exempt
+// (Telegram handles far more codecs than WhatsApp).
 const WA_TARGETS = new Set(['whatsapp', 'all', 'channel', 'status']);
+// WhatsApp accepts H.264 (avc1/avc3 are H.264 tags) for video.
+const WA_VIDEO_OK = new Set(['h264', 'avc1', 'avc3']);
+// WhatsApp accepts AAC audio. mp4a is the AAC codec tag and is normalized to
+// 'aac' by the scanner; an empty audioCodec means no audio stream (silent video,
+// which is fine).
+function isWaAudioOk(audioCodec) {
+  return !audioCodec || audioCodec === 'aac' || audioCodec === 'mp4a';
+}
 export function waPermanentMediaError(fileId, target) {
   if (!WA_TARGETS.has(target)) return null; // Telegram-only: codec-agnostic
-  const row = db.prepare('SELECT codec_info, is_stream_compatible FROM files WHERE id = ?').get(fileId);
+  const row = db.prepare('SELECT codec_info FROM files WHERE id = ?').get(fileId);
   if (!row || row.codec_info == null) return null; // not probed yet → let send path decide
-  if (row.is_stream_compatible === 1) return null; // H.264 / streamable → OK
-  let detected = 'unknown codec';
-  try {
-    const ci = JSON.parse(row.codec_info);
-    detected = (ci.family || ci.videoCodec || 'unknown').toString();
-  } catch {}
-  return `Permanent media error: WhatsApp only supports H.264 video for this send path (detected codec: ${detected})`;
+  let ci;
+  try { ci = JSON.parse(row.codec_info); } catch { return null; }
+  const videoCodec = (ci.videoCodec || ci.video_codec || '').toString().toLowerCase();
+  const audioCodec = (ci.audioCodec || ci.audio_codec || '').toString().toLowerCase();
+  if (!videoCodec) return null; // no video stream → not our media; let send path decide
+  if (!WA_VIDEO_OK.has(videoCodec)) {
+    return `Permanent media error: WhatsApp requires H.264 video (detected video: ${videoCodec || 'unknown'})`;
+  }
+  if (!isWaAudioOk(audioCodec)) {
+    return `Permanent media error: WhatsApp requires H.264 video + AAC audio (detected audio: ${audioCodec || 'unknown'})`;
+  }
+  return null;
 }
 
 // Atomic claim: the PRIMARY dedup mechanism. A worker claims a 'pending' row (or
