@@ -106,96 +106,37 @@ function PlaylistListHeader({
 }
 
 function PlaylistDetailHeader({
-  playlistName = '',
-  trackCount = 0,
-  availableCount = 0,
   selectionMode = false,
   selectedCount = 0,
-  displayMode = 'list',
-  onEnterSelectMode,
+  trackCount = 0,
   onSelectAll,
   onDeleteSelected,
   onCancelSelect,
-  onAdd,
-  onBack,
-  onToggleView,
-  sortBy = null,
-  sortOrder = 'asc',
-  filterType = 'all',
-  onOpenFilters,
-  onToggleOrder,
-  searchQuery = '',
-  onSearchChange,
 }) {
+  if (!selectionMode) return null;
   return (
-    <div className="flex-shrink-0">
-      {/* Normal Header */}
-      {!selectionMode && (
-        <div className="flex items-center justify-between px-3 py-2.5 border-b border-neutral-800 bg-neutral-900">
-          {/* Left: back + title */}
-          <div className="flex items-center gap-2 flex-1 min-w-0">
-            <button onClick={onBack} className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 transition-colors flex-shrink-0">
-              <ArrowLeft size={18} />
-            </button>
-            <div className="flex-1 min-w-0">
-              <h2 className="text-sm font-semibold text-neutral-100 truncate">{playlistName}</h2>
-            </div>
-          </div>
-
-          {/* Right: action buttons */}
-          <div className="flex items-center gap-1.5 flex-shrink-0 overflow-x-auto ml-2" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
-            {onSearchChange && (
-              <input
-                value={searchQuery}
-                onChange={(e) => onSearchChange(e.target.value)}
-                placeholder="Search..."
-                className="h-8 w-40 px-2.5 rounded-lg text-[11px] border border-neutral-700/60 bg-neutral-800/80 text-neutral-300 placeholder:text-neutral-500 focus:outline-none focus:border-sky-500/60 flex-shrink-0"
-              />
-            )}
-            {onOpenFilters && (
-              <button onClick={onOpenFilters} className={`w-8 h-8 rounded-lg border border-neutral-700/60 bg-neutral-800/80 text-neutral-400 hover:bg-neutral-700 hover:text-neutral-200 transition-colors flex items-center justify-center flex-shrink-0 ${(sortBy || filterType !== 'all') ? 'border-sky-500/40 text-sky-400' : ''}`} title="Filters">
-                <SlidersHorizontal size={15} />
-              </button>
-            )}
-            <button onClick={onEnterSelectMode} className="h-8 px-2.5 rounded-lg text-[11px] font-medium border border-neutral-700/60 bg-neutral-800/80 text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100 transition-colors flex items-center gap-1 flex-shrink-0">
-              <Check size={12} />
-              <span className="hidden sm:inline">Select</span>
-            </button>
-            {onToggleView && (
-              <button onClick={onToggleView} className="w-8 h-8 rounded-lg border border-neutral-700/60 bg-neutral-800/80 text-neutral-400 hover:bg-neutral-700 hover:text-neutral-200 transition-colors flex items-center justify-center flex-shrink-0" title="Toggle view">
-                {displayMode === 'grid' ? <List size={13} /> : <Grid size={13} />}
-              </button>
-            )}
-            <button onClick={onAdd} className="w-8 h-8 rounded-lg bg-sky-500 text-white hover:bg-sky-600 transition-colors flex items-center justify-center flex-shrink-0" title="Add">
-              <Plus size={15} />
-            </button>
-          </div>
-        </div>
-      )}
-
+    <div className="flex-shrink-0 animate-[slideDown_0.15s_ease-out]">
       {/* Selection Mode Header */}
-      {selectionMode && (
-        <div className="flex items-center justify-between px-3 py-2.5 border-b border-neutral-800 bg-neutral-900 animate-[slideDown_0.15s_ease-out]">
-          <div className="flex items-center gap-2.5">
-            <button onClick={onSelectAll} className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${selectedCount === trackCount ? 'bg-sky-500 border-sky-500' : 'border-neutral-500 bg-transparent'}`}>
-              {selectedCount === trackCount && <Check size={12} className="text-white" />}
-            </button>
-            <span className="text-xs font-medium text-neutral-200">
-              {selectedCount === trackCount ? 'All selected' : `${selectedCount} selected`}
-            </span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <button onClick={onDeleteSelected} disabled={selectedCount === 0} className="h-8 px-2.5 rounded-lg text-[11px] font-semibold bg-red-500 text-white hover:bg-red-600 transition-colors flex items-center gap-1 flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed">
-              <Trash2 size={12} />
-              Delete ({selectedCount})
-            </button>
-            <button onClick={onCancelSelect} className="h-8 px-2.5 rounded-lg text-[11px] font-medium border border-neutral-700/60 bg-neutral-800/80 text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100 transition-colors flex items-center gap-1 flex-shrink-0">
-              <X size={12} />
-              Cancel
-            </button>
-          </div>
+      <div className="flex items-center justify-between px-3 py-2.5 border-b border-neutral-800 bg-neutral-900">
+        <div className="flex items-center gap-2.5">
+          <button onClick={onSelectAll} className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${selectedCount === trackCount ? 'bg-sky-500 border-sky-500' : 'border-neutral-500 bg-transparent'}`}>
+            {selectedCount === trackCount && <Check size={12} className="text-white" />}
+          </button>
+          <span className="text-xs font-medium text-neutral-200">
+            {selectedCount === trackCount ? 'All selected' : `${selectedCount} selected`}
+          </span>
         </div>
-      )}
+        <div className="flex items-center gap-1.5">
+          <button onClick={onDeleteSelected} disabled={selectedCount === 0} className="h-8 px-2.5 rounded-lg text-[11px] font-semibold bg-red-500 text-white hover:bg-red-600 transition-colors flex items-center gap-1 flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed">
+            <Trash2 size={12} />
+            Delete ({selectedCount})
+          </button>
+          <button onClick={onCancelSelect} className="h-8 px-2.5 rounded-lg text-[11px] font-medium border border-neutral-700/60 bg-neutral-800/80 text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100 transition-colors flex items-center gap-1 flex-shrink-0">
+            <X size={12} />
+            Cancel
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

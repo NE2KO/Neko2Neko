@@ -928,6 +928,21 @@ const stmts = {
   renumberPlaylistTrack: db.prepare('UPDATE playlist_tracks SET track_index = ? WHERE id = ?'),
   getPlaylistTrackCount: db.prepare('SELECT COUNT(*) as cnt FROM playlist_tracks WHERE playlist_id = ?'),
   getPlaylistTrackStatsSum: db.prepare('SELECT SUM(duration) as total_duration, SUM(file_size) as total_size FROM playlist_tracks WHERE playlist_id = ?'),
+  updatePlaylistTrackDurationByPath: db.prepare('UPDATE playlist_tracks SET duration = ? WHERE resolved_path = ?'),
+  refreshPlaylistTrackDurations: db.prepare(`
+    UPDATE playlist_tracks SET duration = COALESCE((
+      SELECT f.duration FROM files f
+      JOIN folders fo ON f.dir_id = fo.id
+      WHERE fo.path || '/' || f.name = playlist_tracks.resolved_path
+      LIMIT 1
+    ), duration)
+    WHERE duration = 0 OR duration IS NULL
+  `),
+  recomputeAllPlaylistTotals: db.prepare(`
+    UPDATE playlists SET
+      total_duration = COALESCE((SELECT SUM(pt.duration) FROM playlist_tracks pt WHERE pt.playlist_id = playlists.id), 0),
+      total_size = COALESCE((SELECT SUM(pt.file_size) FROM playlist_tracks pt WHERE pt.playlist_id = playlists.id), 0)
+  `),
   lookupFileByDirPathAndName: db.prepare(`
     SELECT f.id, f.name, f.type, f.ext, f.size, f.mtime, f.duration, f.has_thumb
     FROM files f

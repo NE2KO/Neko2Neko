@@ -582,28 +582,63 @@ async function incrementalSync() {
   return { inserted: totalInserted, updated: totalUpdated, skipped: totalSkipped, deleted: totalDeleted, elapsed };
 }
 
-// Background ffprobe enrichment (LOW priority)
+// Background ffprobe enrichment (LOW priority).
+// Drains duration/codec for files that are still missing them. Previously this
+// only processed 20 files per run on a 30-minute interval, so large libraries
+// (1000+ tracks) took days and `f.duration` stayed 0 — making playlist/Loved
+// total durations wildly wrong. Now it processes a much larger batch and loops
+// until the backlog is cleared (bounded by a per-run time/count budget so it
+// never blocks scans/playback), keeps `playlist_tracks.duration` in sync, and
+// recomputes stored playlist totals afterwards.
 async function enrichDurationsBatch() {
-  const files = db.prepare(`
-    SELECT f.id, d.path, f.name, f.type, f.codec_info
-    FROM files f
-    JOIN folders d ON f.dir_id = d.id
-    WHERE (f.duration = 0 OR f.codec_info IS NULL)
-      AND f.type IN ('video', 'audio')
-    LIMIT 20
-  `).all();
+  const BATCH = 500;
+  const MAX_PER_RUN = 6000;
+  const TIME_BUDGET_MS = 2 * 60 * 1000;
+  const start = Date.now();
 
   const updateDuration = db.prepare('UPDATE files SET duration = ? WHERE id = ?');
 
-  for (const file of files) {
-    const relPath = file.path ? join(file.path, file.name) : file.name;
-    const fullPath = resolveFullPath(relPath);
-    if (file.type === 'video') updateCodecInfo(fullPath, file.id);
-    const dur = await getDuration(fullPath);
-    if (dur > 0) updateDuration.run(Math.round(dur), file.id);
+  let processed = 0;
+  let pending = BATCH;
+
+  while (pending > 0 && processed < MAX_PER_RUN && (Date.now() - start) < TIME_BUDGET_MS) {
+    const files = db.prepare(`
+      SELECT f.id, d.path, f.name, f.type, f.codec_info
+      FROM files f
+      JOIN folders d ON f.dir_id = d.id
+      WHERE (f.duration = 0 OR f.codec_info IS NULL)
+        AND f.type IN ('video', 'audio')
+      LIMIT ?
+    `).all(pending);
+
+    pending = files.length;
+    if (pending === 0) break;
+
+    for (const file of files) {
+      const relPath = file.path ? join(file.path, file.name) : file.name;
+      const fullPath = resolveFullPath(relPath);
+      if (file.type === 'video') updateCodecInfo(fullPath, file.id);
+      const dur = await getDuration(fullPath);
+      if (dur > 0) {
+        const secs = Math.round(dur);
+        updateDuration.run(secs, file.id);
+        // Keep playlist track durations in sync so stored playlist totals are
+        // correct even for playlists built before this file was enriched.
+        try { stmts.updatePlaylistTrackDurationByPath.run(secs, fullPath); } catch {}
+      }
+      processed++;
+      if ((Date.now() - start) >= TIME_BUDGET_MS) break;
+    }
+
+    pending = BATCH;
   }
 
-  return files.length;
+  // Refresh any playlist track durations still missing, then recompute every
+  // playlist's stored totals from (now-updated) playlist_tracks.
+  try { stmts.refreshPlaylistTrackDurations.run(); } catch (e) { console.error('[scanner] refresh playlist track durations failed:', e.message); }
+  try { stmts.recomputeAllPlaylistTotals.run(); } catch (e) { console.error('[scanner] recompute playlist totals failed:', e.message); }
+
+  return processed;
 }
 
 const TAG_DATE_PATTERNS = [

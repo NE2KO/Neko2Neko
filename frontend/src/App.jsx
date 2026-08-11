@@ -270,24 +270,35 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
       }
     }, []);
 
-    // Persist view and playlist state for reload recovery
+    // Persist view and playlist state for reload recovery.
+    // NOTE: playlistMetadata can include a base64 cover image (data: URL) which
+    // blows past the ~5MB localStorage quota for large playlists. Serializing it
+    // threw QuotaExceededError inside this effect, crashing the UI loop ("berat
+    // sampai ga respon"). Strip oversized fields and guard every write.
     useEffect(() => {
+      const safeStore = (key, value) => {
+        try { sessionStorage.setItem(key, value); } catch {}
+        try {
+          localStorage.setItem(key, value);
+        } catch {
+          try { localStorage.removeItem(key); } catch {}
+        }
+      };
       sessionStorage.setItem('view', view);
       if (playlistQueue && playlistQueue.length > 0) {
-        sessionStorage.setItem('playlistQueue', JSON.stringify(playlistQueue));
-        localStorage.setItem('playlistQueue', JSON.stringify(playlistQueue));
+        const q = JSON.stringify(playlistQueue);
+        safeStore('playlistQueue', q);
       }
       if (playlistMetadata) {
-        sessionStorage.setItem('playlistMetadata', JSON.stringify(playlistMetadata));
-        localStorage.setItem('playlistMetadata', JSON.stringify(playlistMetadata));
+        const sanitized = { ...playlistMetadata };
+        if (typeof sanitized.image === 'string' && sanitized.image.startsWith('data:')) {
+          sanitized.image = null;
+        }
+        safeStore('playlistMetadata', JSON.stringify(sanitized));
       }
-      // Persist the track index unconditionally (index 0 was previously skipped),
-      // and mirror the single-file audio id so a bare-file URL survives reloads.
-      sessionStorage.setItem('currentTrackIndex', String(currentTrackIndex));
-      localStorage.setItem('currentTrackIndex', String(currentTrackIndex));
+      safeStore('currentTrackIndex', String(currentTrackIndex));
       if (currentAudioFileIdRef.current) {
-        sessionStorage.setItem('currentAudioFileId', currentAudioFileIdRef.current);
-        localStorage.setItem('currentAudioFileId', currentAudioFileIdRef.current);
+        safeStore('currentAudioFileId', currentAudioFileIdRef.current);
       }
     }, [view, playlistQueue, playlistMetadata, currentTrackIndex]);
 

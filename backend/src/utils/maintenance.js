@@ -155,13 +155,13 @@ function startMaintenanceScheduler() {
     } catch (err) {
       log.error({ msg: 'Metadata enrichment failed', error: err.message });
     }
-  }, 30 * 60 * 1000);
+  }, 10 * 60 * 1000);
 
   setTimeout(() => {
     metadataInterval && enrichDurationsBatch()
       .then(() => enrichMetadataBatch())
       .catch(e => log.error({ msg: 'Initial enrichment failed', error: e.message }));
-  }, 5 * 60 * 1000);
+  }, 30 * 1000);
 
   analyzeInterval = setInterval(() => {
     try {

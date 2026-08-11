@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { VariableSizeList as List } from 'react-window';
 import AutoSizer from 'react-virtualized-auto-sizer';
-import { Music, RefreshCw, Trash2, Plus, Upload, X, Check, ChevronDown, Shuffle, Heart, Image as ImageIcon, ListMusic, Play } from 'lucide-react';
+import { Music, RefreshCw, Trash2, Plus, Upload, X, Check, ChevronDown, Shuffle, Heart, Image as ImageIcon, ListMusic, Play, Search, SlidersHorizontal, Grid, ArrowLeft } from 'lucide-react';
 import usePlaylistStore from '../store/playlistStore';
 import { loadPlaylists, loadPlaylist, getPlaylistQueue, refreshPlaylists, importXSPFPlaylist, createEmptyPlaylist, removeTrackFromPlaylist, bulkRemoveTracksFromPlaylist, loadFavorites, uploadPlaylistCover, playlistImageUrl } from '../utils/playlistApi';
 import { deletePlaylist } from '../utils/api';
@@ -351,25 +351,32 @@ function PlaylistSidebar({ playlists, favoritesCount, activeId, lovedActive, onS
 }
 
 // ========== SPOTIFY-STYLE HERO HEADER ==========
-function PlaylistHeroHeader({ playlist, trackCount, totalDurationSeconds, onPlay, onShuffle, onCoverChange, isLoved }) {
+const ctrlBtn = {
+  height: 40, padding: '0 12px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.14)',
+  background: 'rgba(255,255,255,0.06)', color: '#fff', cursor: 'pointer',
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 13,
+  transition: 'background .15s, border-color .15s',
+};
+
+function PlaylistHeroHeader({
+  playlist, trackCount, totalDurationSeconds, onPlay, onShuffle, onCoverChange, isLoved,
+  selectionMode, selectedCount, onEnterSelectMode, onSelectAll, onDeleteSelected, onCancelSelect,
+  onFilter, filterType, onToggleView, displayMode, onAdd,
+}) {
   const rawCover = isLoved ? null : playlistImageUrl(playlist);
   const cover = rawCover
     ? (rawCover.startsWith('/') && !rawCover.startsWith('//') ? `${API_BASE}${rawCover}` : rawCover)
     : null;
   const durationLabel = formatTotalDuration(totalDurationSeconds);
   return (
-    <div style={{
-      position: 'relative',
-      padding: '24px 24px 16px',
-      background: 'linear-gradient(180deg, rgba(40,40,40,0.95), rgba(10,10,10,1))',
-    }}>
+    <div style={{ position: 'relative', padding: '24px 24px 16px', background: 'transparent' }}>
       <div style={{ display: 'flex', gap: 24, alignItems: 'flex-end', flexWrap: 'wrap' }}>
         <div style={{
           position: 'relative', width: 200, height: 200, flexShrink: 0, borderRadius: 8,
           overflow: 'hidden', background: '#262626', boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
         }}>
           {cover ? (
-            <img src={cover} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+            <img src={cover} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', objectPosition: 'center' }} />
           ) : isLoved ? (
             <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg,#4f46e5,#db2777)' }}>
               <Heart size={72} color="#fff" fill="#fff" />
@@ -379,7 +386,7 @@ function PlaylistHeroHeader({ playlist, trackCount, totalDurationSeconds, onPlay
               <Music size={64} color="#737373" />
             </div>
           )}
-          {!isLoved && (
+          {!isLoved && !selectionMode && (
             <button
               onClick={onCoverChange}
               title="Ubah cover"
@@ -407,30 +414,69 @@ function PlaylistHeroHeader({ playlist, trackCount, totalDurationSeconds, onPlay
           </div>
         </div>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginTop: 18 }}>
-        <button
-          onClick={onPlay}
-          title="Putar"
-          style={{
-            width: 56, height: 56, borderRadius: '50%', background: '#1db954', border: 'none',
-            color: '#000', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: '0 8px 16px rgba(29,185,84,0.4)',
-          }}
-        >
-          <Play size={26} fill="#000" style={{ marginLeft: 3 }} />
-        </button>
-        <button
-          onClick={onShuffle}
-          title="Acak"
-          style={{
-            width: 48, height: 48, borderRadius: '50%', background: 'transparent',
-            border: '1px solid rgba(255,255,255,0.3)', color: '#fff', cursor: 'pointer',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}
-        >
-          <Shuffle size={20} />
-        </button>
-      </div>
+
+      {!selectionMode && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 18, flexWrap: 'wrap' }}>
+          <button
+            onClick={onPlay}
+            title="Putar"
+            style={{
+              width: 56, height: 56, borderRadius: '50%', background: '#1db954', border: 'none',
+              color: '#000', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              boxShadow: '0 8px 16px rgba(29,185,84,0.4)',
+            }}
+          >
+            <Play size={26} fill="#000" style={{ marginLeft: 3 }} />
+          </button>
+          <button
+            onClick={onShuffle}
+            title="Acak"
+            style={{
+              width: 48, height: 48, borderRadius: '50%', background: 'transparent',
+              border: '1px solid rgba(255,255,255,0.3)', color: '#fff', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            <Shuffle size={20} />
+          </button>
+          <div style={{ flex: 1 }} />
+          <button
+            onClick={onFilter}
+            title="Filter"
+            style={{
+              ...ctrlBtn,
+              ...(filterType !== 'all' ? { borderColor: 'rgba(56,189,248,0.5)', color: '#38bdf8' } : {}),
+            }}
+          >
+            <SlidersHorizontal size={16} />
+            <span className="hidden md:inline">Filter</span>
+          </button>
+          <button
+            onClick={onToggleView}
+            title="Ubah tampilan"
+            style={ctrlBtn}
+          >
+            {displayMode === 'grid' ? <Grid size={16} /> : <ListMusic size={16} />}
+            <span className="hidden md:inline">{displayMode === 'grid' ? 'Grid' : 'List'}</span>
+          </button>
+          <button
+            onClick={onAdd}
+            title="Tambah musik"
+            style={{ ...ctrlBtn, background: '#1db954', borderColor: '#1db954', color: '#000' }}
+          >
+            <Plus size={16} />
+            <span className="hidden md:inline">Tambah</span>
+          </button>
+          <button
+            onClick={onEnterSelectMode}
+            title="Pilih untuk dihapus"
+            style={ctrlBtn}
+          >
+            <Check size={16} />
+            <span className="hidden md:inline">Pilih</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1143,10 +1189,6 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
     setPlaylistSort(prev => ({ ...prev, order: prev.order === 'asc' ? 'desc' : 'asc' }));
   }, []);
 
-  const handleTrackOrderToggle = useCallback(() => {
-    setTrackSort(prev => ({ ...prev, order: prev.order === 'asc' ? 'desc' : 'asc' }));
-  }, []);
-
   const togglePlaylistSelect = useCallback((playlistId) => {
     setSelectedPlaylistIds(prev => {
       const next = new Set(prev);
@@ -1549,106 +1591,59 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
           onOpenFilters={handleOpenPlaylistFilters}
           onToggleOrder={handlePlaylistOrderToggle}
         />
-        <div style={{ flex: 1, overflow: 'hidden' }}>
-            {loading && playlists.length === 0 ? (
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                height: '100%',
-              }}>
-                <div style={{
-                  width: '32px',
-                  height: '32px',
-                  border: `2px solid ${COLORS.border.primary}`,
-                  borderTop: `2px solid ${COLORS.accent}`,
-                  borderRadius: '50%',
-                  animation: 'spin 1s linear infinite',
-                }} />
-              </div>
-            ) : playlists.length === 0 ? (
-              <div style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                height: '100%',
-                color: COLORS.text.secondary,
-              }}>
-                <Music size={64} style={{ marginBottom: '16px', opacity: 0.3 }} />
-                <p style={{ margin: '0 0 8px 0', fontSize: '16px', fontWeight: 500 }}>No playlists yet</p>
-                <p style={{ margin: 0, fontSize: '14px' }}>Create one or import .xspf file</p>
-              </div>
-            ) : displayMode === 'list' ? (
-              <div style={{ height: '100%' }} data-debug-id="5.1.4" data-debug-name="PlaylistList" data-debug-type="list">
-                <AutoSizer>
-                  {({ height, width }) => (
-                    <List
-                      key={`list-${displayMode}`}
-                      height={height}
-                      width={width}
-                      itemCount={sortedPlaylists.length}
-                      itemSize={playlistListItemSize}
-                      overscanCount={5}
-                      itemData={playlistListRowData}
-                    >
-                      {PlaylistListItemRow}
-                    </List>
-                  )}
-                </AutoSizer>
-              </div>
-            ) : (
-              <div style={{ height: '100%' }} data-debug-id="5.1.3" data-debug-name="PlaylistGrid" data-debug-type="grid">
-              <PlaylistGrid
-                key={`grid-${displayMode}`}
-                playlists={sortedPlaylists}
-                onSelect={handlePlaylistGridSelect}
-                onDelete={handleDeletePlaylist}
-                hasMore={false}
-                fetchingMore={loading}
-                onLoadMore={handleRefresh}
-                sortBy={null}
-                sortOrder="asc"
-                selectedPlaylistIds={playlistDeleteMode ? selectedPlaylistIds : null}
-                selectMode={playlistDeleteMode}
-              />
-              </div>
-            )}
-          </div>
-        </>
-      )}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: COLORS.text.secondary, padding: 24, overflow: 'hidden' }}>
+          <Music size={64} style={{ opacity: 0.22, marginBottom: 8 }} />
+          <p style={{ margin: 0, fontSize: 17, fontWeight: 600, color: COLORS.text.primary }}>Pilih playlist</p>
+          <p style={{ margin: 0, fontSize: 14, textAlign: 'center' }}>Pilih salah satu daftar di samping untuk melihat lagunya.</p>
+          <button
+            onClick={() => setShowCreateModal(true)}
+            style={{ marginTop: 12, height: 40, padding: '0 18px', borderRadius: 999, border: 'none', background: '#1db954', color: '#000', cursor: 'pointer', fontSize: 14, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+          >
+            <Plus size={16} /> Buat Playlist
+          </button>
+        </div>
+      </>
+    )}
 
       {/* Detail View */}
       {selectedPlaylist && (
-    <div ref={detailScrollRef} data-debug-id="5.1" data-debug-name="PlaylistView" data-debug-type="panel" style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
-          {/* Detail Header (toolbar with search/filter/actions) — kept at the top */}
-          <div data-debug-id="5.2.1" data-debug-name="PlaylistDetailHeader" data-debug-type="other">
+    <div ref={detailScrollRef} data-debug-id="5.1" data-debug-name="PlaylistView" data-debug-type="panel" style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'linear-gradient(180deg, #2e2e2e 0%, #1c1c1c 300px, #121212 560px)' }}>
+          {/* Sticky top bar — search centered, larger & refined */}
+          <div style={{ position: 'sticky', top: 0, zIndex: 5, display: 'flex', alignItems: 'center', gap: 12, padding: '12px 24px', background: 'rgba(18,18,18,0.82)', backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+            <button onClick={handleBackToList} title="Kembali" style={{ flexShrink: 0, width: 34, height: 34, borderRadius: 999, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.05)', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <ArrowLeft size={18} />
+            </button>
+            <div style={{ flex: 1, display: 'flex', justifyContent: 'center', minWidth: 0 }}>
+              <div style={{ position: 'relative', width: 'min(520px, 100%)' }}>
+                <Search size={18} style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: COLORS.text.secondary, pointerEvents: 'none' }} />
+                <input
+                  value={trackSearchQuery}
+                  onChange={(e) => setTrackSearchQuery(e.target.value)}
+                  placeholder="Cari di playlist…"
+                  style={{
+                    width: '100%', height: 44, padding: '0 18px 0 44px', borderRadius: 999,
+                    border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.06)',
+                    color: '#fff', fontSize: 15, outline: 'none',
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
+                  }}
+                  onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(29,185,84,0.7)'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(29,185,84,0.18)'; }}
+                  onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)'; e.currentTarget.style.boxShadow = '0 1px 2px rgba(0,0,0,0.3)'; }}
+                />
+              </div>
+            </div>
+            <div style={{ flexShrink: 0, width: 34 }} />
+          </div>
           <PlaylistDetailHeader
-            playlistName={selectedPlaylist?.title || ''}
-            trackCount={sortedTracks.length}
-            availableCount={sortedTracks.filter(t => t.exists && t.file_id).length}
             selectionMode={deleteMode}
             selectedCount={bulkSelectedCount}
-            displayMode={displayMode}
-            onEnterSelectMode={() => setDeleteMode(true)}
+            trackCount={sortedTracks.length}
             onSelectAll={() => {
               setSelectAllForDelete(true);
               setSelectedForDelete(new Set());
             }}
             onDeleteSelected={handleBulkDelete}
             onCancelSelect={handleCancelDeleteMode}
-            onAdd={() => setShowAddMusicPanel(true)}
-            onBack={handleBackToList}
-            onToggleView={() => setDisplayMode(d => d === 'grid' ? 'list' : 'grid')}
-            sortBy={trackSort.by}
-            sortOrder={trackSort.order}
-            filterType={trackFilterType}
-            onOpenFilters={handleOpenTrackFilters}
-            onToggleOrder={handleTrackOrderToggle}
-            searchQuery={trackSearchQuery}
-            onSearchChange={setTrackSearchQuery}
           />
-          </div>
           <PlaylistHeroHeader
             playlist={selectedPlaylist}
             isLoved={!!selectedPlaylist.isLoved}
@@ -1661,16 +1656,32 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
             onPlay={handlePlay}
             onShuffle={handlePlayShuffle}
             onCoverChange={() => coverInputRef.current?.click()}
+            selectionMode={deleteMode}
+            selectedCount={bulkSelectedCount}
+            onEnterSelectMode={() => setDeleteMode(true)}
+            onSelectAll={() => {
+              setSelectAllForDelete(true);
+              setSelectedForDelete(new Set());
+            }}
+            onDeleteSelected={handleBulkDelete}
+            onCancelSelect={handleCancelDeleteMode}
+            onFilter={handleOpenTrackFilters}
+            filterType={trackFilterType}
+            onToggleView={() => setDisplayMode(d => d === 'grid' ? 'list' : 'grid')}
+            displayMode={displayMode}
+            onAdd={() => setShowAddMusicPanel(true)}
           />
 
-          {/* Content (scrolls together with hero + toolbar as one tab) */}
-          <div style={{ padding: '0 24px 24px', minHeight: 0 }}>
+          {/* Content — track area virtualizes against the visible viewport so
+              switching to grid doesn't mount every card at once (was freezing
+              the tab on large playlists). Hero + toolbar stay fixed above. */}
+          <div style={{ flex: 1, minHeight: 0, padding: '0 24px 24px', display: 'flex', flexDirection: 'column' }}>
             {loadingTracks ? (
               <div style={{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                minHeight: '50vh',
+                flex: 1,
               }}>
                 <div style={{
                   width: '32px',
@@ -1687,49 +1698,51 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
                 flexDirection: 'column',
                 alignItems: 'center',
                 justifyContent: 'center',
-                minHeight: '50vh',
+                flex: 1,
                 color: COLORS.text.secondary,
               }}>
                 <Music size={48} style={{ marginBottom: '12px', opacity: 0.3 }} />
                 <p style={{ margin: 0, fontSize: '14px' }}>No tracks in this playlist</p>
               </div>
             ) : displayMode === 'list' ? (
-              <div data-debug-id="5.2.2" data-debug-name="TrackListView" data-debug-type="list" style={{ minHeight: 300 }}>
-                <div style={{ display: 'flex', justifyContent: 'center' }}>
-                  <List
-                    key={`track-list-${displayMode}`}
-                    height={displayTracks.length * 64}
-                    width={Math.min(detailWidth || 0, 1100)}
-                    itemCount={displayTracks.length}
-                    itemSize={listItemSize}
-                    overscanCount={5}
-                    itemData={listRowData}
-                  >
-                    {PlaylistListRow}
-                  </List>
-                </div>
+              <div data-debug-id="5.2.2" data-debug-name="TrackListView" data-debug-type="list" style={{ flex: 1, minHeight: 0 }}>
+                <AutoSizer>
+                  {({ height, width }) => (
+                    <List
+                      key={`track-list-${displayMode}`}
+                      height={height}
+                      width={Math.min(width || 0, 1100)}
+                      itemCount={displayTracks.length}
+                      itemSize={listItemSize}
+                      overscanCount={5}
+                      itemData={listRowData}
+                    >
+                      {PlaylistListRow}
+                    </List>
+                  )}
+                </AutoSizer>
               </div>
             ) : (
-              <div data-debug-id="5.2.3" data-debug-name="TrackGridView" data-debug-type="grid">
-                {(() => {
-                  const effW = Math.min(detailWidth || 0, CONTAINER_MAX);
-                  const iw = Math.min(MAX_CARD, Math.max(MIN_CARD, Math.round(effW * 0.10)));
-                  const ch = Math.round(iw * 180 / 140);
-                  const cols = Math.max(1, Math.min(MAX_COLUMNS, Math.floor((effW - GUTTER) / (iw + GUTTER))));
-                  const rows = Math.ceil(gridItems.length / cols);
-                  const gh = Math.max(0, rows * (ch + GUTTER));
-                  return (
-                    <PlaylistTrackGridInner
-                      height={gh}
-                      width={detailWidth}
-                      gridItems={gridItems}
-                      onSelect={handleTrackGridSelect}
-                      selectedForDelete={selectedForDelete}
-                      deletingTrackIds={deletingTrackIds}
-                      selectMode={deleteMode}
-                    />
-                  );
-                })()}
+              <div data-debug-id="5.2.3" data-debug-name="TrackGridView" data-debug-type="grid" style={{ flex: 1, minHeight: 0 }}>
+                <AutoSizer>
+                  {({ height, width }) => {
+                    const effW = Math.min(width || 0, CONTAINER_MAX);
+                    const iw = Math.min(MAX_CARD, Math.max(MIN_CARD, Math.round(effW * 0.10)));
+                    const ch = Math.round(iw * 180 / 140);
+                    const cols = Math.max(1, Math.min(MAX_COLUMNS, Math.floor((effW - GUTTER) / (iw + GUTTER))));
+                    return (
+                      <PlaylistTrackGridInner
+                        height={height}
+                        width={width}
+                        gridItems={gridItems}
+                        onSelect={handleTrackGridSelect}
+                        selectedForDelete={selectedForDelete}
+                        deletingTrackIds={deletingTrackIds}
+                        selectMode={deleteMode}
+                      />
+                    );
+                  }}
+                </AutoSizer>
               </div>
             )}
           </div>
