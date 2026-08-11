@@ -846,13 +846,6 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
     }
   }, [favorites, setCurrentPlaylistTracks, showToast]);
 
-  const handlePlayShuffle = useCallback(() => {
-    if (lovedLoading || sortedTracks.length === 0) return;
-    const queue = shuffleArray(fullQueueMemo.filter(t => t.exists));
-    if (queue.length === 0) return;
-    onPlayPlaylist({ queue, playlist: selectedPlaylist });
-  }, [lovedLoading, sortedTracks, fullQueueMemo, selectedPlaylist, onPlayPlaylist]);
-
   const handleCoverFileChange = useCallback(async (e) => {
     const file = e.target.files?.[0];
     if (e.target) e.target.value = '';
@@ -1194,6 +1187,13 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
     if (queue.length === 0) return;
     onPlayPlaylist({ queue, playlist: selectedPlaylist });
   }, [fullQueueMemo, sortedTracks, selectedPlaylist, onPlayPlaylist, loadingTracks]);
+
+  const handlePlayShuffle = useCallback(() => {
+    if (lovedLoading || sortedTracks.length === 0) return;
+    const queue = shuffleArray(fullQueueMemo.filter(t => t.exists));
+    if (queue.length === 0) return;
+    onPlayPlaylist({ queue, playlist: selectedPlaylist });
+  }, [lovedLoading, sortedTracks, fullQueueMemo, selectedPlaylist, onPlayPlaylist]);
 
   const handlePlayTrack = useCallback((track, index) => {
     if (playTrackGuardRef.current) return;
