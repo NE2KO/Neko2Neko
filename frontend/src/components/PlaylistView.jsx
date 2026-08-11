@@ -68,6 +68,25 @@ function formatDuration(seconds) {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+function formatTotalDuration(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h} jam ${m} menit`;
+  if (m > 0) return `${m} menit ${sec} detik`;
+  return `${sec} detik`;
+}
+
+function shuffleArray(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 const ThumbImg = React.memo(function ThumbImg({ fileId, colorClass, size = 48 }) {
   const [src, setSrc] = useState(fileId ? `${API_BASE}/thumbnails/${fileId}.jpg` : null);
   const [loaded, setLoaded] = useState(false);
@@ -804,26 +823,6 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
       window.history.pushState({}, '', url);
     }
   }, [clearCurrentPlaylist, onBackToPlaylistList]);
-
-  // ---- Spotify-style helpers ----
-  function formatTotalDuration(totalSeconds) {
-    const s = Math.max(0, Math.floor(totalSeconds || 0));
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const sec = s % 60;
-    if (h > 0) return `${h} jam ${m} menit`;
-    if (m > 0) return `${m} menit ${sec} detik`;
-    return `${sec} detik`;
-  }
-
-  function shuffleArray(arr) {
-    const a = arr.slice();
-    for (let i = a.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [a[i], a[j]] = [a[j], a[i]];
-    }
-    return a;
-  }
 
   const selectLoved = useCallback(async () => {
     setShowLoved(true);
