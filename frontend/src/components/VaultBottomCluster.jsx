@@ -152,6 +152,7 @@ export default function VaultBottomCluster({
           lockEnabled={lockEnabled}
           itemSize="lg"
           slide
+          repo={repo}
         />
       </div>
     </div>
