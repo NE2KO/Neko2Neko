@@ -377,7 +377,7 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
         data-debug-id="1.2"
         data-debug-name="MiniPlayer"
         data-debug-type="floating"
-        className="fixed bottom-0 left-0 right-0 bg-neutral-900/95 backdrop-blur-md border-t border-neutral-700/50 shadow-2xl z-40"
+        className="fixed bottom-0 left-0 right-0 bg-neutral-900/95 backdrop-blur-md border-t border-neutral-700/50 shadow-2xl z-40 overflow-hidden"
       >
         <div className="absolute inset-0 pointer-events-none">
           <NetworkImage
@@ -489,6 +489,13 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
           </div>
 
           <div className="flex items-center gap-1.5 flex-shrink-0">
+            <button
+              onClick={handleToggleFavorite}
+              className={`transition-colors p-1.5 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0 ${isFav ? 'text-red-400' : 'text-neutral-400 hover:text-red-400'}`}
+              title={isFav ? 'Remove from favorites' : 'Add to favorites'}
+            >
+              <Heart size={16} className={isFav ? 'fill-red-400' : ''} />
+            </button>
             <button
               onClick={toggleMute}
               className="text-neutral-400 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0"
