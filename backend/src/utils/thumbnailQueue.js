@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, lstatSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, lstatSync, opendir, stat } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import db, { stmts } from '../db.js';
@@ -26,6 +26,31 @@ let totalMissing = 0;
 let startedAt = null;
 let existingThumbs = new Set();
 const activeProcs = new Set();
+
+async function scanDirAsync(dir) {
+  let entries;
+  try { entries = await opendir(dir); } catch { return; }
+  for await (const entry of entries) {
+    const full = join(dir, entry.name);
+    try {
+      const fileStat = await stat(full);
+      if (fileStat.isDirectory()) {
+        await scanDirAsync(full);
+      } else {
+        existingThumbs.add(entry.name);
+      }
+    } catch {
+      existingThumbs.add(entry.name);
+    }
+  }
+}
+
+async function buildThumbCacheAsync() {
+  try {
+    existingThumbs = new Set();
+    await scanDirAsync(THUMBNAIL_DIR);
+  } catch { existingThumbs = new Set(); }
+}
 
 function buildThumbCache() {
   try {
@@ -274,4 +299,4 @@ function getFileTypeFromDb(id) {
   try { const row = db.prepare('SELECT type FROM files WHERE id = ?').get(id); return row ? row.type : null; } catch { return null; }
 }
 
-export { addFile, scanForMissing, drainQueue, getQueueStatus, pauseQueue, resumeQueue, clearQueue, stopQueue, startQueue, isQueueStopped, buildThumbCache, existingThumbs, VAAPI_AVAILABLE };
+export { addFile, scanForMissing, drainQueue, getQueueStatus, pauseQueue, resumeQueue, clearQueue, stopQueue, startQueue, isQueueStopped, buildThumbCache, buildThumbCacheAsync, existingThumbs, VAAPI_AVAILABLE };

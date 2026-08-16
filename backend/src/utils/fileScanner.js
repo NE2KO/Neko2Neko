@@ -333,7 +333,7 @@ async function scanFileSystem(rootPath, rootRelPath = '') {
 }
 
 // Incremental sync: compare filesystem entries with DB, update only changes
-async function incrementalSync() {
+async function incrementalSync(onNewFile, skipThumbCache = false) {
   if (scanRunning) return;
   scanRunning = true;
   scanProgress = { phase: 'scanning', total: 0, current: 0 };
@@ -481,7 +481,7 @@ async function incrementalSync() {
               }
         } else {
               inserted++;
-              if (entry.type !== 'folder') addFile(entry.fullPath, entry.type);
+              if (entry.type !== 'folder') (onNewFile || addFile)(entry.fullPath, entry.type);
               stmts.upsertFile.run({
                 id: entry.id,
                 dir_id: dirId,
@@ -591,7 +591,9 @@ async function incrementalSync() {
   }
 
   // Rebuild thumb cache after any deletions to prevent stale lookups
-  try { buildThumbCache(); } catch {}
+  if (!skipThumbCache) {
+    try { buildThumbCache(); } catch {}
+  }
 
   // Phase 6: Reconcile folder table counts
   console.log('[scanner] Running folder reconciliation...');
