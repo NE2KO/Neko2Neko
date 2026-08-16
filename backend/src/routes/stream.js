@@ -49,6 +49,8 @@ router.get('/video/:id/playback-info', async (req, res) => {
       probe: decision.probe,
       probeMs: decision.probeMs,
       cacheHit: decision.cacheHit,
+      faststart: decision.faststart ?? null,
+      cache: { exists: decision.cacheHit, ageSeconds: decision.cacheAgeSeconds ?? null },
       totalMs: decision.totalMs,
       sizeMB: file.size / (1024 * 1024),
       isMobile,
@@ -196,6 +198,7 @@ router.get('/video/:id/compatibility', async (req, res) => {
     const notes = [];
     if (decision.action === 'direct') notes.push('Direct browser playback');
     else if (decision.action === 'remux') notes.push('Remuxed to MKV (Opus audio in MP4, no re-encode)');
+    else if (decision.action === 'faststart') notes.push('Faststart copy (moov moved to front, no re-encode)');
     else if (decision.action === 'transcode') notes.push(`Transcoded to H.264/AAC (${decision.reason})`);
     notes.push(`Probe completed in ${decision.probeMs}ms`);
     if (decision.cacheHit) notes.push('Served from cache');
@@ -206,8 +209,10 @@ router.get('/video/:id/compatibility', async (req, res) => {
     const probe = decision.probe;
     res.json({
       action: decision.action,
-      compatible: decision.action === 'direct',
+      compatible: decision.action === 'direct' || decision.action === 'faststart',
       cached: decision.cacheHit,
+      faststart: decision.faststart ?? null,
+      cache: { exists: decision.cacheHit, ageSeconds: decision.cacheAgeSeconds ?? null },
       heuristic: !file.codec_info,
       size_mb: sizeMB,
       extension: ext,

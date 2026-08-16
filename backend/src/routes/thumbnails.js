@@ -17,7 +17,7 @@ let activeGenerations = 0;
 const generationQueue = [];
 
 function getMaxConcurrent() {
-  return get('thumb.concurrent', 8);
+  return get('thumb.concurrent', 3);
 }
 
 function processGenerationQueue() {

@@ -141,7 +141,21 @@ router.get('/:id', (req, res) => {
         }
       }
     }
-    
+
+    // Bulk-resolve files referenced by track `location` (/file/<id>) in a single
+    // query instead of one getFile per track (the N+1 that stalls large playlist
+    // opens). Ordering still follows the original playlist `tracks`, so this only
+    // replaces the per-track metadata lookups with an O(1) Map lookup.
+    const locationIds = [...new Set(
+      tracks.map(t => t.location?.match(/^\/file\/(.+)$/)?.[1]).filter(Boolean)
+    )];
+    let idToFile = new Map();
+    if (locationIds.length > 0) {
+      const placeholders = locationIds.map(() => '?').join(',');
+      const rows = db.prepare(`SELECT * FROM files WHERE id IN (${placeholders})`).all(...locationIds);
+      idToFile = new Map(rows.map(f => [String(f.id), f]));
+    }
+
     const trackList = tracks.map(t => {
       const rp = t.resolved_path;
       const norm = rp ? normPath(rp) : null;
@@ -153,7 +167,7 @@ router.get('/:id', (req, res) => {
       let dbFile = null;
       const locMatch = t.location?.match(/^\/file\/(.+)$/);
       if (locMatch) {
-        dbFile = stmts.getFile.get(locMatch[1]);
+        dbFile = idToFile.get(locMatch[1]);
       }
       if (!dbFile && norm) dbFile = pathToFile.get(norm);
       if (!dbFile && rp) dbFile = pathToFile.get(rp);
@@ -202,18 +216,22 @@ router.get('/:id', (req, res) => {
       tracks: trackList,
     });
 
-    // Pre-generate thumbnails for tracks missing one, in the background
-    // (fire-and-forget; mirrors routes/files.js — never blocks the response).
-    // Concurrency is capped by getMaxConcurrent() in thumbnailUtils.
-    const seenThumbIds = new Set();
-    for (const t of trackList) {
-      if (!t.file_id || t.has_thumb || seenThumbIds.has(t.file_id)) continue;
-      seenThumbIds.add(t.file_id);
-      const file = getFileWithRelPath(t.file_id);
-      if (file && file.fullPath) {
-        ensureThumbnailForFile(file).catch(() => {});
+    // Pre-generate thumbnails for tracks missing one, deferred to the next
+    // tick and capped by getMaxConcurrent() so a playlist open with many
+    // missing thumbs can't spawn a burst of ffmpeg that saturates CPU/IO,
+    // which would stall audio streaming (lingering player spinner) and slow
+    // other playlist loads. Never blocks the response.
+    setImmediate(() => {
+      const seenThumbIds = new Set();
+      for (const t of trackList) {
+        if (!t.file_id || t.has_thumb || seenThumbIds.has(t.file_id)) continue;
+        seenThumbIds.add(t.file_id);
+        const file = getFileWithRelPath(t.file_id);
+        if (file && file.fullPath) {
+          ensureThumbnailForFile(file).catch(() => {});
+        }
       }
-    }
+    });
   } catch (err) {
     console.error('[playlists/:id] Error:', err);
     res.status(500).json({ error: 'Failed to fetch playlist' });
@@ -346,7 +364,20 @@ router.get('/:id/play', (req, res) => {
         }
       }
     }
-    
+
+    // Bulk-resolve files referenced by track `location` (/file/<id>) in a single
+    // query instead of one getFile per track (N+1). Ordering still follows the
+    // original playlist `tracks`, so only the metadata lookups change.
+    const locationIds = [...new Set(
+      tracks.map(t => t.location?.match(/^\/file\/(.+)$/)?.[1]).filter(Boolean)
+    )];
+    let idToFile = new Map();
+    if (locationIds.length > 0) {
+      const placeholders = locationIds.map(() => '?').join(',');
+      const rows = db.prepare(`SELECT * FROM files WHERE id IN (${placeholders})`).all(...locationIds);
+      idToFile = new Map(rows.map(f => [String(f.id), f]));
+    }
+
     // Filter to only available tracks for playback
     const playableTracks = tracks
       .filter(t => t.file_exists)
@@ -359,7 +390,7 @@ router.get('/:id/play', (req, res) => {
         let dbFile = null;
         const locMatch = t.location?.match(/^\/file\/(.+)$/);
         if (locMatch) {
-          dbFile = stmts.getFile.get(locMatch[1]);
+          dbFile = idToFile.get(locMatch[1]);
         }
         if (!dbFile && norm) dbFile = pathToFile.get(norm);
         if (!dbFile && rp) dbFile = pathToFile.get(rp);

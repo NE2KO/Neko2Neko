@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node --env-file=../credentials/.env src/server.js",
     "dev": "node --env-file=../credentials/.env --expose-gc --watch src/server.js",
-    "debug": "node --env-file=../credentials/.env --inspect --expose-gc src/server.js"
+    "debug": "node --env-file=../credentials/.env --inspect --expose-gc src/server.js",
+    "test:send-debug": "node test/send-debug.test.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",

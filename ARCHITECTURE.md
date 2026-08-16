@@ -79,9 +79,8 @@ Media Vault is a self-hosted media server born from the need to access media fil
 - **ADB Transfer**: Makes file transfer easier without slow file managers or memorizing terminal commands (under development)
 - **Scrcpy Monitor**: Simple remote phone screen viewing (under development)
 - **Send Queue**: Monitors sent/failed/cancelled files to Telegram and WA; tick-based queue system is dedicated for WA status
-- **Git Integration**: Web-based Git operations without opening terminal (API defined in `git.js`, but **not yet mounted** — see [Git (not mounted)](#git-not-mounted))
+- **Git Integration**: Web-based Git operations without opening terminal (backend routes defined in `git.js`, but **not yet mounted** — see [Git (not mounted)](#git-not-mounted))
 - **WhatsApp**: WhatsApp Web pairing and bot controls, accessible from the sidebar
-- **AI Chat**: Conversational AI assistant for help, context-aware answers, and tasks
 
 **Technology Stack:** Node.js, Express, SQLite, React, FFmpeg, HLS streaming, waveform visualization.
 
@@ -100,8 +99,7 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | Music Player | Optional | Dual modes: cover mode (audio only) and video mode (separate audio/video with precision sync); fixes Strawberry player navigation bug | waveform, synced LRC, hls.js, precision sync engine |
 | Send Queue | Optional | Monitors sent/failed/cancelled files to Telegram and WA; tick-based queue for WA status (1-6 posts per day in 24h format) | Tick-based precision, SSE, WA/Telegram APIs |
 | WhatsApp | Optional | WhatsApp Web pairing (QR), connection status, and bot/message controls | whatsapp-web.js, whatsapp-bot, /api/whatsapp |
-| AI Chat | Optional | Conversational AI assistant with provider-based models, context awareness, and a settings UI | ai.js, ai-providers.js, ai-context.js, AIChat.jsx, AISettings.jsx |
-| Git Integration | API-only (not mounted) | Full Git operations without terminal (status, branches, tags, stash, commit, push, pull, diff, file editor, tree browser); web UI menu under development | Simple Git wrapper |
+| Git Integration | API-only (not mounted) | Full Git operations without terminal (status, branches, tags, stash, commit, push, pull, diff, file editor, tree browser); web UI menu (`GitView.jsx`) exists but hits 404 until backend routes are mounted | Simple Git wrapper |
 
 > **Note:** All menus are still actively worked on and under development. New menus may be added in the future.
 
@@ -136,10 +134,13 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | react | ^18.3.1 | UI framework |
 | react-dom | ^18.3.1 | DOM renderer |
 | react-intersection-observer | ^9.16.0 | Lazy loading |
+| react-markdown | ^10.1.0 | Markdown rendering |
 | react-router-dom | ^7.15.1 | Routing |
 | react-virtualized-auto-sizer | ^1.0.26 | Virtual sizing |
 | react-window | ^1.8.11 | Virtualized grid |
 | recharts | ^3.8.1 | Charts |
+| rehype-highlight | ^7.0.2 | Syntax highlighting |
+| remark-gfm | ^4.0.1 | GitHub-flavored markdown |
 | source-map-js | ^1.2.1 | Source maps |
 | tailwindcss-animate | ^1.0.7 | Tailwind animations |
 | zustand | ^5.0.13 | State management |
@@ -213,8 +214,7 @@ homelab-media-server/
 |------|-------------|
 | `backend/src/server.js` | Entry point, Express, lifecycle |
 | `backend/src/db.js` | SQLite database, FTS, settings |
-| `backend/src/routes/` | 22 route modules |
-| `backend/src/ai/` | AI chat engine (providers, context, chat) |
+| `backend/src/routes/` | 19 route modules |
 | `backend/src/monitor/` | System metrics |
 | `backend/src/services/` | Background service modules |
 | `backend/src/utils/` | Helpers (watcher, downloader, upload) |
@@ -226,6 +226,7 @@ homelab-media-server/
 | `downloader.js` | Download management (yt-dlp, gallery-dl, aria2c) |
 | `file.js` | Raw file serve (range, cache headers) |
 | `files.js` | File listing, FTS search, pagination |
+| `git.js` | Git operations (defined, NOT mounted — see Subsystems) |
 | `jobs.js` | Background job status |
 | `metadata.js` | Audio tags, covers, lyrics |
 | `monitoring.js` | Stats, history, alerts |
@@ -240,10 +241,6 @@ homelab-media-server/
 | `upload.js` | Multipart upload |
 | `videoCache.js` | Video cache management |
 | `whatsapp.js` | WhatsApp bridge |
-| `ai.js` | AI chat API (providers, context, chat) |
-| `ai-context.js` | AI context building |
-| `ai-providers.js` | AI provider configuration |
-| `git.js` | Git operations (defined, NOT mounted — see Subsystems) |
 
 ### Frontend
 
@@ -251,10 +248,12 @@ homelab-media-server/
 |------|-------------|
 | `frontend/src/App.jsx` | Main application |
 | `frontend/src/main.jsx` | Vite entry |
-| `frontend/src/components/` | 70+ components |
+| `frontend/src/components/` | 65 components |
 | `frontend/src/store/` | Zustand stores |
 | `frontend/src/hooks/` | Custom hooks |
 | `frontend/src/utils/` | Utility functions |
+| `frontend/src/monitoring/` | Monitoring dashboard pages |
+| `frontend/src/debug/` | Debug utilities and inspectors |
 
 ### WhatsApp Bot
 
@@ -282,87 +281,328 @@ homelab-media-server/
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET | `/api/files` | Browse a folder with cursor pagination |
-| GET | `/api/files/shuffle` | Return all playable files in random order |
-| POST | `/api/files/refresh` | Run incremental scan + orphan cleanup |
-| POST | `/api/files/cleanup` | Remove orphan DB entries |
-| GET | `/api/files/stats` | Quick file-type counts |
-| GET | `/api/files/folders/:id` | Resolve folder id to path metadata |
-| GET | `/api/files/:id/previews` | Up to 4 preview file IDs for a folder |
-| GET | `/api/search` | FTS file search + folder search |
-| GET | `/api/search/suggest` | Autocomplete name suggestions |
+| G | `/` | Browse a folder with cursor pagination |
+| G | `/shuffle` | All playable files in random order |
+| P | `/refresh` | Incremental scan + orphan cleanup |
+| P | `/cleanup` | Remove orphan DB entries |
+| G | `/stats` | Quick file-type counts |
+| G | `/folders/:id` | Resolve folder id → path metadata |
+| G | `/folders/:id/index` | Folder's file index (positions) |
+| P | `/batch` | Batch resolve multiple file ids |
+| G | `/:id/previews` | Up to 4 preview file IDs for a folder |
+| G | `/search` | FTS file search + folder search |
+| G | `/search/suggest` | Autocomplete suggestions |
+| H | `/:id/lock` | Toggle/set lock |
+| G | `/:id/lock` | Get lock state |
+| H | `/:id/favorite` | Toggle favorite |
+| G | `/:id` | File metadata |
+| P | `/resolve-batch` | Resolve many ids (alt batch) |
 
 **Streaming & Playback** (`/stream`)
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET | `/stream/video/:id/playback-info` | Playback decision + mobile flags |
-| GET | `/stream/video/:id` | Stream video (direct/remux/transcode) |
-| GET | `/stream/video/:id/hls/playlist.m3u8` | HLS playlist |
-| GET | `/stream/video/:id/hls/segment-:n.ts` | HLS segment |
-| GET | `/stream/video/:id/faststart` | Re-mux with +faststart |
-| GET | `/stream/audio/:id` | Audio stream with ranges |
+| G | `/video/:id/playback-info` | Playback decision + mobile flags |
+| G | `/video/:id` | Stream video (direct/remux/transcode) |
+| G | `/audio/:id` | Audio stream with ranges |
+| G | `/video/:id/hls/playlist.m3u8` | HLS playlist |
+| G | `/video/:id/hls/segment-:segment(\d+).ts` | HLS segment |
+| G | `/video/:id/compatibility` | Compatibility-mode transcode |
+| G | `/video/:id/webm` | WebM transcode |
+| G | `/video/:id/faststart` | Re-mux with +faststart |
 
 **Monitoring** (`/api/monitoring`)
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET | `/api/monitoring/stats` | Current system stats |
-| GET | `/api/monitoring/overview` | Combined overview |
-| GET | `/api/monitoring/history` | Historical metrics |
-| GET | `/api/monitoring/disk-io/*` | Disk I/O stats |
-| POST | `/api/monitoring/system/power` | Host power control |
+| G | `/media` | Media library stats |
+| P | `/media/thumbnails/generate` | Regenerate thumbnails |
+| G | `/stats` | Current system stats |
+| G | `/overview` | Combined overview |
+| G | `/history` | Historical metrics |
+| G | `/disk-io/daily` | Daily disk I/O |
+| G | `/disk-io/total` | Total disk I/O |
+| G | `/metrics/stats` | Metrics DB stats |
+| P | `/metrics/cleanup` | Clean old metrics |
+| P | `/metrics/optimize` | Optimize metrics DB |
+| G | `/ws-status` | WebSocket connection status |
+| P | `/network/iperf/start` | Start iperf test |
+| G | `/network/iperf/stream/:id` | iperf result stream |
+| G | `/platform` | Platform info |
+| G | `/processes` | Running processes |
+| G | `/services` | Monitored services |
+| P | `/services/:name/:action` | Service action (start/stop/restart) |
+| G | `/logs` | Monitoring logs |
+| G | `/alerts` | Active alerts |
+| P | `/alerts/threshold` | Set alert threshold |
+| P | `/alerts/check` | Force alert check |
+| G | `/web-stats` | Web request stats |
+| G | `/docker` | Docker containers |
+| P | `/docker/:id/:action` | Container action (start/stop) |
+| G | `/docker/:id/logs` | Container logs |
+| G | `/docker/:id/inspect` | Container inspect |
+| G | `/docker-images` | Docker images |
+| G | `/docker-info` | Docker daemon info |
+| P | `/system/power` | Host power control (shutdown/suspend) |
+| P | `/restart/backend` | Restart backend process |
+| P | `/restart/frontend` | Signal frontend reload |
+| G | `/queues` | Background queue stats |
+| P | `/queues/:type/:action` | Queue control |
+| G | `/sessions` | Active sessions |
+| G | `/sessions/stream` | Session SSE stream |
+| D | `/sessions/:id` | Kill a session |
+| G | `/hardware` | Hardware info |
+| G | `/cpu-freq` | CPU frequency |
+| P | `/cpu-freq` | Set CPU frequency (ryzenadj) |
+| P | `/hardware/fan` | Set fan speed (nbfc) |
 
-**Downloader** (`/api/download`)
+**Background Jobs** (`/api/monitoring/jobs`)
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/api/download/stream` | SSE task stream |
-| POST | `/api/download/start` | Create download task |
-| POST | `/api/download/bulk` | Create multiple tasks |
-| GET | `/api/download/list` | All tasks |
-| POST | `/api/download/:id/cancel` | Cancel task |
-| POST | `/api/download/:id/retry` | Retry failed task |
-
-**Playlists** (`/api/playlists`)
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/api/playlists` | All discovered playlists |
-| GET | `/api/playlists/:id` | Playlist details |
-| POST | `/api/playlists/create/manual` | Create from file IDs |
-| POST | `/api/playlists/create/folder` | Create from folder |
-| PUT | `/api/playlists/:id/tracks` | Add tracks |
-| DELETE | `/api/playlists/:id/tracks/:trackId` | Remove track |
-
-**Metadata** (`/api/metadata`)
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/api/metadata/:id` | Read metadata |
-| PUT | `/api/metadata/:id` | Update tags |
-| PUT | `/api/metadata/:id/cover/upload` | Embed cover art |
-| GET | `/api/metadata/:id/lyrics` | Get lyrics |
+| Method | Path | Purpose |
+|--------|------|---------|
+| G | `/` | Background job statuses |
 
 **Services** (`/api/services`)
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/api/services` | All service statuses |
-| POST | `/api/services/:name/start` | Start service |
-| POST | `/api/services/:name/stop` | Stop service |
+| Method | Path | Purpose |
+|--------|------|---------|
+| G | `/` | All service statuses |
+| G | `/:name` | Single service status |
+| P | `/:name/start` | Start service |
+| P | `/:name/stop` | Stop service |
+| P | `/:name/restart` | Restart service |
+| P | `/restart-all` | Restart all services |
+
+**Settings** (`/api/settings`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| G | `/` | All settings |
+| G | `/history` | Setting change history |
+| P | `/rollback/:id` | Rollback to a history entry |
+| G | `/:category` | Settings in a category |
+| U | `/:key` | Update a setting |
+| P | `/` | Create/set a setting |
+| D | `/:key` | Delete a setting |
+
+**Playback** (`/api/playback`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| G | `/stats` | Playback cache stats |
+| G | `/config` | Playback config |
+| G | `/health` | Playback health |
+| P | `/cleanup` | Clean playback cache |
+
+**Server-level logs & health**
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| G | `/api/logs` | Recent logs (limit query) |
+| G | `/api/logs/stream` | Live log SSE |
+| G | `/api/folders/:id` | Resolve folder id (used by frontend) |
+| G | `/api/updates` | Generic SSE event bus |
+| G | `/health` | Liveness probe |
+| G | `/api/ready` | Readiness probe |
+| G | `/api/debug` | Debug snapshot |
+| G | `/api/debug/resources` | Resource snapshot |
+| G | `/api/debug/stress/scanner` | Trigger incremental scan |
+| G | `/api/debug/stress/folders` | Folder count probe |
+
+**Downloader** (`/api/download`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| G | `/stream` | SSE task stream |
+| G | `/config` | Downloader config |
+| P | `/config` | Update config |
+| P | `/start` | Create download task |
+| P | `/bulk` | Create multiple tasks |
+| P | `/formats` | Query available formats |
+| P | `/playlist` | Download a playlist |
+| P | `/twitter-info` | Fetch Twitter/X info |
+| G | `/list` | All tasks |
+| G | `/:id` | Single task |
+| P | `/:id/cancel` | Cancel task |
+| P | `/:id/remove` | Remove task |
+| P | `/:id/retry` | Retry failed task |
+
+**Upload** (`/api/upload`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| P | `/` | Multipart upload |
+| G | `/status` | Upload status |
+| G | `/history` | Upload history |
+| D | `/:id` | Delete upload record |
+| D | `/:id/file` | Delete uploaded file |
+| G | `/stats` | Upload stats |
+| P | `/repair-metadata` | Repair file metadata |
+| P | `/repair-durations` | Repair durations |
 
 **ADB Transfer** (`/api/adb`)
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/api/adb/devices` | Connected devices |
-| POST | `/api/adb/push` | Push files (workers) |
-| POST | `/api/adb/pull` | Pull files from device |
-| GET | `/api/adb/jobs` | Transfer jobs |
-| GET | `/api/adb/jobs/:id/progress` | SSE progress |
+| Method | Path | Purpose |
+|--------|------|---------|
+| G | `/devices` | Connected devices |
+| P | `/ls` | List device directory |
+| P | `/stat` | Stat device path |
+| P | `/localls` | List local directory |
+| P | `/localstat` | Stat local path |
+| P | `/check-duplicates` | Check for duplicates |
+| P | `/push` | Push files (workers) |
+| P | `/pull` | Pull files from device |
+| G | `/jobs` | Transfer jobs |
+| G | `/jobs/:id` | Single job |
+| G | `/jobs/:id/progress` | SSE progress |
+| D | `/jobs/:id` | Delete job |
+| P | `/jobs/:id/pause` | Pause job |
+| P | `/jobs/:id/resume` | Resume job |
+| P | `/jobs/:id/reassign-device` | Reassign device |
+| P | `/jobs/:id/retry-failed` | Retry failed transfers |
+| G | `/jobs/:id/transactions` | Job transactions |
+| P | `/jobs/:id/conflict` | Resolve conflict |
 
-> The full endpoint list (every route across all 22 modules) is in the [Complete API Reference](#complete-api-reference) section below.
+**Playlists** (`/api/playlists`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| G | `/` | All discovered playlists |
+| G | `/:id` | Playlist details |
+| G | `/:id/play` | Playlist play view |
+| P | `/scan` | Scan for playlists (requires `playlists`) |
+| P | `/:id/refresh` | Refresh playlist (requires `playlists`) |
+| D | `/:id` | Delete playlist |
+| P | `/create/manual` | Create from file IDs |
+| P | `/create/empty` | Create empty playlist |
+| P | `/:id/tracks` | Add tracks |
+| D | `/:id/tracks/:trackId` | Remove a track |
+| P | `/:id/tracks/delete` | Bulk-delete tracks |
+| G | `/:id/available-tracks` | Tracks available to add |
+| P | `/create/folder` | Create from folder |
+| P | `/import` | Import (XSPF) |
+
+**Metadata** (`/api/metadata`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| G | `/cover-art/search` | Search cover art |
+| G | `/lyrics/search` | Search lyrics |
+| G | `/:id` | Read metadata |
+| U | `/:id` | Update tags |
+| U | `/:id/cover` | Set cover art |
+| U | `/:id/cover/upload` | Upload + embed cover art |
+| G | `/:id/lyrics` | Get lyrics |
+| U | `/:id/lyrics` | Set lyrics |
+
+**Scrcpy** (`/api/scrcpy`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| G | `/devices` | Scrcpy-capable devices |
+| G | `/status` | Scrcpy status |
+| P | `/start` | Start scrcpy session |
+| P | `/stop` | Stop session |
+| P | `/stop-all` | Stop all sessions |
+| P | `/input` | Send input event |
+
+**Send Queue** (`/api/send`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| G | `/health/internet` | Internet connectivity check |
+| P | `/telegram` | Send via Telegram |
+| P | `/all` | Send to all channels |
+| P | `/whatsapp` | Send via WhatsApp status |
+| P | `/channel` | Send to a channel |
+| P | `/status` | Send status update |
+| G | `/telegram/status` | Telegram send status |
+| G | `/settings` | Send settings |
+| P | `/settings` | Update send settings |
+| G | `/queue/statuses` | Queue status summary |
+| G | `/queue` | Queue list |
+| G | `/progress` | Send progress |
+| P | `/queue/:id/cancel` | Cancel queued send |
+| P | `/queue/:id/retry` | Retry queued send |
+| D | `/queue/:id` | Delete queue item |
+| P | `/queue/clear-history` | Clear history |
+| U | `/queue/:id/caption` | Edit caption |
+| U | `/queue/:id/reorder` | Reorder queue |
+| U | `/queue/:id/schedule` | Schedule send (tick) |
+| P | `/queue/:id/resend` | Resend |
+| P | `/_testsend/:id` | Test-send (debug) |
+
+**Video Cache** (`/api/video-cache`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| P | `/search` | Search cached video |
+| P | `/auto-detect/:id` | Auto-detect YouTube id |
+| P | `/save-id/:id` | Save mapping |
+| P | `/download/:youtubeId` | Download to cache |
+| D | `/:youtubeId` | Delete cache |
+| G | `/progress/:youtubeId` | Download progress |
+| G | `/stream/:youtubeId` | Stream cached video |
+| G | `/status` | Cache status |
+| P | `/clear` | Clear cache |
+
+**WhatsApp** (`/api/whatsapp/*`)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| G | `/api/whatsapp/status` | Connection status |
+| G | `/api/whatsapp/qr` | QR (text) for pairing |
+| G | `/api/whatsapp/qr-image` | QR image (PNG) |
+| P | `/api/whatsapp/start` | Start client |
+| P | `/api/whatsapp/stop` | Stop client |
+| P | `/api/whatsapp/restart` | Restart client |
+| P | `/api/whatsapp/logout` | Logout / clear session |
+| P | `/api/whatsapp/generate-qr` | Regenerate QR |
+| G | `/api/whatsapp/logs` | Bot logs |
+| G | `/api/whatsapp/logs/stream` | Bot log SSE |
+| G | `/api/whatsapp/stats` | Bot stats |
+| U | `/api/whatsapp/counter` | Update send counter |
+| P | `/api/whatsapp/counter/reset` | Reset counter |
+| G | `/api/whatsapp/config` | Bot config |
+| U | `/api/whatsapp/config` | Update bot config |
+| P | `/api/whatsapp/test-status` | Test status send |
+| P | `/api/whatsapp/debug-lid` | Debug LID |
+| P | `/api/whatsapp/debug-statuscoll` | Debug status collection |
+| P | `/api/whatsapp/_mylist` | List my status |
+| P | `/api/whatsapp/_delstatus` | Delete a status |
+| P | `/api/whatsapp/_delallmystatus` | Delete all my status |
+| P | `/api/whatsapp/_statusdiag` | Status diagnostics |
+| P | `/api/whatsapp/debug-statusprivacy` | Debug status privacy |
+| P | `/api/whatsapp/_setprivacy` | Set status privacy |
+| P | `/api/whatsapp/debug-msg` | Debug message |
+
+> Endpoints prefixed with `_` are debug/diagnostic helpers.
+
+### Git (NOT MOUNTED) — `git.js` (reference only)
+
+These routes exist in `backend/src/routes/git.js` but are **never registered** in `server.js`, so `/api/git/*` returns 404. Listed for future wiring:
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| G | `/status` | Working tree status |
+| G | `/diff` | Unstaged diff |
+| G | `/diff-commit` | Commit diff |
+| G | `/unpushed` | Unpushed commits |
+| G | `/log` | Commit log |
+| G | `/branches` | Branches |
+| G | `/tags` | Tags |
+| G | `/stash-list` | Stash list |
+| G | `/tree` | File tree |
+| G | `/file` | Read file (G) / write file (P) |
+| G | `/gitignore` | Show .gitignore (G) / update (P) |
+| P | `/stage` | Stage changes |
+| P | `/commit` | Commit |
+| P | `/push` | Push |
+| P | `/pull` | Pull |
+| P | `/checkout` | Checkout branch/ref |
+| P | `/merge` | Merge |
+| P | `/stash` | Stash |
+| P | `/tag` | Create tag |
 
 ## Development
 
@@ -382,10 +622,10 @@ homelab-media-server/
 
 | Directory | Files | Lines of Code |
 |-----------|-------|---------------|
-| `backend/src/` | ~110 | ~26,500 |
-| `frontend/src/` | ~198 | ~52,500 |
-| `whatsapp-bot/src/` | 6 | ~900 |
-| **Total** | **~314** | **~80,000** |
+| `backend/src/` | 91 | ~26,042 |
+| `frontend/src/` | 193 | ~46,858 |
+| `whatsapp-bot/src/` | 6 | ~921 |
+| **Total** | **290** | **~73,821** |
 
 > Note: Lines of code approximate. Does not include `node_modules`, `cache/`, `logs/`, or `data/`.
 
@@ -423,15 +663,15 @@ Media Vault runs as a **single Node.js process** (the backend) that imports the 
 ```
 ┌───────────────┐      HTTP / WebSocket / SSE      ┌──────────────────────────┐
 │  Browser /    │ ───────────────────────────────▶ │  backend (Node + Express) │
-│  Mobile Web   │ ◀─────────────────────────────── │  • API routes (22 modules)│
+│  Mobile Web   │ ◀─────────────────────────────── │  • API routes (19 modules)│
 └───────────────┘                                   │  • serves frontend/dist   │
-                                                    │  • in-process WA bot      │
-                                                    └───────────┬──────────────┘
-                                                                │ spawns / shells out
-                          ┌─────────────────────────────────────┼──────────────────────────┐
-                          ▼                                     ▼                          ▼
-                    ffmpeg / ffprobe                     yt-dlp / gallery-dl /        adb / scrcpy
-                    (transcode, thumb, HLS)              aria2c (downloads)           (Android, PTY)
+                                                     │  • in-process WA bot      │
+                                                     └───────────┬──────────────┘
+                                                                 │ spawns / shells out
+                           ┌─────────────────────────────────────┼──────────────────────────┐
+                           ▼                                     ▼                          ▼
+                     ffmpeg / ffprobe                     yt-dlp / gallery-dl /        adb / scrcpy
+                     (transcode, thumb, HLS)              aria2c (downloads)           (Android, PTY)
 ```
 
 ### Request Lifecycle
@@ -512,16 +752,8 @@ The SQLite database (`data/media.db`, WAL mode) is initialized in `backend/src/d
 | `uploads` | Upload session state + metadata repair tracking |
 | `adb_transactions` | Per-file ADB transfer transactions (status, conflict info) |
 | `adb_jobs` | ADB transfer jobs (device, direction, status, progress) |
-| `conversations` | AI chat conversations (local_id, title, pinned, updated_at) |
-| `messages` | AI chat messages (conversation_id, role, content, tool calls) |
-| `ai_provider_status` | Per-provider connectivity/health |
-| `ai_conversation_settings` | Per-conversation AI configuration overrides |
-| `ai_memories` | Extracted long-term memories (enabled, pinned, conversation_id) |
-| `ai_context_summaries` | Compacted conversation context summaries |
-| `ai_pinned_messages` | Pinned messages within a conversation |
-| `ai_model_preferences` | Preferred models per provider |
 
-Indexes exist for common access paths (favorite, locked, cursor pagination on `dir_id`, folder parent/path, send_queue status, adb job/tx status, conversation indexes, memory enabled/pinned).
+Indexes exist for common access paths (favorite, locked, cursor pagination on `dir_id`, folder parent/path, send_queue status, adb job/tx status).
 
 The WhatsApp bot uses its **own** SQLite database (`whatsapp-bot` package) — it is not the same `media.db`.
 
@@ -651,63 +883,6 @@ Every route across all mounted modules. Paths are shown **relative to the mount 
 | U | `/:key` | Update a setting |
 | P | `/` | Create/set a setting |
 | D | `/:key` | Delete a setting |
-
-### `/api/ai` — `ai.js` (conversations, providers, tools)
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| G | `/` | AI status / capabilities |
-| G | `/settings` | AI settings |
-| U | `/settings/:key` | Update AI setting |
-| G | `/providers` | Configured providers |
-| P | `/providers` | Add a provider |
-| D | `/providers/:id` | Remove a provider |
-| G | `/models/:providerId` | Models for a provider |
-| G | `/conversations` | List conversations |
-| P | `/conversations` | Create conversation |
-| G | `/conversations/:id` | Get conversation |
-| H | `/conversations/:id` | Patch conversation (title, etc.) |
-| D | `/conversations/:id` | Delete conversation |
-| G | `/conversations/:id/export` | Export conversation |
-| G | `/conversations/:id/search` | Search in conversation |
-| G | `/tools` | Available tools |
-| P | `/conversations/:id/message` | Send a message (streaming) |
-| P | `/tools/:name` | Invoke a tool |
-
-### `/api/ai/providers` — `ai-providers.js`
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| G | `/status` | Provider connectivity status |
-| P | `/:id/verify` | Verify provider credentials |
-| G | `/:id/models` | Provider models |
-| P | `/:id/models/refresh` | Refresh model list |
-| G | `/` | List providers (preferences) |
-| P | `/preferences` | Save provider preferences |
-| P | `/mark-used` | Mark provider used |
-| G | `/favorites` | Favorite models |
-| G | `/presets` | Provider presets |
-
-### `/api/ai` (context) — `ai-context.js`
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| G | `/memories` | List memories |
-| G | `/memories/count` | Memory count |
-| P | `/memories` | Create memory |
-| U | `/memories/:id` | Update memory |
-| D | `/memories/:id` | Delete memory |
-| P | `/memories/:id/toggle-pin` | Pin/unpin memory |
-| P | `/memories/:id/toggle-enabled` | Enable/disable memory |
-| P | `/memories/extract/:conversationId` | Extract memories from conversation |
-| G | `/memories/export` | Export memories |
-| G | `/conversations/:id/settings` | Per-conversation AI settings |
-| U | `/conversations/:id/settings` | Update per-conversation settings |
-| G | `/conversations/:id/context` | Built context for a conversation |
-| P | `/conversations/:id/context/compact` | Compact context |
-| P | `/conversations/:id/pin/:messageId` | Pin a message |
-| D | `/conversations/:id/pin/:messageId` | Unpin a message |
-| G | `/conversations/:id/pinned` | List pinned messages |
 
 ### `/api/playback` — `playback.js`
 
@@ -902,32 +1077,6 @@ Every route across all mounted modules. Paths are shown **relative to the mount 
 
 > Endpoints prefixed with `_` are debug/diagnostic helpers.
 
-### Git (NOT MOUNTED) — `git.js` (reference only)
-
-These routes exist in `backend/src/routes/git.js` but are **never registered** in `server.js`, so `/api/git/*` returns 404. Listed for future wiring:
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| G | `/status` | Working tree status |
-| G | `/diff` | Unstaged diff |
-| G | `/diff-commit` | Commit diff |
-| G | `/unpushed` | Unpushed commits |
-| G | `/log` | Commit log |
-| G | `/branches` | Branches |
-| G | `/tags` | Tags |
-| G | `/stash-list` | Stash list |
-| G | `/tree` | File tree |
-| G | `/file` | Read file (G) / write file (P) |
-| G | `/gitignore` | Show .gitignore (G) / update (P) |
-| P | `/stage` | Stage changes |
-| P | `/commit` | Commit |
-| P | `/push` | Push |
-| P | `/pull` | Pull |
-| P | `/checkout` | Checkout branch/ref |
-| P | `/merge` | Merge |
-| P | `/stash` | Stash |
-| P | `/tag` | Create tag |
-
 ## Subsystems
 
 ### Music Sync Engine
@@ -967,12 +1116,11 @@ It is a closed-loop adaptive controller (EMA drift, 2σ soft threshold clamped 8
 - Uses `whatsapp-web.js` + `qrcode-terminal`; stores session in `credentials/`.
 - Owns its own SQLite DB for message/bot state.
 
-### AI Chat
+### Git (not mounted)
 
-- Provider-agnostic: OpenAI, Anthropic, Google, Ollama, OpenRouter, Groq, DeepSeek, custom (presets in `ai-providers.js`).
-- Pipeline: `ai.js` (chat/conversations/tools) + `ai-providers.js` (provider config/health) + `ai-context.js` (memories/context compaction/pinning).
-- Supports streaming messages, tool use, per-conversation settings, and long-term memory extraction (`/memories/extract/:conversationId`).
-- Settings persisted in `settings` table under `ai.*` keys.
+- Routes are fully defined in `backend/src/routes/git.js` but **never registered** in `server.js`.
+- The frontend already has a `GitView.jsx` component that calls `/api/git/*`, which currently returns 404.
+- To enable: import `gitRouter` in `server.js` and mount it at `/api/git`.
 
 ## Deployment
 
