@@ -1,11 +1,12 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, readFileSync, writeFileSync, accessSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, readFileSync, writeFileSync, accessSync, openSync, readSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { PATHS, SETTINGS } from '../config/paths.js';
 import { createLogger, logDecision, logRemux, logCleanup, logIntegrity, logError } from './logger.js';
 import { avDriftStore } from './avSync.js';
 import { get } from './runtimeSettings.js';
+import { stmts } from '../db.js';
 
 const log = createLogger('playback');
 
@@ -16,6 +17,9 @@ const H264_RE = /(^|\s)(avc1|h264)(\s|$)/;
 const HEVC_RE = /(^|\s)(hev1|hvc1|hevc)(\s|$)/;
 const OPUS_RE = /\bopus\b/;
 const BROWSER_CONTAINERS = ['.mp4', '.m4v', '.mov'];
+const ISO_BMFF_EXT = new Set(['.mp4', '.m4v', '.mov']);
+const FASTSTART_HEAD_BYTES = 256 * 1024;
+const FASTSTART_TAIL_BYTES = 256 * 1024;
 
 const MIME_MAP = {
   '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mkv': 'video/x-matroska',
@@ -40,7 +44,9 @@ const stats = {
   totalErrors: 0,
   fastestStartupMs: Infinity,
   slowestStartupMs: 0,
-  requestsByAction: { direct: 0, remux: 0, transcode: 0 },
+  requestsByAction: { direct: 0, remux: 0, transcode: 0, faststart: 0 },
+  totalFaststarts: 0,
+  totalFaststartMs: 0,
   recentStartupMs: [],
   lastCleanup: null,
   nextCleanup: null,
@@ -121,6 +127,7 @@ function removeLRU(filePath) {
 function init() {
   mkdirSync(PATHS.playbackRemux, { recursive: true });
   mkdirSync(PATHS.playbackTranscode, { recursive: true });
+  mkdirSync(PATHS.playbackFaststart, { recursive: true });
   loadLRU();
 }
 
@@ -194,6 +201,117 @@ function parseCodecInfo(file) {
     try { return JSON.parse(file.codec_info); } catch {}
   }
   return null;
+}
+
+function readChunkAt(filePath, start, length) {
+  const fd = openSync(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(Math.max(0, length));
+    let remaining = length;
+    let pos = start;
+    let offset = 0;
+    while (remaining > 0) {
+      const n = readSync(fd, buf, offset, remaining, pos);
+      if (n <= 0) break;
+      offset += n;
+      pos += n;
+      remaining -= n;
+    }
+    return buf.subarray(0, offset);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// Walk top-level ISO-BMFF boxes in `buf` (which begins at absolute offset
+// `baseOffset` in the file) and report the first absolute offsets of `moov`
+// and `mdat`. Returns null for a box type we never saw in this window.
+function scanBoxOrder(buf, baseOffset, fileSize) {
+  let pos = 0;
+  let moov = null;
+  let mdat = null;
+  const len = buf.length;
+  while (pos + 8 <= len) {
+    let size = buf.readUInt32BE(pos);
+    const type = buf.toString('ascii', pos + 4, pos + 8);
+    let header = 8;
+    if (size === 1) {
+      if (pos + 16 > len) break;
+      size = Number(buf.readBigUInt64BE(pos + 8));
+      header = 16;
+    } else if (size === 0) {
+      // Box extends to EOF — treat as spanning the rest of the file.
+      size = fileSize - baseOffset - pos;
+    }
+    if (size < 8 || size > fileSize) break; // malformed / can't continue
+    const absPos = baseOffset + pos;
+    if (type === 'moov' && moov === null) moov = absPos;
+    else if (type === 'mdat' && mdat === null) mdat = absPos;
+    if (moov !== null && mdat !== null) break;
+    pos += size;
+  }
+  return { moov, mdat };
+}
+
+// Defensive, bounded-I/O faststart detector. No ffmpeg / ffprobe.
+// Returns true (moov before mdat → progressive) or false (non-faststart →
+// will be copy-remuxed once into cache). Conservative fallback to false:
+// worst case is one extra copy-only ffmpeg, never a misclassified hang.
+function isFaststart(filePath, fileSize) {
+  if (fileSize < 12) return false;
+  const head = readChunkAt(filePath, 0, Math.min(FASTSTART_HEAD_BYTES, fileSize));
+  const h = scanBoxOrder(head, 0, fileSize);
+  if (h.moov !== null && h.mdat !== null) return h.moov < h.mdat;
+  if (h.moov !== null && h.mdat === null) return true; // moov early, no mdat seen yet
+
+  const tailStart = Math.max(0, fileSize - Math.min(FASTSTART_TAIL_BYTES, fileSize));
+  const tail = readChunkAt(filePath, tailStart, fileSize - tailStart);
+  const t = scanBoxOrder(tail, tailStart, fileSize);
+
+  if (h.moov !== null && t.mdat !== null) return true;  // moov early, mdat at end
+  if (h.mdat !== null && t.moov !== null) return false; // mdat early, moov at end
+  if (h.moov === null && h.mdat === null && t.moov !== null) return false; // moov only in tail
+  return false; // uncertain → conservative non-faststart
+}
+
+// Lazily inspect faststart_state, persisting the result. Returns
+// 1 (faststart), 0 (non-faststart), or -1 (not a managed ISO-BMFF container).
+async function resolveFaststartState(file, ext) {
+  const current = file.faststart_state;
+  if (current !== null && current !== undefined) return current;
+  let val;
+  if (!ISO_BMFF_EXT.has(ext)) {
+    val = -1;
+  } else {
+    try {
+      const size = typeof file.size === 'number' ? file.size : statSync(file.fullPath).size;
+      val = isFaststart(file.fullPath, size) ? 1 : 0;
+    } catch {
+      val = 0;
+    }
+  }
+  try { stmts.updateFaststartState.run(val, file.id); } catch {}
+  return val;
+}
+
+function faststartCopy(inputPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    const ff = spawn('ffmpeg', [
+      '-i', inputPath, '-c', 'copy', '-movflags', '+faststart', '-f', 'mp4', '-y', outputPath,
+    ]);
+    let stderr = '';
+    ff.stderr.on('data', d => { stderr += d.toString(); });
+    ff.on('close', code => {
+      if (code === 0) resolve(outputPath);
+      else reject(new Error(`faststart failed: ${stderr.slice(-300)}`));
+    });
+    ff.on('error', reject);
+  });
+}
+
+function cacheAgeSecondsOf(cachePath) {
+  try { return Math.max(0, Math.floor((Date.now() - statSync(cachePath).mtimeMs) / 1000)); }
+  catch { return null; }
 }
 
 function remuxToMkv(inputPath, outputPath) {
@@ -285,10 +403,34 @@ export async function getPlaybackDecision(file) {
   const videoCompatible = isBrowserContainer && (isH264 || isHevc);
 
   if (videoCompatible && !hasOpus) {
+    const faststartState = await resolveFaststartState(file, ext);
+    file.faststart_state = faststartState;
+
+    if (faststartState === 1) {
+      const decision = {
+        action: 'direct', path: file.fullPath,
+        contentType: MIME_MAP[ext] || 'video/mp4', reason: 'browser_compatible_faststart',
+        probe, probeMs, cacheHit: false, totalMs: Date.now() - t0, _t0: t0,
+        faststart: true, cacheAgeSeconds: null,
+      };
+      stats.cacheMisses++;
+      stats.requestsByAction.direct++;
+      trackStartup(decision.totalMs);
+      logDecision(log, file, decision);
+      return decision;
+    }
+
+    if (faststartState === 0) {
+      return await handleFaststart(file, probe, t0, probeMs);
+    }
+
+    // faststartState === -1 (not a managed container): fall through to the
+    // original direct/transcode path below.
     const decision = {
       action: 'direct', path: file.fullPath,
       contentType: MIME_MAP[ext] || 'video/mp4', reason: 'browser_compatible',
       probe, probeMs, cacheHit: false, totalMs: Date.now() - t0, _t0: t0,
+      faststart: false, cacheAgeSeconds: null,
     };
     stats.cacheMisses++;
     stats.requestsByAction.direct++;
@@ -491,6 +633,95 @@ const jobPromise = (async () => {
   }
 }
 
+async function handleFaststart(file, probe, t0, probeMs) {
+  const hash = computeCacheHash(file.fullPath, file.size, file.mtime);
+  const cachedPath = join(PATHS.playbackFaststart, `${hash}.mp4`);
+
+  if (existsSync(cachedPath) && verifyIntegrity(cachedPath, 'faststart')) {
+    touchLRU(cachedPath, file.size);
+    stats.cacheHits++;
+    stats.requestsByAction.faststart++;
+    const decision = {
+      action: 'faststart', path: cachedPath, contentType: 'video/mp4',
+      reason: 'faststart_cached', probe, probeMs,
+      cacheHit: true, totalMs: Date.now() - t0, _t0: t0,
+      faststart: false, cacheAgeSeconds: cacheAgeSecondsOf(cachedPath),
+    };
+    trackStartup(decision.totalMs);
+    logDecision(log, file, decision);
+    return decision;
+  }
+
+  removeLRU(cachedPath);
+  if (existsSync(cachedPath)) try { unlinkSync(cachedPath); } catch {}
+
+  const jobKey = `faststart:${hash}`;
+  if (activeJobs.has(jobKey)) {
+    const path = await activeJobs.get(jobKey);
+    if (path && verifyIntegrity(path, 'faststart_dedup')) {
+      touchLRU(path, file.size);
+      stats.cacheHits++;
+      stats.requestsByAction.faststart++;
+      const decision = {
+        action: 'faststart', path, contentType: 'video/mp4',
+        reason: 'faststart_dedup', probe, probeMs,
+        cacheHit: true, totalMs: Date.now() - t0, _t0: t0,
+        faststart: false, cacheAgeSeconds: cacheAgeSecondsOf(path),
+      };
+      trackStartup(decision.totalMs);
+      logDecision(log, file, decision);
+      return decision;
+    }
+  }
+
+  const jobPromise = (async () => {
+    if (shutdownRequested) throw new Error('shutdown requested — job rejected');
+    const t1 = Date.now();
+    const tmpPath = join(PATHS.playbackFaststart, `${hash}.tmp.mp4`);
+    await acquireFfmpegSlot();
+    try {
+      await faststartCopy(file.fullPath, tmpPath);
+      if (!verifyIntegrity(tmpPath, 'faststart_tmp')) {
+        try { unlinkSync(tmpPath); } catch {}
+        throw new Error('faststart output integrity check failed');
+      }
+      try { unlinkSync(cachedPath); } catch {}
+      const { renameSync } = await import('node:fs');
+      renameSync(tmpPath, cachedPath);
+      const duration = Date.now() - t1;
+      stats.totalFaststarts++;
+      stats.totalFaststartMs += duration;
+      return cachedPath;
+    } catch (err) {
+      try { unlinkSync(tmpPath); } catch {}
+      stats.totalErrors++;
+      logError(log, 'faststart', err);
+      throw err;
+    } finally {
+      releaseFfmpegSlot();
+    }
+  })();
+
+  activeJobs.set(jobKey, jobPromise);
+  try {
+    const path = await jobPromise;
+    touchLRU(path, file.size);
+    stats.cacheMisses++;
+    stats.requestsByAction.faststart++;
+    const decision = {
+      action: 'faststart', path, contentType: 'video/mp4',
+      reason: 'faststart_remux', probe, probeMs,
+      cacheHit: false, totalMs: Date.now() - t0, _t0: t0,
+      faststart: false, cacheAgeSeconds: cacheAgeSecondsOf(path),
+    };
+    trackStartup(decision.totalMs);
+    logDecision(log, file, decision);
+    return decision;
+  } finally {
+    activeJobs.delete(jobKey);
+  }
+}
+
 export function getHlsDecision(probe) {
   if (!probe) return { hlsAvailable: false, reason: 'no_probe' };
   const audioCodec = `${probe.audio_codec || ''}`.toLowerCase();
@@ -505,7 +736,7 @@ export function cleanupCache() {
   let freedBytes = 0;
   let errors = 0;
 
-  for (const dir of [PATHS.playbackRemux, PATHS.playbackTranscode]) {
+  for (const dir of [PATHS.playbackRemux, PATHS.playbackTranscode, PATHS.playbackFaststart]) {
     let entries;
     try { entries = readdirSync(dir).map(f => join(dir, f)); } catch { continue; }
 
@@ -525,7 +756,7 @@ export function cleanupCache() {
 
   let totalSize = 0;
   const allFiles = [];
-  for (const dir of [PATHS.playbackRemux, PATHS.playbackTranscode]) {
+  for (const dir of [PATHS.playbackRemux, PATHS.playbackTranscode, PATHS.playbackFaststart]) {
     try {
       for (const f of readdirSync(dir)) {
         const fp = join(dir, f);
@@ -581,7 +812,7 @@ function computeCacheTotals() {
   let newestMtime = 0;
   let largest = 0;
   let smallest = Infinity;
-  for (const dir of [PATHS.playbackRemux, PATHS.playbackTranscode]) {
+  for (const dir of [PATHS.playbackRemux, PATHS.playbackTranscode, PATHS.playbackFaststart]) {
     try {
       for (const f of readdirSync(dir)) {
         try {
@@ -608,6 +839,7 @@ function computeCacheTotals() {
 export function getCacheStats() {
   let remuxCount = 0, remuxSize = 0;
   let transcodeCount = 0, transcodeSize = 0;
+  let faststartCount = 0, faststartSize = 0;
 
   try {
     for (const f of readdirSync(PATHS.playbackRemux)) {
@@ -619,10 +851,16 @@ export function getCacheStats() {
       try { const st = statSync(join(PATHS.playbackTranscode, f)); transcodeCount++; transcodeSize += st.size; } catch {}
     }
   } catch {}
+  try {
+    for (const f of readdirSync(PATHS.playbackFaststart)) {
+      try { const st = statSync(join(PATHS.playbackFaststart, f)); faststartCount++; faststartSize += st.size; } catch {}
+    }
+  } catch {}
 
   return {
     remux: { count: remuxCount, sizeBytes: remuxSize, sizeMB: +(remuxSize / 1024 / 1024).toFixed(1) },
     transcode: { count: transcodeCount, sizeBytes: transcodeSize, sizeMB: +(transcodeSize / 1024 / 1024).toFixed(1) },
+    faststart: { count: faststartCount, sizeBytes: faststartSize, sizeMB: +(faststartSize / 1024 / 1024).toFixed(1) },
     activeJobs: activeJobs.size,
   };
 }
@@ -655,10 +893,12 @@ export function getPlaybackStats() {
     integrityFails: stats.integrityFails,
     totalRemuxes: stats.totalRemuxes,
     totalTranscodes: stats.totalTranscodes,
+    totalFaststarts: stats.totalFaststarts,
     totalRequests: stats.totalRequests,
     totalErrors: stats.totalErrors,
     avgRemuxMs: stats.totalRemuxes > 0 ? +(stats.totalRemuxMs / stats.totalRemuxes).toFixed(0) : 0,
     avgTranscodeMs: stats.totalTranscodes > 0 ? +(stats.totalTranscodeMs / stats.totalTranscodes).toFixed(0) : 0,
+    avgFaststartMs: stats.totalFaststarts > 0 ? +(stats.totalFaststartMs / stats.totalFaststarts).toFixed(0) : 0,
     avgProbeMs: stats.probeCount > 0 ? +(stats.totalProbeMs / stats.probeCount).toFixed(0) : 0,
     fastestStartupMs: stats.fastestStartupMs === Infinity ? 0 : stats.fastestStartupMs,
     slowestStartupMs: stats.slowestStartupMs,
@@ -681,6 +921,7 @@ export function getPlaybackConfig() {
     cacheRoot: PATHS.cacheRoot,
     remuxDir: PATHS.playbackRemux,
     transcodeDir: PATHS.playbackTranscode,
+    faststartDir: PATHS.playbackFaststart,
     hlsCacheDir: PATHS.hls,
     logDir: PATHS.logsPlayback,
     maxCacheSizeGB: +(SETTINGS.maxCacheSizeBytes / 1024 / 1024 / 1024).toFixed(1),
