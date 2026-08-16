@@ -112,9 +112,18 @@ export function useVaultMediaActions(file, onToggleFavorite) {
     } catch {}
   }, [clearSendTimer]);
 
+  // Re-validate send state on every file switch. The hook is mounted once in
+  // MediaModal, so without this a previous file's "already sent" lock bleeds onto
+  // the next file (only clearing on a full reload). Reset optimistic state first
+  // so the new file never flashes the old lock while we refetch.
   useEffect(() => {
+    setIsFileQueued(false);
+    setIsFileSent(false);
+    setSendStatus('idle');
+    setSendMessage('');
+    setSendExtraInfo(null);
     checkFileSendStatus();
-  }, [checkFileSendStatus]);
+  }, [file?.id, checkFileSendStatus]);
 
   // Sync authoritative lock state from the server when the file changes.
   useEffect(() => {

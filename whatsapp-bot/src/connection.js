@@ -6,7 +6,7 @@ import { startListener } from './listener.js';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
-import { rmSync } from 'node:fs';
+import { rmSync, existsSync, unlinkSync } from 'node:fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AUTH_DIR = process.env.WA_AUTH_DIR || join(__dirname, '..', '..', 'credentials', '.wwebjs_auth');
@@ -42,6 +42,16 @@ function killOrphanedBrowsers() {
   // (e.g. from a previous run that crashed without cleanup).
   try {
     execSync('pkill -9 -f "session-whatsapp-bot-session" || true', { timeout: 5000 });
+  } catch {}
+  // Remove stale singleton lock files so a fresh launch is not blocked by a
+  // leftover lock from a crashed/killed run. Safe: only files inside the bot's
+  // own profile dir are touched, never the user's personal chromium profile.
+  try {
+    const dir = join(AUTH_DIR, 'session-whatsapp-bot-session');
+    for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+      const p = join(dir, f);
+      if (existsSync(p)) unlinkSync(p);
+    }
   } catch {}
 }
 
@@ -159,6 +169,10 @@ export async function connect() {
   attemptedOnce = true;
   log('info', 'Initializing WhatsApp client...');
   try {
+    killOrphanedBrowsers();
+    await new Promise(r => setTimeout(r, 1500));
+    try { if (client?.puppeteer?.browser) await client.destroy(); } catch {}
+    client = createClient();
     const initPromise = client.initialize();
     const timeoutPromise = new Promise((_, reject) => {
       const timer = setTimeout(() => {
