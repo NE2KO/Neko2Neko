@@ -2,8 +2,22 @@ import { Router } from 'express';
 import db from '../db.js';
 import { sendFileToTelegram, getBot } from '../utils/telegramBot.js';
 import { getFileWithRelPath } from '../utils/fileResolver.js';
+import { getWaSendPath } from '../utils/waCompat.js';
 import { incrementTelegramCount, incrementWhatsAppCount, isSeparatorNeeded } from '../utils/sendCounter.js';
-import { canSendNow, recordSend, enqueueSend, getActiveOrRecentSend, markProcessing, markSendDone, cancelSend, retrySend, removeSend, clearHistory, getStatusCounts, getQueueByStatus, getSendSettings, setSendSettings, clearHolds, clearDebugHistory, buildQueueTimeline, getPerDay, getPendingSends, getAllPendingSends, getRateState, setQueueCaption, reorderQueueItem, rescheduleQueueItem, initScheduleIntegrity, claimPending, requeueForRetry, waPermanentMediaError } from '../utils/sendRateLimit.js';
+import { canSendNow, recordSend, enqueueSend,   getActiveOrRecentSend, markSendDone, cancelSend, retrySend, removeSend, clearHistory, getStatusCounts, getQueueByStatus, getSendSettings, setSendSettings, clearHolds, clearDebugHistory, buildQueueTimeline, getPerDay, getPendingSends, getAllPendingSends, getRateState, setQueueCaption, reorderQueueItem, rescheduleQueueItem, initScheduleIntegrity, claimPending, requeueForRetry, waPermanentMediaError, backfillDailySlots, compactScheduleAfterFailure, findExistingSendRow } from '../utils/sendRateLimit.js';
+import {
+  getSendDebugSnapshot,
+  diffSnapshots,
+  logSendBefore,
+  logSendClaim,
+  logSendDecision,
+  logSendExecutionStart,
+  logSendExecutionResult,
+  logSendAfter,
+  logAnomalies,
+  findDuplicateActiveRow,
+  classifyResult,
+} from '../utils/sendDebug.js';
 
 const router = Router();
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '-1002821903652';
@@ -149,7 +163,18 @@ async function performSend(fileId, target, qid, caption = '') {
       if (wantStatus) patch.status = 'sending';
       setProgress(qid, patch);
     }
-    const wa = await sendMediaToTargets(file.fullPath, { channel: wantChannel, status: wantStatus, caption });
+    // Auto-fix incompatible codecs (H.264+Opus → re-encode audio to AAC;
+    // non-H.264 video → iGPU/VAAPI transcode) before sending to WhatsApp so
+    // deterministic media failures are remediated instead of dropped. Unfixable
+    // media throws a permanent-style error (matched by isPermanentMediaError).
+    let waPath = file.fullPath;
+    try {
+      const compat = await getWaSendPath(fileId);
+      waPath = compat.path;
+    } catch (err) {
+      throw new Error('Media gagal diproses WA: ' + (err.message || err));
+    }
+    const wa = await sendMediaToTargets(waPath, { channel: wantChannel, status: wantStatus, caption });
     if (wantChannel) results.whatsapp_channel = wa.channel === 'sent' ? 'sent' : wa.channel;
     if (wantStatus) results.whatsapp_status = wa.status === 'sent' ? 'sent' : wa.status;
 
@@ -226,26 +251,102 @@ function isPermanentMediaError(msg) {
 // marked such items 'failed' on the very first attempt (retry_count stayed 0).
 // A permanent media error (see isPermanentMediaError) is failed immediately and
 // never retried.
-function recordSendOutcome(id, delivered, msg) {
+export function recordSendOutcome(id, delivered, msg, effectiveSlot, timeline) {
   if (delivered) {
     markSendDone(id, true, msg || null);
     return;
   }
   if (isPermanentMediaError(msg)) {
     markSendDone(id, false, msg || 'Permanent media error: media not supported by WhatsApp');
+    compactScheduleAfterFailure(id, effectiveSlot, timeline); // slot within grace → compact; else backfill
     return;
   }
   const row = db.prepare('SELECT retry_count FROM send_queue WHERE id = ?').get(id);
   const rc = (row && Number.isFinite(row.retry_count)) ? row.retry_count : 0;
   if (rc < 2) {
-    requeueForRetry(id, rc, msg || 'Send failed: unknown error');
+    requeueForRetry(id, rc, msg || 'Send failed: unknown error'); // still pending → no compaction
   } else {
     markSendDone(id, false, msg || 'Send failed: unknown error');
+    compactScheduleAfterFailure(id, effectiveSlot, timeline); // retries exhausted → slot within grace → compact; else backfill
   }
 }
 
+// Display-only media preflight for the DECISION log (no transcode is triggered
+// here — this just reports what we know about the file's WhatsApp compatibility).
+async function mediaPreflight(fileId, target) {
+  if (!['whatsapp', 'all', 'channel', 'status'].includes(target)) {
+    return { target, waRelevant: false };
+  }
+  const row = db.prepare('SELECT codec_info FROM files WHERE id = ?').get(fileId);
+  if (!row || row.codec_info == null) return { target, waRelevant: true, probed: false };
+  let ci;
+  try { ci = JSON.parse(row.codec_info); } catch { return { target, waRelevant: true, probed: false }; }
+  const videoCodec = (ci.videoCodec || '').toLowerCase();
+  const audioCodec = (ci.audioCodec || '').toLowerCase();
+  const WA_VIDEO_OK = new Set(['h264', 'avc1', 'avc3']);
+  const videoOk = !videoCodec || WA_VIDEO_OK.has(videoCodec);
+  const audioOk = !audioCodec || audioCodec === 'aac' || audioCodec === 'mp4a';
+  return {
+    target, waRelevant: true, probed: true,
+    videoCodec, audioCodec,
+    waVideoCompatible: videoOk,
+    waAudioCompatible: audioOk,
+    waCompatible: !videoCodec ? true : (videoOk && audioOk),
+    fixable: (!videoOk) || (!audioOk),
+  };
+}
+
+// Instrumented wrapper around the actual send + outcome recording. Preserves the
+// exact existing behaviour (performSend → isDelivered → recordSend ONLY when
+// delivered → recordSendOutcome) while emitting the full lifecycle log:
+// send_before → send_claim → send_decision → send_execution_start →
+// send_execution_result → send_after (+ anomalies). Pure observability — no
+// control-flow change.
+async function performAndRecord({ id, fileId, target, caption, recordRate, claimType, prevStatus, effectiveSlot, timeline }) {
+  const before = getSendDebugSnapshot(id);
+  logSendBefore(id, before);
+  logSendClaim(id, true, { prevStatus, claimType });
+
+  const dup = findDuplicateActiveRow(fileId, target, id);
+  logSendDecision(id, 'SEND', {
+    reason: 'attempt_send',
+    mediaPreflight: await mediaPreflight(fileId, target),
+    schedule: before.schedule,
+    rate: {
+      per_day: before.rate.per_day,
+      count: before.rate.count,
+      remaining: Math.max(0, before.rate.per_day - before.rate.count),
+    },
+    duplicateActiveRow: dup || null,
+  });
+
+  logSendExecutionStart(id, { target, file_id: fileId });
+
+  let out = null, delivered = false, msg = null, errorMsg = null;
+  try {
+    out = await performSend(fileId, target, id, caption);
+    delivered = isDelivered(out.results, target);
+    msg = buildError(out.results, target);
+  } catch (err) {
+    errorMsg = err?.message || String(err);
+  }
+  const result = classifyResult(delivered, errorMsg || msg);
+
+  if (recordRate && delivered) recordSend();
+  recordSendOutcome(id, delivered, errorMsg || msg, effectiveSlot, timeline);
+
+  const after = getSendDebugSnapshot(id);
+  const delta = diffSnapshots(before, after);
+  logSendAfter(id, delta, after);
+  logAnomalies({
+    qid: id, before, after, claimed: true, performed: true, delivered, result, claimType,
+    now: Date.now(), detail: { duplicateActiveRow: dup },
+  });
+  return { out, delivered, msg: errorMsg || msg, result };
+}
+
 // ── Enqueue or send directly ──
-async function enqueueOrSend(fileId, target, force = false) {
+export async function enqueueOrSend(fileId, target, force = false) {
   // Preflight: a known-incompatible (e.g. AV1) video can never stream to WhatsApp.
   // Reject up front (defense-in-depth alongside the scheduler preflight) so we
   // don't enqueue/attempt a deterministically-impossible send.
@@ -268,7 +369,17 @@ async function enqueueOrSend(fileId, target, force = false) {
       errMsg = err.message;
     }
     const id = enqueueSend(fileId, target, false, debugCaption);
+    const dbgBefore = getSendDebugSnapshot(id);
+    logSendBefore(id, dbgBefore);
+    logSendClaim(id, true, { prevStatus: 'pending', claimType: 'direct' });
+    logSendDecision(id, 'SEND', { reason: 'debug_direct', rate: dbgBefore.rate, schedule: dbgBefore.schedule });
+    logSendExecutionStart(id, { target, file_id: fileId });
+    const result = classifyResult(ok, errMsg);
+    logSendExecutionResult(id, { delivered: ok, result, error: errMsg });
     markSendDone(id, ok, errMsg || null);
+    const dbgAfter = getSendDebugSnapshot(id);
+    logSendAfter(id, diffSnapshots(dbgBefore, dbgAfter), dbgAfter);
+    logAnomalies({ qid: id, before: dbgBefore, after: dbgAfter, claimed: true, performed: true, delivered: ok, result, claimType: 'direct', now: Date.now() });
     return { sent: ok, queued: false, queueId: id, results: out?.results, error: errMsg };
   }
 
@@ -284,7 +395,17 @@ async function enqueueOrSend(fileId, target, force = false) {
       errMsg = err.message;
     }
     const id = enqueueSend(fileId, 'telegram', false);
+    const tgBefore = getSendDebugSnapshot(id);
+    logSendBefore(id, tgBefore);
+    logSendClaim(id, true, { prevStatus: 'pending', claimType: 'direct' });
+    logSendDecision(id, 'SEND', { reason: 'telegram_direct', rate: tgBefore.rate });
+    logSendExecutionStart(id, { target: 'telegram', file_id: fileId });
+    const result = classifyResult(ok, errMsg);
+    logSendExecutionResult(id, { delivered: ok, result, error: errMsg });
     markSendDone(id, ok, errMsg || null);
+    const tgAfter = getSendDebugSnapshot(id);
+    logSendAfter(id, diffSnapshots(tgBefore, tgAfter), tgAfter);
+    logAnomalies({ qid: id, before: tgBefore, after: tgAfter, claimed: true, performed: true, delivered: ok, result, claimType: 'direct', now: Date.now() });
     return { sent: ok, queued: false, queueId: id, results: out?.results, error: errMsg };
   }
   // Whatever WA target ('whatsapp' | 'channel' | 'status' | 'all') is
@@ -304,20 +425,14 @@ async function enqueueOrSend(fileId, target, force = false) {
   const policy = canSendNow();
   const inetOk = await checkInternet();
   if (policy.allowed && inetOk) {
-    markProcessing(id);
-    try {
-      const out = await performSend(fileId, target, id);
-      recordSend();
-      const delivered = isDelivered(out.results, target);
-      const errSummary = buildError(out.results, target);
-      recordSendOutcome(id, delivered, errSummary);
-      scheduleClearProgress(id);
-      return { sent: true, queued: false, queueId: id, results: out.results, error: errSummary };
-    } catch (err) {
-      recordSendOutcome(id, false, err.message);
-      scheduleClearProgress(id);
-      return { sent: false, queued: false, queueId: id, error: err.message };
+    logSendDecision(id, 'SEND', { reason: 'rate_slot_available', remainingToday: policy.remainingToday, nextAllowedAt: policy.nextAllowedAt });
+    const claimed = claimPending(id);
+    if (!claimed) {
+      return { sent: false, queued: false, duplicate: true, message: 'Sudah dalam proses' };
     }
+    const r = await performAndRecord({ id, fileId, target, caption: null, recordRate: true, claimType: 'direct', prevStatus: 'pending' });
+    scheduleClearProgress(id);
+    return { sent: r.delivered, queued: false, queueId: id, results: r.out?.results, error: r.msg };
   }
   return { sent: false, queued: true, queueId: id, nextAllowedAt: policy.nextAllowedAt, remainingToday: policy.remainingToday };
 }
@@ -541,6 +656,31 @@ router.put('/queue/:id/reorder', (req, res) => {
   }
 });
 
+// Enqueue a file into the send queue as PENDING without sending it immediately,
+// so the caller can then pin it to a specific date via /queue/:id/schedule.
+// Reuses the same dedup as enqueueOrSend: if an in-flight/recent item already
+// exists for that file+target we return it instead of creating a duplicate.
+router.post('/queue/enqueue', (req, res) => {
+  try {
+    const { fileId, target = 'status' } = req.body || {};
+    if (!fileId) return res.status(400).json({ error: 'fileId required' });
+    // Dedup: prefer a recent in-flight/recent row, but ALSO reuse any existing
+    // pending/processing/done row for this file+overlapping target regardless of
+    // age (plan T4) — so an already-sent file is never re-enqueued as a duplicate
+    // just because the 8h window lapsed.
+    const existing = getActiveOrRecentSend(fileId, target) || findExistingSendRow(fileId, target);
+    let id;
+    if (existing) {
+      id = existing.id;
+    } else {
+      id = enqueueSend(fileId, target, false);
+    }
+    res.json({ ok: true, qid: id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.put('/queue/:id/schedule', (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
@@ -652,8 +792,15 @@ export function startSendScheduler() {
         // off the retry budget entirely.
         const permErr = waPermanentMediaError(item.file_id, item.target);
         if (permErr) {
+          const before = getSendDebugSnapshot(item.id);
+          logSendBefore(item.id, before);
+          logSendDecision(item.id, 'PERMANENT_FAIL', { reason: 'permanent_media_error', detail: permErr });
           markSendDone(item.id, false, permErr);
           scheduleClearProgress(item.id);
+          compactScheduleAfterFailure(item.id, etaById.get(item.id), timeline); // permanent preflight fail → compact if within grace, else backfill
+          const after = getSendDebugSnapshot(item.id);
+          logSendAfter(item.id, diffSnapshots(before, after), after);
+          logAnomalies({ qid: item.id, before, after, claimed: false, performed: false, delivered: false, result: 'permanent_failure', claimType: 'scheduler', now: Date.now() });
           continue;
         }
         // Atomic claim is the PRIMARY dedup: only the worker that flips this row
@@ -661,19 +808,13 @@ export function startSendScheduler() {
         // it already 'processing' are skipped — this is what stops duplicate/triple
         // sends. retry_count is the count of completed attempts; we allow at most
         // 3 total, so we only requeue while fewer than 2 attempts are done.
-        if (!claimPending(item.id, now)) continue;
-        try {
-          const out = await performSend(item.file_id, item.target, item.id, item.caption);
-          recordSend();
-          const delivered = isDelivered(out.results, item.target);
-          const msg = buildError(out.results, item.target);
-          recordSendOutcome(item.id, delivered, msg);
-          scheduleClearProgress(item.id);
-        } catch (err) {
-          const msg = err?.message || String(err) || 'Send failed: unknown error';
-          recordSendOutcome(item.id, false, msg);
-          scheduleClearProgress(item.id);
+        if (!claimPending(item.id, now)) {
+          logSendClaim(item.id, false, { prevStatus: item.status, reason: 'already_processing_or_claimed' });
+          continue;
         }
+        const claimType = item.status === 'processing' ? 'reclaim' : 'fresh';
+        const r = await performAndRecord({ id: item.id, fileId: item.file_id, target: item.target, caption: item.caption, recordRate: true, claimType, prevStatus: item.status, effectiveSlot: etaById.get(item.id), timeline });
+        scheduleClearProgress(item.id);
       }
     } catch {}
     finally { tickInFlight = false; }

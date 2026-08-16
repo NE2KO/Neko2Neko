@@ -1,4 +1,5 @@
 import db from '../db.js';
+import { logScheduleMaintenance, logSendAnomaly } from './sendDebug.js';
 
 // Rate limit is expressed as "N sends per day" (UI: 1x/24h, 2x/12h, 3x/8h, 4x/6h,
 // 5x/4.8h, 6x/4h). The interval between sends is 24h / perDay, and the schedule is
@@ -57,6 +58,22 @@ function dayStart(ts = Date.now()) {
   return d.getTime();
 }
 
+// Canonical schedule-window semantics (plan: separate SLOT from ATTEMPT/RATE COUNT).
+// A slot is anchored at `scheduled_at`; it is ACTIVE for TICK_GRACE_MS after its
+// time, and recognizable as "opening" for TICK_GRACE_MS before. Status:
+//   UPCOMING : now < scheduled_at            (slot not yet reached; do NOT consume it)
+//   OPEN     : scheduled_at <= now < scheduled_at + TICK_GRACE_MS  (scheduler may claim/send)
+//   CLOSED   : now >= scheduled_at + TICK_GRACE_MS  (past grace; do NOT pull future items into it)
+// A NULL/0 scheduled_at (auto-flow) is reported UPCOMING — it is not slot-bound; the
+// caller decides send eligibility via the rate counter instead.
+export function getScheduleWindow(scheduledAt, now = Date.now()) {
+  const ts = Number(scheduledAt);
+  if (!Number.isFinite(ts) || ts <= 0) return 'UPCOMING';
+  if (now < ts) return 'UPCOMING';
+  if (now < ts + TICK_GRACE_MS) return 'OPEN';
+  return 'CLOSED';
+}
+
 export function getRateState() {
   const row = db.prepare('SELECT date, count, last_send_at FROM send_rate_limit WHERE id = 1').get();
   const date = row?.date || '';
@@ -88,13 +105,6 @@ export function resetRateState() {
   db.prepare("UPDATE send_rate_limit SET date = ?, count = 0, last_send_at = 0 WHERE id = 1").run(todayStr());
 }
 
-// Clear stale scheduled_at timestamps so pending items get fresh ETAs on the
-// next tick.  Without this, items scheduled for a slot that passed while
-// auto-send was off would either fire immediately or stay stuck.
-export function clearScheduledAt() {
-  return db.prepare("UPDATE send_queue SET scheduled_at = NULL WHERE status = 'pending'").run().changes;
-}
-
 // Remove duplicate / misaligned `scheduled_at` values so the UNIQUE partial index
 // can be created and the invariant "one item per slot" holds. Only touches rows
 // that already have a scheduled_at — NULL (flowing) items are left untouched,
@@ -106,7 +116,7 @@ export function dedupeScheduledAt() {
   if (intervalMs <= 0) return 0;
   const today = dayStart(Date.now());
   const rows = db.prepare(
-    "SELECT id, scheduled_at FROM send_queue WHERE status = 'pending' AND scheduled_at IS NOT NULL ORDER BY scheduled_at ASC, id ASC"
+    "SELECT id, scheduled_at FROM send_queue WHERE status = 'pending' AND pinned = 0 AND scheduled_at IS NOT NULL ORDER BY scheduled_at ASC, id ASC"
   ).all();
   if (rows.length === 0) return 0;
   const seen = new Set();
@@ -279,6 +289,22 @@ export function buildQueueTimeline({ now, pendingItems, perDay, rateState }) {
     return a.id - b.id;
   });
 
+  // Separate lapsed explicit items (overdue scheduled_at) from true auto-flow
+  // items. Lapsed explicit items keep their original scheduled_at as ETA and are
+  // marked ready=true with window=CLOSED so the scheduler may process them ASAP
+  // on the next tick, subject to canSendNow() rate gating. They do NOT get
+  // assigned a future slot.
+  const lapsedExplicit = [];
+  const autoItems = [];
+  for (const item of sendable) {
+    const sa = Number(item.scheduled_at) || 0;
+    if (sa > 0 && sa <= now) {
+      lapsedExplicit.push(item);
+    } else {
+      autoItems.push(item);
+    }
+  }
+
   const result = [];
 
   // Held items: ETA = hold_until, not ready
@@ -290,6 +316,7 @@ export function buildQueueTimeline({ now, pendingItems, perDay, rateState }) {
       caption: item.caption || '',
       eta: item._eta,
       ready: false,
+      window: getScheduleWindow(item._eta, now),
     });
   }
 
@@ -302,11 +329,27 @@ export function buildQueueTimeline({ now, pendingItems, perDay, rateState }) {
       caption: item.caption || '',
       eta: item._eta,
       ready: false,
+      window: getScheduleWindow(item._eta, now),
     });
   }
 
-  // Sendable items: slot-based ETA, collision-free.
-  if (sendable.length > 0) {
+  // Lapsed explicit items: ready=true, eta = original scheduled_at, window = CLOSED.
+  // These are overdue explicit/pinned items that the scheduler may process now.
+  for (const item of lapsedExplicit) {
+    const sa = Number(item.scheduled_at) || 0;
+    result.push({
+      id: item.id,
+      fileId: item.file_id,
+      target: item.target,
+      caption: item.caption || '',
+      eta: sa,
+      ready: true,
+      window: getScheduleWindow(sa, now),
+    });
+  }
+
+  // Auto-flow items: slot-based ETA, collision-free.
+  if (autoItems.length > 0) {
     const today = dayStart(now);
     const intervalMs = perDay > 0 ? (24 / perDay) * 60 * 60 * 1000 : 0;
     const slots = perDay > 0 ? calculateSlotsForDay(now, perDay) : [];
@@ -348,13 +391,13 @@ export function buildQueueTimeline({ now, pendingItems, perDay, rateState }) {
       for (const it of held) markOccupied(it._eta);
 
       // Walk global slot indices (today = 0..perDay-1, tomorrow = perDay..) and
-      // place each sendable item on the first free slot, skipping occupied ones.
+      // place each auto item on the first free slot, skipping occupied ones.
       let cursorIdx = nextSlotIdx;
       let placed = 0;
-      while (placed < sendable.length) {
+      while (placed < autoItems.length) {
         while (occupied.has(cursorIdx)) cursorIdx++;
         const eta = today + cursorIdx * intervalMs;
-        const item = sendable[placed];
+        const item = autoItems[placed];
         result.push({
           id: item.id,
           fileId: item.file_id,
@@ -362,13 +405,14 @@ export function buildQueueTimeline({ now, pendingItems, perDay, rateState }) {
           caption: item.caption || '',
           eta,
           ready: eta <= now,
+          window: 'AUTO',
         });
         placed++;
         cursorIdx++;
       }
     } else if (perDay === 0) {
-      // Unlimited mode: all sendable items are ready now
-      for (const item of sendable) {
+      // Unlimited mode: all auto items are ready now
+      for (const item of autoItems) {
         result.push({
           id: item.id,
           fileId: item.file_id,
@@ -422,13 +466,38 @@ function targetsOverlap(a, b) {
 // queued/re-sent twice. Overlap is by sub-target (see SUB_TARGETS), not exact
 // target match — e.g. a prior 'all' (which hits status) blocks a later 'status'
 // request, preventing a duplicate status post.
-export function getActiveOrRecentSend(fileId, target, withinMs = DEDUP_WINDOW_MS) {
+export function getActiveOrRecentSend(fileId, target, withinMs) {
+  if (withinMs === undefined) {
+    const perDay = getPerDay();
+    const intervalMs = perDay > 0 ? (24 / perDay) * 60 * 60 * 1000 : 5 * 60 * 1000;
+    withinMs = intervalMs;
+  }
   const rows = db.prepare(`
     SELECT id, file_id, target, status, created_at, error
     FROM send_queue
     WHERE file_id = ? AND created_at >= ?
     ORDER BY id DESC
   `).all(fileId, Date.now() - withinMs);
+  for (const row of rows) {
+    if (targetsOverlap(target, row.target)) return row;
+  }
+  return null;
+}
+
+// State-based dedup for the schedule ("Jadwalkan") flow. Unlike getActiveOrRecentSend
+// (which only looks back DEDUP_WINDOW_MS), this returns ANY existing row — pending,
+// processing, or done — for the same file with an overlapping target, with NO time
+// window. Rationale (plan T4): a file that was already successfully sent (possibly
+// > the window ago) must NOT spawn a second pending row when the user opens it and
+// clicks Jadwalkan; we reuse the existing row instead. The caller decides whether to
+// pin/reschedule it (and rescheduleQueueItem itself guards status='pending').
+export function findExistingSendRow(fileId, target) {
+  const rows = db.prepare(`
+    SELECT id, file_id, target, status, created_at, error
+    FROM send_queue
+    WHERE file_id = ?
+    ORDER BY id DESC
+  `).all(fileId);
   for (const row of rows) {
     if (targetsOverlap(target, row.target)) return row;
   }
@@ -474,13 +543,13 @@ export function waPermanentMediaError(fileId, target) {
   try { ci = JSON.parse(row.codec_info); } catch { return null; }
   const videoCodec = (ci.videoCodec || ci.video_codec || '').toString().toLowerCase();
   const audioCodec = (ci.audioCodec || ci.audio_codec || '').toString().toLowerCase();
-  if (!videoCodec) return null; // no video stream → not our media; let send path decide
-  if (!WA_VIDEO_OK.has(videoCodec)) {
-    return `Permanent media error: WhatsApp requires H.264 video (detected video: ${videoCodec || 'unknown'})`;
-  }
-  if (!isWaAudioOk(audioCodec)) {
-    return `Permanent media error: WhatsApp requires H.264 video + AAC audio (detected audio: ${audioCodec || 'unknown'})`;
-  }
+  if (!videoCodec) return null; // no video stream (image/audio) → WhatsApp handles it
+  // Fixable codecs (non-H.264 video, or incompatible audio such as Opus) are no
+  // longer failed here: the send path auto-remediates them (iGPU transcode for
+  // video, AAC re-encode for audio) via getWaSendPath(). Only genuinely
+  // unfixable media (e.g. non-H.264 video with no iGPU/VAAPI available) is
+  // reported as a permanent error there. Returning null lets the item proceed to
+  // the transcode step instead of being dropped up front.
   return null;
 }
 
@@ -522,7 +591,7 @@ export function getPendingSends() {
 // Used for the UI timeline so held/scheduled items still show an ETA.
 export function getAllPendingSends() {
   return db.prepare(`
-    SELECT id, file_id, target, created_at, status, caption, hold_until, scheduled_at, sort_order
+    SELECT id, file_id, target, created_at, status, caption, hold_until, scheduled_at, sort_order, pinned
     FROM send_queue
     WHERE status IN ('pending', 'processing')
     ORDER BY COALESCE(scheduled_at, 0) ASC, COALESCE(sort_order, id) ASC, id ASC
@@ -577,14 +646,14 @@ export function requeueForRetry(id, retryCount, msg) {
   recordAttempt(id, retryCount + 1, false, errMsg);
   const now = Date.now();
   const hold = now + 60_000 * (retryCount + 1);
-  db.prepare("UPDATE send_queue SET status = 'pending', scheduled_at = NULL, hold_until = ?, retry_count = retry_count + 1 WHERE id = ?")
+  db.prepare("UPDATE send_queue SET status = 'pending', scheduled_at = NULL, hold_until = ?, retry_count = retry_count + 1, pinned = 0 WHERE id = ?")
     .run(hold, id);
 }
 
 export function cancelSend(id) {
   const info = db.prepare("UPDATE send_queue SET status = 'canceled' WHERE id = ? AND status = 'pending'").run(id);
   if (info.changes > 0) {
-    db.prepare("UPDATE send_queue SET scheduled_at = NULL, hold_until = 0 WHERE status = 'pending'").run();
+    db.prepare("UPDATE send_queue SET scheduled_at = NULL, hold_until = 0 WHERE status = 'pending' AND id = ?").run(id);
   }
   return info.changes > 0;
 }
@@ -641,7 +710,8 @@ export function reorderQueueItem(id, direction) {
 // gives the correct 1 8 2 3 4 5 6 7 deterministically.
 export function rescheduleQueueItem(id, scheduledAt) {
   if (!scheduledAt) {
-    const info = db.prepare("UPDATE send_queue SET scheduled_at = NULL, hold_until = 0 WHERE id = ? AND status = 'pending'").run(id);
+    // Clearing the slot returns the item to auto-flow AND releases the pin.
+    const info = db.prepare("UPDATE send_queue SET scheduled_at = NULL, hold_until = 0, pinned = 0 WHERE id = ? AND status = 'pending'").run(id);
     return info.changes > 0;
   }
   const ts = Number(scheduledAt);
@@ -650,21 +720,294 @@ export function rescheduleQueueItem(id, scheduledAt) {
   // guard so a shift still progresses (perDay=0 = unlimited).
   const intervalMs = perDay > 0 ? (24 / perDay) * 60 * 60 * 1000 : 60 * 1000;
 
-  const updSched = db.prepare('UPDATE send_queue SET scheduled_at = ?, hold_until = 0 WHERE id = ?');
+  // Pinning only applies to PENDING rows (plan T4): a 'done' row must never be
+  // re-pinned to a future slot, and a non-pending row should not trigger the
+  // cascade shift of other items.
+  const row = db.prepare('SELECT status FROM send_queue WHERE id = ?').get(id);
+  if (!row || row.status !== 'pending') return false;
+
+  // Choosing an explicit date = pinning. A pinned item must never be disturbed
+  // by scheduler maintenance, so the cascade shift skips other pinned rows.
+  const updSched = db.prepare('UPDATE send_queue SET scheduled_at = ?, hold_until = 0, pinned = 1 WHERE id = ? AND status = \'pending\'');
+  let pinnedChanges = 0;
   const tx = db.transaction(() => {
-    // Push every OTHER pending item currently at or after the target slot down
-    // by one interval, preserving their relative order (uniform shift = no
-    // collisions). NULL scheduled_at (auto-flow) is excluded (scheduled_at >= ts
-    // is false for NULL).
+    // Push every OTHER non-pinned pending item currently at or after the target
+    // slot down by one interval, preserving their relative order (uniform shift
+    // = no collisions). Pinned items keep their slot. NULL scheduled_at
+    // (auto-flow) is excluded (scheduled_at >= ts is false for NULL).
     db.prepare(
       "UPDATE send_queue SET scheduled_at = scheduled_at + ? " +
-      "WHERE status = 'pending' AND id <> ? AND scheduled_at >= ?"
+      "WHERE status = 'pending' AND pinned = 0 AND id <> ? AND scheduled_at >= ?"
     ).run(intervalMs, id, ts);
     // Pin the moved item exactly on the chosen slot.
-    updSched.run(ts, id);
+    pinnedChanges = updSched.run(ts, id).changes;
   });
   tx();
-  return true;
+  return pinnedChanges > 0;
+}
+
+// Scheduler maintenance — NOT a second scheduler. When a send slot's item leaves
+// the pending set as a PERMANENT failure (or retries are exhausted), that slot can
+// be left empty for the rest of the day. This fills any EMPTY FUTURE daily slot
+// today with the next auto-flow (scheduled_at IS NULL) item so available daily
+// capacity is never wasted.
+//
+// Hard constraints (this is intentionally dumb/maintenance-only):
+//   ✅ only status='pending'
+//   ✅ only scheduled_at IS NULL (auto-flow) — never moves user-pinned items
+//   ✅ only fills future daily slots still open today
+//   ✅ honours hold_until
+//   ✅ never exceeds per_day (uses remainingToday from the rate state)
+//   ❌ does NOT decrement the rate count (a failed attempt still consumed a slot)
+//   ❌ does NOT touch retry_count
+//   ❌ does NOT trigger a send
+// Cascade to later days happens naturally via buildQueueTimeline on the next tick.
+// Returns the number of slots filled.
+export function backfillDailySlots() {
+  try {
+    const perDay = getPerDay();
+    if (perDay <= 0) return 0; // unlimited: every due item sends anyway, nothing to fill
+    const state = getRateState();
+    const now = Date.now();
+    const remaining = Math.max(0, perDay - (state.count || 0));
+    if (remaining <= 0) return 0;
+
+    const start = dayStart(now);
+    const intervalMs = (24 / perDay) * 60 * 60 * 1000;
+
+    // Map of occupied slot indices today (pending/processing rows already pinned).
+    const occupied = new Set();
+    const pinned = db.prepare(
+      "SELECT scheduled_at FROM send_queue WHERE status IN ('pending','processing') AND scheduled_at IS NOT NULL"
+    ).all();
+    for (const r of pinned) {
+      const ts = Number(r.scheduled_at);
+      if (!Number.isFinite(ts)) continue;
+      const k = Math.round((ts - start) / intervalMs);
+      if (k >= 0 && k < perDay) occupied.add(k);
+    }
+
+    // Free future slots, in chronological order (skip already-expired slots).
+    const freeSlots = [];
+    for (let k = 0; k < perDay; k++) {
+      const slotStart = start + k * intervalMs;
+      if (slotStart + TICK_GRACE_MS > now && !occupied.has(k)) freeSlots.push(slotStart);
+    }
+    if (freeSlots.length === 0) return 0;
+
+    logScheduleMaintenance({ action: 'BACKFILL', count: 0, remaining, freeSlots: freeSlots.length, candidates: [] });
+    return 0;
+  } catch (e) {
+    console.error('[send] backfillDailySlots failed:', e?.message || e);
+    return 0;
+  }
+}
+
+// Slot COMPACTION after a PERMANENT failure. When a pending item leaves the set
+// as a permanent failure (or retries are exhausted), its slot can become a hole.
+// If that slot is STILL WITHIN THE GRACE WINDOW (a few minutes after its
+// scheduled time) we COMPACT: pull the next scheduled item into the failed slot
+// and re-pack the rest tightly forward (earlier) so the day's schedule stays as
+// tight as possible — WITHOUT sending any future item prematurely, and WITHOUT
+// dragging future days into today. If the slot has already CLOSED (past grace)
+// we fall back to backfillDailySlots() (only fills genuinely-empty FUTURE slots).
+//
+// "Next item" = the next item in scheduling order among the day's scheduled
+// (pending) items at/after the failed slot; if none exists, the next auto-flow
+// (scheduled_at IS NULL) item fills the gap instead.
+//
+// Collision-safety: re-packing assigns each item to a free slot, skipping any
+// slot already occupied by a pending/processing row (e.g. another in-flight
+// send). Because every assignment is strictly EARLIER than the item's old slot,
+// two re-packed items can never land on the same slot.
+//
+// Hard invariants (same family as backfill):
+//   ✅ only status='pending' rows move
+//   ✅ respects scheduling order (re-pack preserves relative order)
+//   ✅ honours hold_until (a moved item still can't send before its hold)
+//   ✅ same-day only (never pulls a future-day item into today)
+//   ❌ does NOT touch per_day / rateCount / retry_count
+//   ❌ does NOT trigger a send or claim a slot (claimPending stays the only claim)
+//   ❌ never produces two items with the same scheduled_at
+
+// Durable AUTO-FLOW substitution. When an AUTO item (scheduled_at IS NULL) fails
+// within its OPEN grace window, the next AUTO item in effective order must slide
+// into the vacated slot. We must NOT write scheduled_at for the replacement — that
+// would silently turn an AUTO item into a pinned/explicit one and break the
+// AUTO-FLOW semantics (plan: "jangan mem-persist effectiveSlot AUTO ke scheduled_at").
+//
+// Instead we mutate `sort_order`, which is already the field buildQueueTimeline()
+// uses as the source of AUTO ordering. By moving the next AUTO item onto the
+// failed item's sort_order position (the failed row is already 'failed' so it no
+// longer occupies that position), the next tick deterministically reassigns the
+// next AUTO item to the failed slot. Relative order of the remaining AUTO items is
+// preserved because only the single next item is relocated.
+//
+// `timeline` is the timeline built by buildQueueTimeline() for the current tick
+// (effective order of all pending items). Returns the number of rows adjusted.
+export function adjustAutoSortOrder(timeline, failedItemId) {
+  try {
+    if (!Array.isArray(timeline) || timeline.length === 0) return 0;
+    const idx = timeline.findIndex((t) => t.id === failedItemId);
+    if (idx === -1) return 0;
+    const rest = timeline.slice(idx + 1);
+    for (const t of rest) {
+      const r = db.prepare('SELECT status, scheduled_at, sort_order FROM send_queue WHERE id = ?').get(t.id);
+      if (!r || r.status !== 'pending') continue;
+      // Explicit/pinned items are handled by the scheduled_at re-pack inside
+      // compactScheduleAfterFailure; only AUTO (scheduled_at IS NULL) items need a
+      // sort_order relocation here.
+      if (r.scheduled_at != null) continue;
+      const frow = db.prepare('SELECT sort_order FROM send_queue WHERE id = ?').get(failedItemId);
+      const target = (frow && Number.isFinite(Number(frow.sort_order))) ? Number(frow.sort_order) : failedItemId;
+      db.prepare('UPDATE send_queue SET sort_order = ? WHERE id = ?').run(target, t.id);
+      return 1;
+    }
+    return 0;
+  } catch (e) {
+    console.error('[send] adjustAutoSortOrder failed:', e?.message || e);
+    return 0;
+  }
+}
+
+export function compactScheduleAfterFailure(failedItemId, failedSlotTs, timeline) {
+  try {
+    const row = db.prepare('SELECT scheduled_at, sort_order FROM send_queue WHERE id = ?').get(failedItemId);
+    const explicitSlot = row && Number.isFinite(Number(row.scheduled_at)) ? Number(row.scheduled_at) : 0;
+    // True when the failed item itself had no scheduled_at (it was an AUTO-flow
+    // item). Its "vacated slot" is a synthetic effective slot, not a real one.
+    const autoFail = explicitSlot === 0;
+    // Prefer the effective slot supplied by the caller (from buildQueueTimeline's
+    // etaById). For AUTO items scheduled_at is NULL, so the explicit column alone
+    // is not enough — the effective slot is what anchors the failure window.
+    const slotTs = (failedSlotTs != null && Number.isFinite(Number(failedSlotTs))) ? Number(failedSlotTs) : explicitSlot;
+    // No slot was lost (e.g. an auto-flow NULL item failed and no effective slot
+    // was supplied) → nothing to compact; just keep future slots filled.
+    if (!slotTs) {
+      logScheduleMaintenance({ action: 'BACKFILL', reason: 'no_effective_slot', failedQid: failedItemId, failedSlotTs: null, window: 'AUTO' });
+      return backfillDailySlots();
+    }
+
+    const now = Date.now();
+    const window = getScheduleWindow(slotTs, now);
+    // Slot CLOSED (past its grace window) → don't yank future items into it;
+    // only fill valid future empty slots. (Canonical window check, plan T2.)
+    if (window === 'CLOSED') {
+      logScheduleMaintenance({ action: 'BACKFILL', reason: 'slot_closed', failedQid: failedItemId, failedSlotTs: slotTs, window });
+      return backfillDailySlots();
+    }
+
+    // AUTO-FLOW failure: the vacated slot is a synthetic effective slot, NOT a
+    // real scheduled_at. We must NOT re-pack explicit scheduled items back onto
+    // it (that would yank a pinned item into a phantom slot), and must NOT write
+    // scheduled_at for AUTO items (would convert AUTO → pinned). Substitution is
+    // handled EXCLUSIVELY by adjustAutoSortOrder, which relocates the next pending
+    // AUTO item onto the failed item's sort_order so the next tick reassigns it to
+    // the vacated slot — durable, no scheduled_at write.
+    if (autoFail) {
+      const autoAdjusted = (timeline && timeline.length) ? adjustAutoSortOrder(timeline, failedItemId) : 0;
+      logScheduleMaintenance({
+        action: 'COMPACT', failedQid: failedItemId, failedSlotTs: slotTs, window,
+        count: 0, autoAdjusted, candidates: [],
+      });
+      console.log(`[send] compactScheduleAfterFailure auto-substituted slot ${new Date(slotTs).toISOString()} (grace active)`);
+      return 1;
+    }
+
+    const perDay = getPerDay();
+    if (perDay <= 0) return 0;
+    const intervalMs = (24 / perDay) * 60 * 60 * 1000;
+    const dayEndTs = dayStart(slotTs) + 24 * 60 * 60 * 1000;
+
+    // Capture candidate state BEFORE mutation so the COMPACT event can report
+    // old → new scheduled_at for every affected item.
+    const beforeCandidates = db.prepare(
+      "SELECT id, scheduled_at, pinned FROM send_queue " +
+      "WHERE status = 'pending' AND pinned = 0 AND scheduled_at >= ? AND scheduled_at < ? " +
+      "ORDER BY scheduled_at ASC, id ASC"
+    ).all(slotTs, dayEndTs);
+
+    const tx = db.transaction(() => {
+      // Every pending scheduled item at/after the failed slot, SAME DAY only
+      // (we compact "that day's" schedule, not future days). Pinned items are
+      // excluded — they must stay exactly where the user pinned them.
+      const candidates = db.prepare(
+        "SELECT id, scheduled_at FROM send_queue " +
+        "WHERE status = 'pending' AND pinned = 0 AND scheduled_at >= ? AND scheduled_at < ? " +
+        "ORDER BY scheduled_at ASC, id ASC"
+      ).all(slotTs, dayEndTs);
+
+      // Slots already occupied by rows we are NOT moving (any in-flight
+      // 'processing' item, or another pending item) — never assign a re-packed
+      // item onto them.
+      const candIds = new Set(candidates.map((c) => c.id));
+      const blocked = new Set();
+      const others = db.prepare(
+        "SELECT id, scheduled_at FROM send_queue " +
+        "WHERE status IN ('pending','processing') AND scheduled_at IS NOT NULL " +
+        "AND scheduled_at >= ? AND scheduled_at < ?"
+      ).all(slotTs, dayEndTs);
+      for (const o of others) {
+        if (!candIds.has(o.id)) blocked.add(Number(o.scheduled_at));
+      }
+
+      const upd = db.prepare('UPDATE send_queue SET scheduled_at = ? WHERE id = ?');
+      let affected = 0;
+
+      // Re-pack: assign each candidate to the next free slot from the failed
+      // slot forward. Targets are always earlier than each item's old slot, so
+      // re-packed items never collide with each other; `blocked` keeps them off
+      // slots occupied by other rows. Relative order is preserved.
+      let slot = slotTs;
+      for (const c of candidates) {
+        while (blocked.has(slot)) slot += intervalMs;
+      upd.run(slot, c.id);
+      affected++;
+      blocked.add(slot);
+      slot += intervalMs;
+    }
+
+    return { affected, autoFlowPull: null };
+  });
+  const { affected, autoFlowPull } = tx();
+  const autoAdjusted = 0;
+
+  // Build old→new mapping for every moved candidate from the BEFORE snapshot
+  // and the current (post-compaction) DB state.
+  const moved = [];
+  let pinnedDisplaced = false;
+  for (const c of beforeCandidates) {
+    const cur = db.prepare('SELECT scheduled_at, pinned FROM send_queue WHERE id = ?').get(c.id);
+    if (cur && Number(cur.scheduled_at) !== Number(c.scheduled_at)) {
+      moved.push({ qid: c.id, oldScheduledAt: c.scheduled_at, newScheduledAt: cur.scheduled_at });
+      if (cur.pinned) pinnedDisplaced = true; // should never happen (candidates exclude pinned)
+    }
+  }
+  if (autoFlowPull) moved.push(autoFlowPull);
+
+  logScheduleMaintenance({
+    action: 'COMPACT',
+    failedQid: failedItemId,
+    failedSlotTs: slotTs,
+    window,
+    count: affected,
+    autoAdjusted,
+    candidates: moved,
+  });
+  // Anomaly (rule 12): a pinned item must never be displaced by compaction.
+  if (pinnedDisplaced) {
+    logSendAnomaly(failedItemId, 'PINNED_DISPLACED_BY_COMPACT', { candidates: moved });
+  }
+  // Anomaly (rule 9): compaction must never fire for a CLOSED window.
+  if (window === 'CLOSED') {
+    logSendAnomaly(failedItemId, 'COMPACT_FROM_CLOSED_WINDOW', { failedSlotTs: slotTs, window });
+  }
+  console.log(`[send] compactScheduleAfterFailure compacted slot ${new Date(slotTs).toISOString()} (grace active)`);
+  return 1;
+  } catch (e) {
+    console.error('[send] compactScheduleAfterFailure failed:', e?.message || e);
+    return 0;
+  }
 }
 
 // ── Queue behaviour settings (auto-send tick + debug hold mode) ──
@@ -771,7 +1114,7 @@ export function getQueueByStatus(status, cursor = 0, limit = 100, target, opts =
   if (isPending && !sortBy) {
     const allRows = db.prepare(`
       SELECT sq.id AS qid, sq.id AS id, sq.file_id, sq.target, sq.created_at, sq.status, sq.error,
-             sq.hold_until, sq.completed_at, sq.caption, sq.debug, sq.sort_order, sq.scheduled_at,
+             sq.hold_until, sq.completed_at, sq.caption, sq.debug, sq.sort_order, sq.scheduled_at, sq.pinned,
              f.name, f.type, f.ext, f.has_thumb, f.size, f.duration
       FROM send_queue sq
       LEFT JOIN files f ON f.id = sq.file_id
@@ -852,7 +1195,7 @@ export function getQueueByStatus(status, cursor = 0, limit = 100, target, opts =
 
   const rows = db.prepare(`
     SELECT sq.id AS qid, sq.file_id, sq.target, sq.created_at, sq.status, sq.error,
-           sq.hold_until, sq.completed_at, sq.caption, sq.debug, sq.sort_order, sq.scheduled_at,
+           sq.hold_until, sq.completed_at, sq.caption, sq.debug, sq.sort_order, sq.scheduled_at, sq.pinned,
            f.name, f.type, f.ext, f.has_thumb, f.size, f.duration
     FROM send_queue sq
     LEFT JOIN files f ON f.id = sq.file_id
