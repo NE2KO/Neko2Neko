@@ -121,20 +121,23 @@ const usePlaybackStore = create(
         hasPlaylist: true,
       }),
 
-      clearPlayback: () => set({
-        queue: [],
-        currentTrackIndex: 0,
-        isPlaying: false,
-        hasPlaylist: false,
-        playlistId: null,
-        playlistTracks: [],
-        activePlaybackId: null,
-        playerMode: 'full',
-        position: 0,
-        shuffle: false,
-        shuffleOrder: [],
-        shufflePosition: -1,
-      }),
+      clearPlayback: () => {
+        console.log('[store] clearPlayback CALLED');
+        set({
+          queue: [],
+          currentTrackIndex: 0,
+          isPlaying: false,
+          hasPlaylist: false,
+          playlistId: null,
+          playlistTracks: [],
+          activePlaybackId: null,
+          playerMode: 'full',
+          position: 0,
+          shuffle: false,
+          shuffleOrder: [],
+          shufflePosition: -1,
+        });
+      },
 
       setActiveFile: (fileId) => set({ activePlaybackId: fileId }),
 
@@ -173,6 +176,7 @@ const usePlaybackStore = create(
         queue: state.queue,
         currentTrackIndex: state.currentTrackIndex,
         activePlaybackId: state.activePlaybackId,
+        position: state.position,
       }),
     }
   )

@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { ChevronLeft, Heart } from 'lucide-react';
+import { ChevronLeft, Heart, Calendar } from 'lucide-react';
 import CarouselLockToggle from './CarouselLockToggle';
 import MediaLayout from './MediaLayout';
 import MediaControls from './MediaControls';
 import NetworkImage from './NetworkImage';
 import { applySink, getStoredDevice } from '../utils/audioOutput';
 import usePlaybackStore from '../store/playbackStore';
+import { cancelAutoPlayPending, isAutoPlayPendingCanceled, resetAutoPlayPending } from '../utils/autoPlayPending';
 
 // Dedicated, INDEPENDENT audio player for the Media Vault.
 // It intentionally does NOT share the Music `MusicPlayer` component so that UI
@@ -29,6 +30,7 @@ export default function VaultAudioPlayer({
   embedded = false,
   lockEnabled = true,
   onToggleLock = null,
+  onSchedule = null,
 }) {
   const { isPlaying, play, pause } = usePlaybackStore();
   const [activeFile, setActiveFile] = useState(file);
@@ -62,7 +64,10 @@ export default function VaultAudioPlayer({
       if (isPlaying && audio.paused) audio.play().catch(() => {});
       else if (!isPlaying && !audio.paused) audio.pause();
       const onPlay = () => play();
-      const onPause = () => pause();
+      const onPause = () => {
+        cancelAutoPlayPending();
+        pause();
+      };
       audio.addEventListener('play', onPlay);
       audio.addEventListener('pause', onPause);
       return () => {
@@ -81,7 +86,10 @@ export default function VaultAudioPlayer({
     applySink(audio, getStoredDevice());
 
     const onPlay = () => play();
-    const onPause = () => pause();
+    const onPause = () => {
+      cancelAutoPlayPending();
+      pause();
+    };
     const onError = () => { setIsLoading(false); setError('Format tidak didukung browser'); };
     audio.addEventListener('play', onPlay);
     audio.addEventListener('pause', onPause);
@@ -103,7 +111,10 @@ export default function VaultAudioPlayer({
     const tryPlay = () => {
       audio.play().then(() => setIsLoading(false)).catch((err) => {
         setIsLoading(false);
-        if (err?.name === 'NotAllowedError') setAutoPlayPending(true);
+        if (err?.name === 'NotAllowedError') {
+          setAutoPlayPending(true);
+          resetAutoPlayPending();
+        }
       });
     };
     if (audio.readyState >= 3) tryPlay();
@@ -134,6 +145,7 @@ export default function VaultAudioPlayer({
   useEffect(() => {
     if (!autoPlayPending) return undefined;
     const resume = () => {
+      if (isAutoPlayPendingCanceled()) return;
       if (audioRef?.current) audioRef.current.play().catch(() => {});
       setAutoPlayPending(false);
       setUserInteracted(true);
@@ -151,7 +163,12 @@ export default function VaultAudioPlayer({
     const audio = audioRef?.current;
     if (!audio || !audioReady) return;
     if (isPlaying && audio.paused) {
-      audio.play().catch(() => {});
+      audio.play().catch((err) => {
+        if (err?.name === 'NotAllowedError') {
+          setAutoPlayPending(true);
+          resetAutoPlayPending();
+        }
+      });
     } else if (!isPlaying && !audio.paused) {
       audio.pause();
     }
@@ -225,6 +242,15 @@ export default function VaultAudioPlayer({
       <div className="ml-auto flex items-center gap-1">
         {onToggleLock && (
           <CarouselLockToggle lockEnabled={lockEnabled} onToggleLock={onToggleLock} />
+        )}
+        {onSchedule && (
+          <button
+            onClick={() => onSchedule(activeFile)}
+            className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/20 hover:text-cyan-400 focus:outline-none focus:ring-0"
+            title="Jadwalkan berdasarkan tanggal"
+          >
+            <Calendar size={20} />
+          </button>
         )}
         <button
           onClick={handleToggleFavorite}

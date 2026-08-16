@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Bell, Upload as UploadIcon, X, Trash2, Bug, Heart, Send, SlidersHorizontal } from 'lucide-react';
+import { Bell, Upload as UploadIcon, X, Trash2, Bug, Heart, Send, SlidersHorizontal, CheckSquare } from 'lucide-react';
 import { fetchFolder, fetchFileById, clearResponseCache, toggleFavorite, fetchPlaylistPlay } from './utils/api';
+import { loadFavorites } from './utils/playlistApi';
 import { createMediaRepository } from './utils/mediaRepository';
 import { safeParseTrackFilter, safeParseTrackSearchQuery, applyTrackFilter, applyTrackSearch } from './utils/trackFilter';
+import { cancelAutoPlayPending } from './utils/autoPlayPending';
 
 // Index-driven playback repository (singleton, holds ordered ID indexes + a
 // small LRU object cache OUTSIDE React). Grid/playback are decoupled: the modal
@@ -16,6 +18,7 @@ const mediaRepo = createMediaRepository();
 // parse + React state small; the grid is virtualized so only visible rows render.
 const INITIAL_FOLDER_LIMIT = 500;
 const PAGE_SIZE = 500;
+let hasRestoredFromSnapshot = false;
 import MediaGrid from './components/MediaGrid';
 import MediaModal from './components/MediaModal';
 import MonitoringView from './components/MonitoringView';
@@ -26,18 +29,15 @@ import UploadsMonitor from './components/UploadsMonitor';
 import useDebugStore from './debug/useDebugStore';
 import PlaylistView from './components/PlaylistView';
 import MusicPlayer from './components/Music';
-import MusicSyncSandbox from './components/MusicSyncSandbox';
 import VaultAudioPlayer from './components/VaultAudioPlayer';
 import MiniPlayer from './components/MiniPlayer';
 import ServiceStoppedBanner from './components/ServiceStoppedBanner';
 import ScrcpyView from './components/ScrcpyView';
 import SendQueueView from './components/SendQueueView';
 import FilterPanel from './components/FilterPanel';
-import AIChat from './components/AIChat';
-import AISettings from './components/AISettings';
 
 // import UploadQueue from './components/UploadQueue'; // Removed
-import ToastContainer, { useToast } from './components/Toast';
+import { useToast } from './components/Toast';
 import useFolderSortStore from './store/folderSortStore';
 import useFolderMetaSortStore from './store/folderMetaSortStore';
 import usePlaybackStore from './store/playbackStore';
@@ -84,7 +84,7 @@ function stableMerge(oldList = [], newList = []) {
 }
 
 // === ROUTE STATE MACHINE ===
-import { parseHash } from './utils/routeParser';
+import { parseHash, LOVED_PLAYLIST_ID } from './utils/routeParser';
 
 function DebugToggle() {
   const { enabled, toggle } = useDebugStore();
@@ -144,39 +144,47 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
    const initialRoute = parseHash(window.location.hash, sessionStorage);
     const initialView = initialRoute.type === 'playlists' ? 'playlists'
        : initialRoute.type === 'playlist-detail' ? 'playlists'
-       : initialRoute.type === 'monitoring' ? 'monitoring'
-       : initialRoute.type === 'downloader' ? 'downloader'
-       : initialRoute.type === 'adb' ? 'adb'
-       : initialRoute.type === 'music-sandbox' ? 'musicSandbox'
-       : initialRoute.type === 'audio' ? 'audio'
-       : initialRoute.type === 'vault-audio' ? 'vaultAudio'
-       : initialRoute.type === 'scrcpy' ? 'scrcpy'
-       : initialRoute.type === 'whatsapp' ? 'whatsapp'
-       : initialRoute.type === 'sendqueue' ? 'sendqueue'
-       : initialRoute.type === 'ai' ? 'ai'
-       : initialRoute.type === 'ai-settings' ? 'ai-settings'
-       : 'media';
+        : initialRoute.type === 'monitoring' ? 'monitoring'
+        : initialRoute.type === 'downloader' ? 'downloader'
+        : initialRoute.type === 'adb' ? 'adb'
+        : initialRoute.type === 'audio' ? 'audio'
+        : initialRoute.type === 'vault-audio' ? 'vaultAudio'
+        : initialRoute.type === 'scrcpy' ? 'scrcpy'
+        : initialRoute.type === 'whatsapp' ? 'whatsapp'
+        : initialRoute.type === 'sendqueue' ? 'sendqueue'
+        : 'media';
     const [view, setView] = useState(initialView);
     const viewRef = useRef(view);
     useEffect(() => { viewRef.current = view; }, [view]);
 
-    // Playlist state
+    const resumedFromSnapshotRef = useRef(false);
+
+     // Playlist state
     const [playlistQueue, setPlaylistQueue] = useState(null);
     const [currentTrackIndex, setCurrentTrackIndex] = useState(0);
     const [playlistMetadata, setPlaylistMetadata] = useState(null);
 
+    const playlistQueueRef = useRef(playlistQueue);
+    const playlistMetadataRef = useRef(playlistMetadata);
+    useEffect(() => { playlistQueueRef.current = playlistQueue; }, [playlistQueue]);
+    useEffect(() => { playlistMetadataRef.current = playlistMetadata; }, [playlistMetadata]);
+
     const playerMode = usePlaybackStore(s => s.playerMode);
+    const hasActivePlayback = usePlaybackStore(s => s.queue?.length > 0);
     const [showFilterPanel, setShowFilterPanel] = useState(false);
     const [showNotificationsPanel, setShowNotificationsPanel] = useState(false);
     const [panelFilterType, setPanelFilterType] = useState('all');
     const [panelSortBy, setPanelSortBy] = useState(null);
     const [panelSortOrder, setPanelSortOrder] = useState('asc');
     const [favoriteOnly, setFavoriteOnly] = useState(false);
+    const [selectionMode, setSelectionMode] = useState(false);
+    const [selectedIds, setSelectedIds] = useState(new Set());
 
-    // Restore playlist state from sessionStorage/localStorage on mount when entering audio view
-    useEffect(() => {
-      if (initialView !== 'audio') return;
-      (async () => {
+     // Restore playlist state from sessionStorage/localStorage on mount when entering audio view
+     useEffect(() => {
+       if (hasRestoredFromSnapshot) return;
+       if (initialView !== 'audio') return;
+       (async () => {
         try {
           // Repopulate the single-file identity from the URL so a bare-file audio
           // URL survives a reload (useRef is lost on reload). Fall back to a
@@ -197,14 +205,39 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
           // URL-driven fallback: if the route names a playlist but storage was
           // empty (new tab / cleared), rebuild the queue from the server so we
           // DON'T fall back to the default audio view.
-           if (initialRoute.playlistId && !queueToUse) {
+           if (initialRoute.playlistId === LOVED_PLAYLIST_ID) {
+             const favs = await loadFavorites();
+             if (favs?.length) {
+               const ts = safeParseTrackSort();
+               let q = applyTrackSearch(applyTrackFilter(favs, safeParseTrackFilter()), safeParseTrackSearchQuery());
+               const { by, order } = ts;
+               if (by) {
+                 q = [...q].sort((a, b) => {
+                   let valA = a[by] ?? '';
+                   let valB = b[by] ?? '';
+                   if (by === 'duration' || by === 'track_num' || by === 'track_index' || by === 'created_at' || by === 'mtime' || by === 'size') {
+                     valA = Number(valA) || 0;
+                     valB = Number(valB) || 0;
+                   } else {
+                     valA = String(valA).toLowerCase();
+                     valB = String(valB).toLowerCase();
+                   }
+                   if (valA < valB) return order === 'asc' ? -1 : 1;
+                   if (valA > valB) return order === 'asc' ? 1 : -1;
+                   return 0;
+                 });
+               }
+               queueToUse = q;
+               metadataToUse = { id: LOVED_PLAYLIST_ID, title: 'Loved', image: null };
+             }
+           } else if (initialRoute.playlistId && !queueToUse) {
              const ts = safeParseTrackSort();
              const data = await fetchPlaylistPlay(initialRoute.playlistId, { sortBy: ts.by, sortOrder: ts.order });
-            if (data?.queue?.length) {
-              queueToUse = applyTrackSearch(applyTrackFilter(data.queue, safeParseTrackFilter()), safeParseTrackSearchQuery());
-              metadataToUse = data.playlist;
-            }
-          }
+             if (data?.queue?.length) {
+               queueToUse = applyTrackSearch(applyTrackFilter(data.queue, safeParseTrackFilter()), safeParseTrackSearchQuery());
+               metadataToUse = data.playlist;
+             }
+           }
 
           if (queueToUse) setPlaylistQueue(queueToUse);
           if (metadataToUse) setPlaylistMetadata(metadataToUse);
@@ -257,18 +290,72 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
       })();
     }, [initialView]);
 
-    // Bug #9: Initial mount guard — clear stale playlist state if not in audio view
-    useEffect(() => {
-      if (view !== 'audio') {
-        sessionStorage.removeItem('playlistQueue');
-        sessionStorage.removeItem('playlistMetadata');
-        sessionStorage.removeItem('currentTrackIndex');
-        localStorage.removeItem('playlistQueue');
-        localStorage.removeItem('playlistMetadata');
-        localStorage.removeItem('currentTrackIndex');
-        usePlaybackStore.getState().clearPlayback();
-      }
-    }, []);
+      // Mount: restore from resume snapshot if present, otherwise clear stale
+      // playback state when leaving audio view. Runs once so it never races with
+      // later view changes.
+       useEffect(() => {
+        const raw = sessionStorage.getItem('playbackResumeSnapshot');
+        console.log('[mount effect] raw snapshot present:', !!raw, 'view:', view, 'initialView:', initialView, 'hasRestoredFromSnapshot:', hasRestoredFromSnapshot);
+
+        if (raw) {
+          try {
+            const snapshot = JSON.parse(raw);
+            const store = usePlaybackStore.getState();
+
+            if (snapshot.queue?.length > 0) {
+              store.setQueue(snapshot.queue, snapshot.currentTrackIndex);
+              store.setActiveFile(snapshot.activePlaybackId);
+              store.setPosition(snapshot.position);
+              store.pause();
+
+              setPlaylistQueue(snapshot.playlistQueue);
+              setPlaylistMetadata(snapshot.playlistMetadata);
+            }
+
+            sessionStorage.setItem('audioReloadWasPlaying', String(snapshot.wasPlaying));
+            sessionStorage.setItem('audioReloadResumeAt', String(Date.now() + 2000));
+            sessionStorage.removeItem('playbackResumeSnapshot');
+            sessionStorage.removeItem('audioReloadPosition');
+
+            hasRestoredFromSnapshot = true;
+            console.log('[mount effect] Restored from snapshot, queueLength:', snapshot.queue?.length, 'trackIndex:', snapshot.currentTrackIndex);
+          } catch (e) {
+            console.error('[mount effect] Failed to restore snapshot:', e);
+          }
+          return;
+        }
+
+        if (view !== 'audio' && !hasRestoredFromSnapshot) {
+          console.log('[mount effect] Clearing playback');
+          sessionStorage.removeItem('playlistQueue');
+          sessionStorage.removeItem('playlistMetadata');
+          sessionStorage.removeItem('currentTrackIndex');
+          localStorage.removeItem('playlistQueue');
+          localStorage.removeItem('playlistMetadata');
+          localStorage.removeItem('currentTrackIndex');
+          usePlaybackStore.getState().clearPlayback();
+        }
+      }, []);
+
+      // Detect reload and schedule delayed resume so playback starts after load.
+      useEffect(() => {
+        const nav = performance.getEntriesByType?.('navigation')?.[0];
+        const isReload = nav?.type === 'reload' || performance.navigation?.type === 1;
+        if (!isReload) return;
+
+        const wasPlaying = sessionStorage.getItem('audioReloadWasPlaying') === 'true';
+
+        const timer = setTimeout(() => {
+          if (wasPlaying) {
+            usePlaybackStore.getState().play();
+          }
+          sessionStorage.removeItem('audioReloadWasPlaying');
+          sessionStorage.removeItem('audioReloadResumeAt');
+          window.dispatchEvent(new CustomEvent('audio-reload-resume'));
+        }, 0);
+
+        return () => clearTimeout(timer);
+      }, []);
 
     // Persist view and playlist state for reload recovery.
     // NOTE: playlistMetadata can include a base64 cover image (data: URL) which
@@ -430,6 +517,52 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
         }
       };
     }, [setAudioRef]);
+
+    // Pause audio and persist playback snapshot on page unload/reload.
+    useEffect(() => {
+      const saveSnapshot = () => {
+        try {
+          const audio = sharedAudioRef.current;
+          const store = usePlaybackStore.getState();
+
+          const snapshot = {
+            queue: store.queue,
+            currentTrackIndex: store.currentTrackIndex,
+            activePlaybackId: store.activePlaybackId,
+            position: audio ? audio.currentTime : store.position,
+            wasPlaying: audio ? !audio.paused : store.isPlaying,
+            playlistQueue: playlistQueueRef.current,
+            playlistMetadata: playlistMetadataRef.current,
+          };
+
+          try {
+            sessionStorage.setItem('playbackResumeSnapshot', JSON.stringify(snapshot));
+          } catch (e) {
+            console.error('[saveSnapshot] quota/write error:', e);
+          }
+        } catch (e) {
+          console.error('[saveSnapshot] Error:', e);
+        }
+      };
+
+      const onVisibilityChange = () => {
+        if (document.visibilityState === 'hidden') {
+          saveSnapshot();
+        }
+      };
+
+      const timer = setInterval(saveSnapshot, 5000);
+
+      window.addEventListener('beforeunload', saveSnapshot);
+      window.addEventListener('pagehide', saveSnapshot);
+      document.addEventListener('visibilitychange', onVisibilityChange);
+      return () => {
+        window.removeEventListener('beforeunload', saveSnapshot);
+        window.removeEventListener('pagehide', saveSnapshot);
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+        clearInterval(timer);
+      };
+    }, []);
 
    const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState(null);
@@ -1607,7 +1740,63 @@ loadedPageKeyRef.current = `${folderId}:${folderInfo.path || ''}:${storedMetaSor
           writeUrl('root', item.id, true);
         }
      }
-   }, [writeUrl, saveScrollPosition, state.currentFolderId, state.currentPath, navigateToFolder]);
+    }, [writeUrl, saveScrollPosition, state.currentFolderId, state.currentPath, navigateToFolder]);
+
+   const toggleSelectionMode = useCallback(() => {
+     setSelectionMode(prev => {
+       const next = !prev;
+       if (next) setSelectedIds(new Set());
+       return next;
+     });
+   }, []);
+
+   const toggleSelectItem = useCallback((id) => {
+     setSelectedIds(prev => {
+       const next = new Set(prev);
+       if (next.has(id)) next.delete(id);
+       else next.add(id);
+       return next;
+     });
+   }, []);
+
+   const clearSelection = useCallback(() => {
+     setSelectedIds(new Set());
+     setSelectionMode(false);
+   }, []);
+
+   const handleBulkLock = useCallback(async () => {
+     const ids = Array.from(selectedIds);
+     if (ids.length === 0) return;
+     try {
+       await bulkLock(ids, true);
+       showToast(`${ids.length} item dikunci dari kirim WA`, 'success');
+     } catch {
+       showToast('Gagal mengunci item', 'error');
+     } finally {
+       clearSelection();
+     }
+   }, [selectedIds, clearSelection]);
+
+   const handleBulkDelete = useCallback(async () => {
+     const ids = Array.from(selectedIds);
+     if (ids.length === 0) return;
+     try {
+       await bulkDelete(ids);
+       showToast(`${ids.length} item dihapus`, 'success');
+     } catch {
+       showToast('Gagal menghapus item', 'error');
+     } finally {
+       clearSelection();
+     }
+   }, [selectedIds, clearSelection]);
+
+   const handleGridSelect = useCallback((item) => {
+     if (selectionMode && item?.id) {
+       toggleSelectItem(item.id);
+       return;
+     }
+     handleSelect(item);
+   }, [selectionMode, toggleSelectItem, handleSelect]);
 
   // === HANDLE FILE CHANGE ===
   const handleFileChange = useCallback((file) => {
@@ -1776,17 +1965,18 @@ loadedPageKeyRef.current = `${folderId}:${folderInfo.path || ''}:${storedMetaSor
      }
    }, [playlistMetadata, writePlaylistUrl, navigateToRoot]);
 
-   // Close the full-screen VAULT audio player → return to the Media Vault grid.
-   const handleCloseVaultAudio = useCallback(() => {
-     if (sharedAudioRef.current) {
-       sharedAudioRef.current.pause();
-     }
-     sharedPrevFileIdRef.current = null;
-     usePlaybackStore.getState().clearPlayback();
-     audioContextRef.current = null;
-     setView('media');
-     navigateToRoot();
-   }, [navigateToRoot]);
+    // Close the full-screen VAULT audio player → return to the Media Vault grid.
+    const handleCloseVaultAudio = useCallback(() => {
+      if (sharedAudioRef.current) {
+        sharedAudioRef.current.pause();
+      }
+      sharedPrevFileIdRef.current = null;
+      cancelAutoPlayPending();
+      usePlaybackStore.getState().clearPlayback();
+      audioContextRef.current = null;
+      setView('media');
+      navigateToRoot();
+    }, [navigateToRoot]);
 
    // === EXPAND MINI PLAYER TO FULL AUDIO (push URL so Back is deterministic) ===
    const expandToAudio = useCallback(() => {
@@ -1807,7 +1997,12 @@ loadedPageKeyRef.current = `${folderId}:${folderInfo.path || ''}:${storedMetaSor
     const playlistState = usePlaylistStore.getState();
     const playlistId = playlistState.currentPlaylist?.id;
     if (playlistId) {
-      const item = playlistQueue?.[currentTrackIndex ?? 0];
+      const pb = usePlaybackStore.getState();
+      const activeIdx = pb.currentTrackIndex ?? 0;
+      const queueToUse = pb.queue || playlistQueue;
+      if (queueToUse && queueToUse.length > 0) setPlaylistQueue(queueToUse);
+      setCurrentTrackIndex(activeIdx);
+      const item = queueToUse?.[activeIdx];
       const fid = item?.file_id || item?.id;
       if (fid) {
         const url = `#/audio/playlist/${playlistId}/track/${fid}`;
@@ -1823,7 +2018,7 @@ loadedPageKeyRef.current = `${folderId}:${folderInfo.path || ''}:${storedMetaSor
     } else {
       history.pushState({ view: 'audio' }, '', '#/audio');
     }
-  }, [writePlaylistUrl, currentTrackIndex, playlistQueue, state.selectedFile]);
+  }, [writePlaylistUrl, state.selectedFile]);
 
   // === PROCESSED ITEMS (STABLE MEMOIZED) ===
   const processedFolders = useMemo(() => {
@@ -1968,15 +2163,12 @@ loadedPageKeyRef.current = `${folderId}:${folderInfo.path || ''}:${storedMetaSor
          setView('monitoring');
          return;
        }
-        if (route.type === 'downloader') { setView('downloader'); return; }
-        if (route.type === 'adb') { setView('adb'); return; }
-        if (route.type === 'music-sandbox') { setView('musicSandbox'); return; }
-        if (route.type === 'scrcpy') { setView('scrcpy'); return; }
-        if (route.type === 'whatsapp') { setView('whatsapp'); return; }
-        if (route.type === 'sendqueue') { setView('sendqueue'); return; }
-       if (route.type === 'ai') return;
-       if (route.type === 'ai-settings') return;
-       if (route.type === 'playlists') { setView('playlists'); return; }
+         if (route.type === 'downloader') { setView('downloader'); return; }
+         if (route.type === 'adb') { setView('adb'); return; }
+         if (route.type === 'scrcpy') { setView('scrcpy'); return; }
+         if (route.type === 'whatsapp') { setView('whatsapp'); return; }
+         if (route.type === 'sendqueue') { setView('sendqueue'); return; }
+        if (route.type === 'playlists') { setView('playlists'); return; }
        if (route.type === 'playlist-detail') {
          if (route.playlistId) sessionStorage.setItem('selectedPlaylistId', route.playlistId);
          setView('playlists');
@@ -2004,9 +2196,9 @@ loadedPageKeyRef.current = `${folderId}:${folderInfo.path || ''}:${storedMetaSor
         if ((route.playlistId || route.fileId) && (!usePlaybackStore.getState().queue || usePlaybackStore.getState().queue.length === 0)) {
           (async () => {
             try {
-                if (route.playlistId) {
-                 const ts = safeParseTrackSort();
-                 const data = await fetchPlaylistPlay(route.playlistId, { sortBy: ts.by, sortOrder: ts.order });
+                if (route.playlistId && route.playlistId !== LOVED_PLAYLIST_ID) {
+                  const ts = safeParseTrackSort();
+                  const data = await fetchPlaylistPlay(route.playlistId, { sortBy: ts.by, sortOrder: ts.order });
                 if (data?.queue?.length) {
                   const q = applyTrackSearch(applyTrackFilter(data.queue, safeParseTrackFilter()), safeParseTrackSearchQuery());
                   setPlaylistQueue(q);
@@ -2080,20 +2272,18 @@ loadedPageKeyRef.current = `${folderId}:${folderInfo.path || ''}:${storedMetaSor
   setView('monitoring');
   return;
   }
-      if (route.type === 'downloader') { setView('downloader'); return; }
-      if (route.type === 'adb') { setView('adb'); return; }
-      if (route.type === 'music-sandbox') { setView('musicSandbox'); return; }
-      if (route.type === 'scrcpy') { setView('scrcpy'); return; }
-      if (route.type === 'whatsapp') { setView('whatsapp'); return; }
+       if (route.type === 'downloader') { setView('downloader'); return; }
+       if (route.type === 'adb') { setView('adb'); return; }
+       if (route.type === 'scrcpy') { setView('scrcpy'); return; }
+       if (route.type === 'whatsapp') { setView('whatsapp'); return; }
 if (route.type === 'sendqueue') { setView('sendqueue'); return; }
-       if (route.type === 'ai') { setView('ai'); return; }
-       if (route.type === 'ai-settings') { setView('ai-settings'); return; }
        if (route.type === 'playlists' || route.type === 'playlist-detail') {
         // Only clear audio if we're actually coming from audio view
         if (viewRef.current === 'audio') {
           if (sharedAudioRef.current) sharedAudioRef.current.pause();
-          sharedPrevFileIdRef.current = null;
-          usePlaybackStore.getState().clearPlayback();
+      sharedPrevFileIdRef.current = null;
+      cancelAutoPlayPending();
+      usePlaybackStore.getState().clearPlayback();
           usePlaylistStore.getState().clearPlaylistDetail();
           sessionStorage.removeItem('playlistQueue');
           sessionStorage.removeItem('playlistMetadata');
@@ -2167,6 +2357,7 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
       >
         {/* Header — hidden when playlists/scrcpy/sendqueue view (they have their own header) */}
         {view !== 'playlists' && view !== 'audio' && view !== 'scrcpy' && view !== 'vaultAudio' && view !== 'sendqueue' && (
+        <>
         <header className="flex-shrink-0 px-3 py-2 border-b border-neutral-800 bg-neutral-950 z-10">
 
 
@@ -2225,12 +2416,11 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
             </div>
             )}
 
-          <div className="flex items-center justify-between gap-2 mt-2">
-            <div className="flex items-center gap-2 flex-1 min-w-0">
-              <div className="flex items-center gap-2 flex-1">
+            <div className="flex items-center gap-2 mt-2">
+              <div className="flex items-center gap-2 flex-shrink-0">
                 <button
                   onClick={() => setSidebarOpen(true)}
-                  className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 transition-colors flex-shrink-0"
+                  className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 transition-colors"
                 >
                   <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <line x1="3" y1="6" x2="21" y2="6" />
@@ -2238,42 +2428,84 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
                     <line x1="3" y1="18" x2="21" y2="18" />
                   </svg>
                 </button>
-                {view === 'media' ? (
-                  <h1 className="text-sm font-semibold whitespace-nowrap">Media Vault</h1>
-                ) : view === 'monitoring' ? (
-                  <h1 className="text-sm font-semibold whitespace-nowrap text-neutral-200">Monitoring</h1>
-                ) : view === 'downloader' ? (
-                  <h1 className="text-sm font-semibold whitespace-nowrap text-neutral-200">Downloader</h1>
-                ) : view === 'playlists' || view === 'audio' ? (
-                   <h1 className="text-sm font-semibold whitespace-nowrap text-neutral-200">
-                     {view === 'audio' ? (playlistMetadata?.title || 'Audio Player') : 'Music'}
-                   </h1>
-                ) : view === 'scrcpy' ? (
-                  <h1 className="text-sm font-semibold whitespace-nowrap text-neutral-200">Scrcpy Mirror</h1>
-                ) : view === 'adb' ? (
-                  <h1 className="text-sm font-semibold whitespace-nowrap text-neutral-200">ADB Transfer</h1>
-                ) : view === 'whatsapp' ? (
-                  <h1 className="text-sm font-semibold whitespace-nowrap text-neutral-200">Bot</h1>
-                ) : (
-                  <h1 className="text-sm font-semibold whitespace-nowrap text-neutral-200">Media Vault</h1>
-                )}
-
+                <span className="text-sm font-semibold whitespace-nowrap text-neutral-200">
+                  {view === 'media' ? 'Media Vault' : view === 'monitoring' ? 'Monitoring' : view === 'downloader' ? 'Downloader' : view === 'playlists' || view === 'audio' ? (view === 'audio' ? (playlistMetadata?.title || 'Audio Player') : 'Music') : view === 'scrcpy' ? 'Scrcpy Mirror' : view === 'adb' ? 'ADB Transfer' : view === 'whatsapp' ? 'Bot' : 'Media Vault'}
+                </span>
               </div>
-            </div>
 
-            {view === 'media' && (
-              <div className="flex items-center gap-1 ml-auto">
-                <button
-                  onClick={() => setShowFilterPanel(true)}
-                  className={`single-panel-btn ${state.currentFilter !== 'all' || state.currentSortBy !== null ? 'has-filters' : ''}`}
-                  title="Filters"
-                >
-                  <SlidersHorizontal size={16} />
-                </button>
+              <div className="flex-1 flex justify-center px-2">
+                {(view === 'media' || view === 'playlists') && (
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => handleSearch(e.target.value)}
+                    placeholder="Cari file atau folder..."
+                    className="w-56 bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-1.5 text-xs text-neutral-200 placeholder-neutral-500 outline-none focus:border-neutral-600"
+                  />
+                )}
+              </div>
+
+              {view === 'media' && (
+                <div className="flex items-center gap-1 flex-shrink-0">
+                {selectionMode ? (
+                  <>
+                    <span className="text-xs text-neutral-300 mr-1">{selectedIds.size} item</span>
+                    <button
+                      onClick={handleBulkLock}
+                      className="single-panel-btn"
+                      title="Kunci item dari kirim WA"
+                    >
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                    </button>
+                    <button
+                      onClick={handleBulkDelete}
+                      className="single-panel-btn hover:!border-red-500/50 hover:!text-red-400"
+                      title="Hapus item yang dipilih"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                    <button
+                      onClick={clearSelection}
+                      className="single-panel-btn"
+                      title="Batal pilih"
+                    >
+                      <X size={16} />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={toggleSelectionMode}
+                      className="single-panel-btn"
+                      title="Pilih item untuk dihapus atau dikunci dari kirim WA"
+                    >
+                      <CheckSquare size={16} />
+                    </button>
+                    <button
+                      onClick={() => setShowFilterPanel(true)}
+                      className={`single-panel-btn ${state.currentFilter !== 'all' || state.currentSortBy !== null ? 'has-filters' : ''}`}
+                      title="Filters"
+                    >
+                      <SlidersHorizontal size={16} />
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
         </header>
+        {selectionMode && view === 'media' && (
+          <div className="flex-shrink-0 px-3 py-2 bg-neutral-900 border-b border-neutral-800 flex items-center justify-between z-10">
+            <span className="text-xs text-neutral-400">Mode pilih — klik kartu untuk memilih</span>
+            <button
+              onClick={clearSelection}
+              className="text-xs text-neutral-400 hover:text-white transition-colors"
+            >
+              Batal
+            </button>
+          </div>
+        )}
+        </>
         )}
 
         {/* Sidebar Overlay */}
@@ -2363,7 +2595,8 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
                 setPlaylistQueue(null);
                 setPlaylistMetadata(null);
                 setCurrentTrackIndex(0);
-                usePlaybackStore.getState().clearPlayback();
+        cancelAutoPlayPending();
+        usePlaybackStore.getState().clearPlayback();
                 setView('playlists');
                 setSidebarOpen(false);
                 history.pushState({ view: 'playlists' }, '', '#/playlists');
@@ -2376,19 +2609,9 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
                 <circle cx="18" cy="16" r="3" />
               </svg>
               Music
-            </button>
-            <button
-              data-debug-id="1.1.1.5b" data-debug-name="NavMusicSandbox" data-debug-type="other"
-              onClick={() => { setView('musicSandbox'); setSidebarOpen(false); history.pushState({ view: 'musicSandbox' }, '', '#/music-sandbox'); }}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'musicSandbox' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
-            >
-              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 20V10M18 20V4M6 20v-4" />
-              </svg>
-              Music Sync Sandbox
-            </button>
-            <button
-              data-debug-id="1.1.1.6" data-debug-name="NavBot" data-debug-type="other"
+             </button>
+             <button
+               data-debug-id="1.1.1.6" data-debug-name="NavBot" data-debug-type="other"
               onClick={() => { setView('whatsapp'); setSidebarOpen(false); history.pushState({ view: 'whatsapp' }, '', '#/whatsapp'); }}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'whatsapp' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
             >
@@ -2406,31 +2629,7 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
                 <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z" />
               </svg>
               Antrian Kirim
-            </button>
-            <button
-              data-debug-id="1.1.1.8" data-debug-name="NavAI" data-debug-type="other"
-              onClick={() => { setView('ai'); setSidebarOpen(false); history.pushState({ view: 'ai' }, '', '#/ai'); }}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'ai' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
-            >
-              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 2a4 4 0 0 1 4 4c0 1.95-1.4 3.58-3.25 3.93L12 22"/>
-                <path d="M12 2a4 4 0 0 0-4 4c0 1.95 1.4 3.58 3.25 3.93"/>
-                <path d="M16 16c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z"/>
-                <circle cx="12" cy="18" r="1"/>
-              </svg>
-              AI Chat
-            </button>
-            <button
-              data-debug-id="1.1.1.9" data-debug-name="NavAISettings" data-debug-type="other"
-              onClick={() => { setView('ai-settings'); setSidebarOpen(false); history.pushState({ view: 'ai-settings' }, '', '#/ai-settings'); }}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'ai-settings' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
-            >
-              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="3"/>
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-              </svg>
-              AI Settings
-            </button>
+             </button>
 
             {/* Debug Toggle */}
             <div className="mt-4 pt-4 border-t border-neutral-800">
@@ -2449,45 +2648,28 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
             </div>
 ) : view === 'adb' ? (
   <AdbTransfer />
-) : view === 'musicSandbox' ? (
-  <div className="flex-1 flex overflow-hidden">
-    <MusicSyncSandbox
-      file={state.selectedFile}
-      onClose={() => {
-        setView('media');
-        navigateToRoot();
-      }}
-    />
-  </div>
 ) : (view === 'playlists' || view === 'audio' || view === 'vaultAudio') ? (
       <div className="flex-1 flex flex-col overflow-hidden relative">
         <div className="flex-1 overflow-hidden" style={{ display: (view === 'audio' || view === 'vaultAudio') ? 'none' : 'flex', flexDirection: 'column' }}>
    <PlaylistView key={view === 'audio' ? 'audio-hidden' : 'playlists-visible'}
      onMenuOpen={() => setSidebarOpen(true)}
-      onPlayPlaylist={async (data) => {
-        usePlaybackStore.getState().clearPlayback();
-        sharedPrevFileIdRef.current = null;
+       onPlayPlaylist={async (data) => {
+         cancelAutoPlayPending();
+         usePlaybackStore.getState().clearPlayback();
+         sharedPrevFileIdRef.current = null;
         usePlaybackStore.getState().setQueue(data.queue, 0);
-       usePlaybackStore.getState().play();
-       setPlaylistQueue(data.queue);
-       setPlaylistMetadata(data.playlist);
-         setCurrentTrackIndex(0);
-         audioContextRef.current = 'music';
-         setView('audio');
-         currentAudioFileIdRef.current = null;
-        const firstFid = data.queue?.[0]?.file_id || data.queue?.[0]?.id;
-        if (firstFid) {
-          const url = `#/audio/playlist/${data.playlist?.id}/track/${firstFid}`;
-          if (window.location.hash !== url) history.pushState({ view: 'audio', playlistId: data.playlist?.id, trackFileId: firstFid }, '', url);
-        } else {
-          writePlaylistUrl(data.playlist?.id, null);
-        }
+        usePlaybackStore.getState().play();
+        setPlaylistQueue(data.queue);
+        setPlaylistMetadata(data.playlist);
+        setCurrentTrackIndex(0);
+        audioContextRef.current = 'music';
         showToast(`Playing: ${data.playlist.title}`, 'success');
       }}
-        onPlayTrack={(file, fullQueue, clickedIdx, playlist) => {
-          if (!file?.file_id && !file?.id) return;
-          usePlaybackStore.getState().clearPlayback();
-          sharedPrevFileIdRef.current = null;
+         onPlayTrack={(file, fullQueue, clickedIdx, playlist) => {
+           if (!file?.file_id && !file?.id) return;
+           cancelAutoPlayPending();
+           usePlaybackStore.getState().clearPlayback();
+           sharedPrevFileIdRef.current = null;
           const queue = fullQueue && fullQueue.length > 0 ? fullQueue : [{
             file_id: file.file_id || file.id,
             track_index: 0,
@@ -2508,48 +2690,21 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
           setPlaylistMetadata(playlist || { title: file.display_name || file.displayName || file.name?.replace(/\.[^/.]+$/, ''), creator: '' });
           setCurrentTrackIndex(trackIdx);
           audioContextRef.current = 'music';
-          setView('audio');
-          const pid = playlist?.id;
-          const fid = file.file_id || file.id;
-          if (pid) {
-            currentAudioFileIdRef.current = null;
-            const qItem = queue?.[trackIdx];
-            const qFid = qItem?.file_id || qItem?.id || fid;
-            const url = `#/audio/playlist/${pid}/track/${qFid}`;
-            if (window.location.hash !== url) history.pushState({ view: 'audio', playlistId: pid, trackFileId: qFid }, '', url);
-          } else {
-            currentAudioFileIdRef.current = fid;
-            const singleUrl = '#/audio/single/' + fid;
-            if (window.location.hash !== singleUrl) {
-              history.pushState({ view: 'audio', fileId: fid }, '', singleUrl);
-            }
-          }
+          showToast(`Playing: ${file.display_name || file.name}`, 'success');
         }}
         onDeletePlaylist={handleDeletePlaylist}
-       onBackToPlaylistList={() => {
-         setPlaylistQueue(null);
-         setPlaylistMetadata(null);
-         setCurrentTrackIndex(0);
-         sessionStorage.removeItem('playlistQueue');
-         sessionStorage.removeItem('playlistMetadata');
-         sessionStorage.removeItem('currentTrackIndex');
-         usePlaybackStore.getState().clearPlayback();
-       }}
-     />
-        </div>
-        {view === 'musicSandbox' && (
-          <div className="flex-1 flex overflow-hidden">
-            <MusicSyncSandbox
-              file={state.selectedFile}
-              onClose={() => {
-                setView('media');
-                navigateToRoot();
-              }}
-            />
-          </div>
-        )}
-        {view === 'audio' && (
-          <div className="flex-1 flex overflow-hidden">
+        onBackToPlaylistList={() => {
+          setPlaylistQueue(null);
+          setPlaylistMetadata(null);
+          setCurrentTrackIndex(0);
+          sessionStorage.removeItem('playlistQueue');
+          sessionStorage.removeItem('playlistMetadata');
+          sessionStorage.removeItem('currentTrackIndex');
+        }}
+      />
+         </div>
+         {view === 'audio' && (
+          <div className="flex-1 flex overflow-hidden animate-in fade-in duration-300">
           <MusicPlayer
             file={state.selectedFile}
             currentSortBy={state.currentSortBy}
@@ -2583,7 +2738,7 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
           </div>
         )}
         {view === 'vaultAudio' && (
-          <div className="flex-1 flex overflow-hidden">
+          <div className="flex-1 flex overflow-hidden animate-in fade-in duration-300">
             <VaultAudioPlayer
               file={state.selectedFile}
               folderFiles={searchResults !== null && searchQuery.trim().length >= 2 ? searchFileList : playerFiles}
@@ -2599,22 +2754,8 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
             />
           </div>
         )}
-      </div>
-       ) : view === 'ai' ? (
-         <AIChat onOpenSettings={() => { setSidebarOpen(false); history.pushState({ view: 'ai-settings' }, '', '#/ai-settings'); setView('ai-settings'); }} onClose={() => { history.replaceState({}, '', '#/media'); setView('media'); }} />
-       ) : view === 'ai-settings' ? (
-         <div className="flex-1 flex flex-col overflow-hidden" style={{ background: '#0a0a0a' }}>
-           <div className="flex items-center gap-3 px-4 py-3 border-b border-neutral-800 flex-shrink-0">
-             <button onClick={() => { setView('ai'); history.pushState({ view: 'ai' }, '', '#/ai'); }} className="p-2 rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-800" title="Kembali ke AI Chat">
-               <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-             </button>
-             <h1 className="text-base font-semibold text-neutral-100">AI Settings</h1>
-           </div>
-           <div className="flex-1 overflow-y-auto p-4">
-             <AISettings />
-           </div>
-         </div>
-      ) : view === 'whatsapp' ? (
+       </div>
+       ) : view === 'whatsapp' ? (
           <WhatsAppView onMenuOpen={() => setSidebarOpen(true)} />
        ) : view === 'sendqueue' ? (
             <SendQueueView onMenuOpen={() => setSidebarOpen(true)} onToggleFavorite={handleToggleFavorite} />
@@ -2666,16 +2807,19 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
                      key={`${isSearching ? 'search' : state.currentFilter}`}
                      folders={displayFolders}
                      files={displayItems}
-                     onSelect={handleSelect}
-                     onToggleFavorite={handleToggleFavorite}
-                    sortBy={state.currentSortBy}
-                    sortOrder={state.currentSortOrder}
-                     groupByFolder={isSearching}
-                    hasMore={state.hasMore}
-                    fetchingMore={state.fetchingMore}
-                    onLoadMore={fetchNextPage}
-                    onNearTop={handleNearTop}
-                  />
+                      onSelect={handleGridSelect}
+                      onToggleFavorite={handleToggleFavorite}
+                     sortBy={state.currentSortBy}
+                     sortOrder={state.currentSortOrder}
+                      groupByFolder={isSearching}
+                     hasMore={state.hasMore}
+                     fetchingMore={state.fetchingMore}
+                     onLoadMore={fetchNextPage}
+                     onNearTop={handleNearTop}
+                     selectionMode={selectionMode && view === 'media'}
+                     selectedIds={selectedIds}
+                     onToggleSelect={toggleSelectItem}
+                   />
                    {searchCapped && (
                      <div className="text-center text-xs text-neutral-500 py-3">
                        Menampilkan {Math.min(SEARCH_RENDER_LIMIT, sortedSearchItems.length)} dari {sortedSearchItems.length} hasil — persempit kata kunci untuk melihat lainnya
@@ -2885,12 +3029,10 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
         )}
 
         {/* Mini Audio Player */}
-        {view !== 'audio' && view !== 'vaultAudio' && <MiniPlayer onExpand={expandToAudio} sharedAudioRef={sharedAudioRef} sharedPrevFileIdRef={sharedPrevFileIdRef} audioReady={audioReady} onFavoriteToggle={handleToggleFavorite} onClose={() => {
+        {view === 'playlists' && hasActivePlayback && <MiniPlayer view={view} onExpand={expandToAudio} sharedAudioRef={sharedAudioRef} sharedPrevFileIdRef={sharedPrevFileIdRef} audioReady={audioReady} onFavoriteToggle={handleToggleFavorite} onClose={() => {
+          cancelAutoPlayPending();
           usePlaybackStore.getState().clearPlayback();
         }} />}
-
-        {/* Toast notifications */}
-        <ToastContainer toasts={appToasts} removeToast={removeToast} />
 
         {/* Filter Panel Modal */}
         <FilterPanel

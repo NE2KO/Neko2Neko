@@ -1,6 +1,11 @@
 // Pure route parser for hash-based navigation. Kept framework-free (no React,
 // no direct sessionStorage access) so it can be unit-tested in plain Node.
 
+// The "Loved" section is a virtual (favorites) playlist, not a server-side one.
+// It must never be passed to the playlist API (which would 404). Keep this in
+// sync with the `id: 'loved'` used in PlaylistView's `selectLoved`.
+export const LOVED_PLAYLIST_ID = 'loved';
+
 export function parseHash(hash, storage) {
   const store = storage || { getItem: () => null };
   const cleaned = (hash || '').replace(/^#+/, '').trim();
@@ -17,7 +22,6 @@ export function parseHash(hash, storage) {
     if (savedView === 'playlists') return { type: 'playlists' };
     if (savedView === 'audio') return { type: 'audio' };
     if (savedView === 'scrcpy') return { type: 'scrcpy' };
-    if (savedView === 'ai') return { type: 'ai' };
     return { type: 'root', view: 'media' };
   }
 
@@ -42,9 +46,6 @@ export function parseHash(hash, storage) {
     }
     return { type: 'playlists' };
   }
-  if (parts[0] === 'ai-settings') return { type: 'ai-settings' };
-  if (parts[0] === 'ai') return { type: 'ai' };
-  if (parts[0] === 'music-sandbox') return { type: 'music-sandbox' };
   if (parts[0] === 'audio') {
     // #/audio/playlist/<id>/track/<fileId>  -> trackId is the file id at parts[4]
     if (parts[1] === 'playlist' && parts[2] && parts[3] === 'track' && parts[4] !== undefined) {

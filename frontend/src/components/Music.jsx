@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { ChevronLeft, Minimize2, ListMusic, Heart, ChevronUp, ChevronDown, Ban, RotateCw, Trash2, Activity } from 'lucide-react';
+import { ChevronLeft, Minimize2, ListMusic, Heart, ChevronUp, ChevronDown, Ban, RotateCw, Trash2, Activity, Play, Grid } from 'lucide-react';
 import MediaControls from './MediaControls';
 import Carousel from './Carousel';
 import QueuePanel from './QueuePanel';
@@ -18,10 +18,13 @@ import { SharedSyncCore } from '../utils/syncCore';
 import { buildSensorSnapshot, validateAndAttach, logSensorSnapshot } from '../utils/sensor';
 import { evaluateDriftAnalyzer, evaluatePipelineAnalyzer, evaluateSchedulerAnalyzer, evaluateDecoderAnalyzer, evaluateConsistencyAnalyzer } from '../utils/analyzers';
 import { DriftMemory, PipelineMemory, SchedulerMemory, DecoderMemory, LearningMemory, GlobalMemory, createMemorySnapshot } from '../utils/memory';
+import { trackProfileStore } from '../utils/trackProfileStore.js';
+import { listeningTracker } from '../utils/listeningTracker.js';
 import { computeDerivedMetrics } from '../utils/memory/DerivedMetrics.js';
 import { decide, ExecutionQueue, getConstraints, createActionRequest } from '../utils/decision';
 import { createVideoSyncEngine } from '../utils/videoSyncEngine';
 import { circularDiff, isValidTelemetrySample } from '../utils/syncHelpers';
+import { cancelAutoPlayPending, isAutoPlayPendingCanceled, resetAutoPlayPending } from '../utils/autoPlayPending';
 
 
 export default function MusicPlayer({
@@ -96,16 +99,31 @@ export default function MusicPlayer({
   const bgSeekInProgressRef = useRef(false);
   const bgSeekStartedAtRef = useRef(0);
   const bgPendingForceSeekRef = useRef(null);
+  const bgWaitingRecoveryTimerRef = useRef(null);
   const lastAppliedSinkIdRef = useRef(null);
   const lastResumeTargetRef = useRef(null);
   const lastResumeTimeRef = useRef(0);
-  const [useBgEngine, setUseBgEngine] = useState(() => {
-    try { return localStorage.getItem('mv_bg_engine') === '1'; } catch { return false; }
-  });
+  const reloadResumeAtRef = useRef(0);
+
+  // Load reload resume timestamp from sessionStorage so the initial track-load
+  // effect can skip auto-play until App.jsx's delayed-resume timer fires.
+  useEffect(() => {
+    const saved = sessionStorage.getItem('audioReloadResumeAt');
+    if (saved) {
+      reloadResumeAtRef.current = Number(saved);
+    }
+    const onResume = () => {
+      reloadResumeAtRef.current = 0;
+    };
+    window.addEventListener('audio-reload-resume', onResume);
+    return () => window.removeEventListener('audio-reload-resume', onResume);
+  }, []);
+
   const [showSyncOverlay, setShowSyncOverlay] = useState(() => {
     try { return localStorage.syncDebug === 'true'; } catch { return false; }
   });
 
+  // Audio timeupdate → PlaybackStore (source of truth)
   const syncLogRef = useRef({
     enabled: false,
     sessionId: null,
@@ -142,6 +160,7 @@ export default function MusicPlayer({
   const prevTrackIdRef = useRef(null);
   const trackChangeTimeRef = useRef(0);
   const engineResetTimeRef = useRef(0);
+  const anchorCallCountRef = useRef({ mv: 0, bg: 0 });
   const rvfcMvLastTimeRef = useRef(0);
   const rvfcBgLastTimeRef = useRef(0);
   const rvfcStatusRef = { mv: 'UNSUPPORTED', bg: 'UNSUPPORTED' };
@@ -176,9 +195,9 @@ export default function MusicPlayer({
     if (log.buffer.length > log.maxBuffer) {
       log.buffer.splice(0, log.buffer.length - log.maxBuffer);
     }
-    const alwaysLog = ['hard_seek', 'stall', 'error'];
+    const alwaysLog = ['hard_seek', 'stall', 'error', 'anchor_call', 'anchor_complete', 'mode_switch', 'bg_seek_call', 'bg_seeked', 'bg_pending_force_seek'];
     const shouldLog = alwaysLog.includes(kind) || (performance.now() - log.lastConsoleLog > 500);
-    if (shouldLog && ['hard_seek', 'soft_seek', 'stall', 'large_drift', 'error'].includes(kind)) {
+    if (shouldLog && ['hard_seek', 'soft_seek', 'stall', 'large_drift', 'error', 'anchor_call', 'anchor_complete', 'mode_switch', 'bg_seek_call', 'bg_seeked', 'bg_pending_force_seek'].includes(kind)) {
       log.lastConsoleLog = performance.now();
       console.log(`[SYNC ${event.t.toFixed(0)}ms] ${kind}`, engine, data);
     }
@@ -619,6 +638,10 @@ export default function MusicPlayer({
     window.__SYNC_SET_PREFS__ = setTelemetryPrefs;
   }, []);
 
+
+
+
+
   // Expose a console toggle so you can A/B test without rebuilding:
   const touchStartYRef = useRef(0);
   const isGestureActiveRef = useRef(false);
@@ -715,8 +738,8 @@ useEffect(() => {
     }
     return filtered;
   }, [hasPlaylist, playlistFiles, folderFiles, favoriteOnly]);
-  const activeFile = hasPlaylist
-    ? (playlistFiles[storeCurrentTrackIndex] || playlistFiles[0])
+  const activeFile = hasPlaylist && playlistFiles.length > 0
+    ? (storeCurrentTrackIndex >= 0 && storeCurrentTrackIndex < playlistFiles.length ? playlistFiles[storeCurrentTrackIndex] : null)
     : file;
 
   // Telemetry: auto close/open session on track change (one session per track).
@@ -883,6 +906,7 @@ useEffect(() => {
       const onPause = () => {
         if (switchingRef.current) return;
         if ((typeof performance !== 'undefined' ? performance.now() : Date.now()) - lastSrcSetRef.current < 600) return;
+        cancelAutoPlayPending();
         pause();
       };
       audio.addEventListener('play', onPlay);
@@ -904,19 +928,19 @@ useEffect(() => {
     switchingRef.current = true;
     lastSrcSetRef.current = (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
-    // New track — load from the beginning and attempt to play.
-    // Coalesce rapid track changes (e.g. holding M/N): every change bumps
-    // loadGenerationRef and schedules a load 100ms later. Only the LAST change
-    // actually performs the physical reload, so spamming next/prev loads the
-    // audio once (for the final track) instead of reloading on every keypress.
-    // The currently playing track is intentionally left running during the
-    // burst — it only stops when this final load() swaps the source — so there
-    // is no silence gap / play-pause stutter while skipping.
+     // New track — load from the beginning and attempt to play.
+     // Coalesce rapid track changes (e.g. holding M/N): every change bumps
+     // loadGenerationRef and schedules a load 100ms later. Only the LAST change
+     // actually performs the physical reload, so spamming next/prev loads the
+     // audio once (for the final track) instead of reloading on every keypress.
+     // The currently playing track is intentionally left running during the
+     // burst — it only stops when this final load() swaps the source — so there
+     // is no silence gap / play-pause stutter while skipping.
     let cancelled = false;
     const generation = ++loadGenerationRef.current;
     const timer = setTimeout(() => {
       if (generation !== loadGenerationRef.current) return; // superseded
-      audio.currentTime = 0;
+      audio.currentTime = reloadResumeAtRef.current > Date.now() && storedPosition > 0 ? storedPosition : 0;
       audio.src = `/file/${fileId}`;
       audio.load();
 
@@ -936,6 +960,7 @@ useEffect(() => {
           // reload). Remember it and resume on the first user interaction.
           if (err?.name === 'NotAllowedError') {
             setAutoPlayPending(true);
+            resetAutoPlayPending();
           }
         });
       };
@@ -947,6 +972,7 @@ useEffect(() => {
       const maybePlay = () => {
         if (cancelled) return;
         if (!sinkReady || !(canPlayFired || audio.readyState >= 3)) return;
+        if (reloadResumeAtRef.current > Date.now()) return;
         tryPlay();
       };
       audio.addEventListener('canplay', () => { canPlayFired = true; maybePlay(); }, { once: true });
@@ -1006,12 +1032,14 @@ useEffect(() => {
   useEffect(() => {
     const audio = audioRef?.current;
     if (!audio || !audioReady) return;
-    // While a skip/programmatic switch is in progress, the load effect owns
-    // play/pause (it coalesces rapid next/prev into a single final track).
-    // Don't let this effect replay the old track or fight the loader.
     if (switchingRef.current) return;
     if (isPlaying && audio.paused) {
-      audio.play().catch(() => {});
+      audio.play().catch((err) => {
+        if (err?.name === 'NotAllowedError') {
+          setAutoPlayPending(true);
+          resetAutoPlayPending();
+        }
+      });
     } else if (!isPlaying && !audio.paused) {
       audio.pause();
     }
@@ -1025,6 +1053,26 @@ useEffect(() => {
     audio.addEventListener('timeupdate', sync);
     return () => audio.removeEventListener('timeupdate', sync);
   }, [audioRef, setStorePosition]);
+
+  // ListeningTracker: attach to audio element, track per-track listening time.
+  useEffect(() => {
+    const audio = audioRef?.current;
+    if (!audio || !audioReady) return;
+    const trackId = activeFile?.file_id || activeFile?.id || null;
+    if (!trackId) return;
+    const displayName = activeFile?.display_name || activeFile?.name || null;
+    listeningTracker.attach(audio, trackId, displayName);
+    return () => {
+      listeningTracker.detach();
+    };
+  }, [activeFile?.id, activeFile?.file_id, audioReady, audioRef]);
+
+  // Persist listening stats on unmount.
+  useEffect(() => {
+    return () => {
+      listeningTracker.forcePersist();
+    };
+  }, []);
 
   // Fetch metadata + lyrics when track changes
   useEffect(() => {
@@ -1082,9 +1130,10 @@ useEffect(() => {
 
   // Retry autoplay after user gesture
   useEffect(() => {
-    if (autoPlayPending && userInteracted && audioRef?.current) {
+    if (autoPlayPending && userInteracted && audioRef?.current && !isAutoPlayPendingCanceled()) {
       audioRef.current.play().catch(() => {});
       setAutoPlayPending(false);
+      resetAutoPlayPending();
     }
   }, [autoPlayPending, userInteracted, audioRef]);
 
@@ -1194,6 +1243,7 @@ const mvEngine = useMemo(() => createVideoSyncEngine({
   log: syncLog,
       trackChangeTimeRef,
       syncCore,
+      profileStore: trackProfileStore,
       engineName: 'mv',
       analyzerEvidenceRef,
       decisionOutputRef,
@@ -1222,13 +1272,17 @@ const bgEngine = useMemo(() => createVideoSyncEngine({
             return;
         }
         if (bgSeekInProgressRef.current) {
-            // Wedge recovery: if the seeked event was missed and the flag is
-            // stuck true, allow a fresh seek after 2 s instead of silently
-            // dropping every subsequent seek (video frozen forever).
             if (performance.now() - bgSeekStartedAtRef.current > 2000) {
                 bgSeekInProgressRef.current = false;
             } else {
                 bgPendingForceSeekRef.current = target;
+                syncLog('bg_pending_force_seek', 'bg', {
+                    target,
+                    current: cur,
+                    gap,
+                    seekInProgress: true,
+                    seekStartedAt: bgSeekStartedAtRef.current,
+                });
                 return;
             }
         }
@@ -1236,16 +1290,25 @@ const bgEngine = useMemo(() => createVideoSyncEngine({
             bg.currentTime = target;
             bgSeekInProgressRef.current = true;
             bgSeekStartedAtRef.current = performance.now();
+            syncLog('bg_seek_call', 'bg', {
+                target,
+                current: cur,
+                gap,
+                seekInProgress: true,
+                method: 'currentTime_small',
+            });
             return;
         }
-        // Do NOT pause before the seek — match MV's forceSeek. An explicit
-        // pause drops BG to a low readyState and adds a pause→play recovery
-        // cycle, so BG's seek lands (and resumes) visibly later than MV's.
-        // Setting currentTime while playing pauses internally and resumes on
-        // seeked, exactly like the main video.
         bg.currentTime = target;
         bgSeekInProgressRef.current = true;
         bgSeekStartedAtRef.current = performance.now();
+        syncLog('bg_seek_call', 'bg', {
+            target,
+            current: cur,
+            gap,
+            seekInProgress: true,
+            method: 'currentTime_large',
+        });
     },
     play: () => Promise.resolve(bgVideoRef.current?.play?.()),
     pause: () => { bgVideoRef.current?.pause?.(); return Promise.resolve(); },
@@ -1287,6 +1350,7 @@ const bgEngine = useMemo(() => createVideoSyncEngine({
   log: syncLog,
       trackChangeTimeRef,
       syncCore,
+      profileStore: trackProfileStore,
       engineName: 'bg',
       analyzerEvidenceRef,
       decisionOutputRef,
@@ -1654,15 +1718,10 @@ useEffect(() => {
         if (scrubbingRef.current) return;
 
         // If this seek was triggered by user interaction (progress bar / skip),
-        // handleSeekSync already anchored both engines. But always ensure BG
-        // is at the correct position — BG seek can silently fail if
-        // bgSeekInProgressRef is stale or bg duration isn't loaded.
+        // handleSeekSync already anchored MV and BG. Skip the redundant re-anchor
+        // here; the audio seeked event is only needed to clear the scrub flag.
         if (userSeekPendingRef.current) {
             userSeekPendingRef.current = false;
-            if (youtubeId) {
-                const playing = usePlaybackStore.getState().isPlaying;
-                try { bgEngine.anchor({ play: playing, target: now + (videoOffsetRef.current || 0) }); } catch (_) {}
-            }
             return;
         }
 
@@ -1685,30 +1744,64 @@ useEffect(() => {
 // so BG follows the current offset and MV does not stay stuck on its old/anchorless position / poster.
 useEffect(() => {
     const justEnteredVideo = isVideoMode && !prevModeRef.current;
+    const justEnteredCover = !isVideoMode && prevModeRef.current && playerMode === 'cover';
+    if (justEnteredVideo || justEnteredCover) {
+        syncLog('mode_switch', 'system', {
+            timestamp: performance.now(),
+            from: prevModeRef.current ? 'video' : 'cover',
+            to: isVideoMode ? 'video' : 'cover',
+        });
+    }
     prevModeRef.current = isVideoMode;
 
     if (justEnteredVideo) {
         const target = audioRef.current?.currentTime + (videoOffsetRef.current || 0);
         const playing = usePlaybackStore.getState().isPlaying;
-        mvEngine.anchor({ play: playing, target });
-
-        // Ensure BG is also positioned and playing when entering video mode.
-        // The BG <video> is rendered as long as youtubeId exists, but it can be
-        // left paused/stale from cover mode; explicitly seek+play it here.
-        const bg = bgVideoRef.current;
-        if (bg && youtubeId) {
-            const dur = bg.duration;
-            const bgTarget = (isFinite(dur) && dur > 0)
-                ? ((target % dur) + dur) % dur
-                : target;
-            bg.currentTime = bgTarget;
-            if (playing) {
-                bg.play().catch(() => {});
-            }
-            bgEngine.reset();
+        const mvReady = videoRef.current?.getReadyState?.() ?? 0;
+        const mvSeekPending = mvEngine.state.seekPending;
+        if (mvReady >= 3 && !mvSeekPending) {
+            anchorCallCountRef.current.mv++;
+            syncLog('anchor_call', 'mv', {
+                timestamp: performance.now(),
+                direction: 'cover->mv',
+                totalCalls: anchorCallCountRef.current.mv,
+                preRate: mvEngine.state.rate,
+                preMode: mvEngine.state.mode,
+                preSeekPending: mvEngine.state.seekPending,
+            });
+            mvEngine.anchor({ play: playing, target });
+            syncLog('anchor_complete', 'mv', {
+                timestamp: performance.now(),
+                postRate: mvEngine.state.rate,
+                postMode: mvEngine.state.mode,
+            });
         }
     }
+
+    if (justEnteredVideo || justEnteredCover) {
+        // Do NOT re-anchor BG on cover<->MV switches; BG must keep running
+        // uninterrupted. Its own tick() loop handles drift correction.
+    }
 }, [isVideoMode, mvEngine, bgEngine, youtubeId]);
+
+// On initial mount or track change while in cover mode, ensure BG is playing.
+useEffect(() => {
+    if (playerMode !== 'cover' || !youtubeId) return;
+    const bg = bgVideoRef.current;
+    if (!bg || !bg.paused) return;
+
+    const target = audioRef.current?.currentTime + (videoOffsetRef.current || 0);
+    const dur = bg.duration;
+    const bgTarget = (isFinite(dur) && dur > 0)
+        ? ((target % dur) + dur) % dur
+        : target;
+    const gap = Math.abs((bg.currentTime || 0) - bgTarget);
+    if (gap > 0.5) {
+        bg.currentTime = bgTarget;
+    }
+    const playing = usePlaybackStore.getState().isPlaying;
+    bgEngine.anchor({ play: playing, target: bgTarget });
+}, [youtubeId, playerMode]);
 
 // One-time sync: position the video at the offset target as soon as it becomes
 // ready. This runs again if videoOffset arrives/changes AFTER the first pass.
@@ -1738,11 +1831,77 @@ useEffect(() => {
   if (syncCore) syncCore.setVideoRemountKey('mv', videoRemountKey);
 }, [videoRemountKey, syncCore]);
 
+// Save per-track profile before a track change or on unmount.
+// Declared immediately before the reset effect so its cleanup runs AFTER
+// the reset cleanup, capturing EMAs that softReset() intentionally preserves.
+const prevMediaIdForSaveRef = useRef(null);
+useEffect(() => {
+    const currentMediaId = activeFile?.file_id || activeFile?.id;
+    if (prevMediaIdForSaveRef.current && prevMediaIdForSaveRef.current !== currentMediaId) {
+      const mid = prevMediaIdForSaveRef.current;
+      const mvProfile = syncCore?.captureProfile('mv');
+      const bgProfile = syncCore?.captureProfile('bg');
+      if (mvProfile || bgProfile) {
+        trackProfileStore.set(mid, { ...(mvProfile || {}), ...(bgProfile || {}), mediaId: mid, updatedAt: performance.now() });
+      }
+    }
+    prevMediaIdForSaveRef.current = currentMediaId;
+}, [activeFile?.id, activeFile?.file_id]);
+
+// Also save on unmount (cleanup runs after the reset effect's cleanup,
+// so softReset()-preserved EMAs are still available).
+useEffect(() => {
+    return () => {
+      const mid = prevMediaIdForSaveRef.current || trackProfileStore.getCurrentTrackId();
+      if (!mid) return;
+      const mvProfile = syncCore?.captureProfile('mv');
+      const bgProfile = syncCore?.captureProfile('bg');
+      if (mvProfile || bgProfile) {
+        trackProfileStore.set(mid, { ...(mvProfile || {}), ...(bgProfile || {}), mediaId: mid, updatedAt: performance.now() });
+      }
+    };
+}, []);
+
 // Reset all sync state when track/video changes
 useEffect(() => {
-    if (syncCore) syncCore.reset();
-    mvEngine.reset();
-    bgEngine.reset();
+    const mediaId = activeFile?.file_id || activeFile?.id;
+
+    if (syncCore) syncCore.clearObservability();
+
+    if (!mediaId) {
+      mvEngine.reset();
+      bgEngine.reset();
+      syncedRef.current = false;
+      syncedOffsetRef.current = null;
+      readyFiredRef.current = false;
+      lastResumeTargetRef.current = null;
+      lastResumeTimeRef.current = 0;
+      setVideoReady(false);
+      setMetadataReady(false);
+      bgPendingTargetRef.current = null;
+      bgSeekInProgressRef.current = false;
+      bgSeekStartedAtRef.current = 0;
+      bgPendingForceSeekRef.current = null;
+      if (videoRef.current?.resetSeekState) {
+        videoRef.current.resetSeekState();
+      }
+      return;
+    }
+
+    const profile = trackProfileStore.getOrCreate(mediaId);
+    const confidence = profile.getEffectiveConfidence();
+
+    if (confidence > 0.1) {
+      syncCore.applyProfile('mv', profile);
+      syncCore.applyProfile('bg', profile);
+      mvEngine.softReset();
+      bgEngine.softReset();
+    } else {
+      mvEngine.reset();
+      bgEngine.reset();
+    }
+
+    trackProfileStore.setCurrentTrackId(mediaId);
     syncedRef.current = false;
     syncedOffsetRef.current = null;
     readyFiredRef.current = false;
@@ -1755,9 +1914,9 @@ useEffect(() => {
     bgSeekStartedAtRef.current = 0;
     bgPendingForceSeekRef.current = null;
     if (videoRef.current?.resetSeekState) {
-        videoRef.current.resetSeekState();
+      videoRef.current.resetSeekState();
     }
-}, [youtubeId, activeFile?.id, mvEngine, bgEngine]);
+}, [youtubeId, activeFile?.id, mvEngine, bgEngine, syncCore]);
 
 // The MV ended (shorter than the song, or reached its own end). Wrap it
 // seamlessly to the live audio position (mod MV duration) and keep playing —
@@ -1783,8 +1942,12 @@ const recoverVideo = useCallback(() => {
     const now = Date.now();
     if (now - lastRecoveryRef.current < 10000) return;
     lastRecoveryRef.current = now;
-    if (syncCore) syncCore.recordVideoLifecycleEvent('mv', 'watchdog-hard', videoRef.current);
-    mvEngine.reset();
+    if (syncCore && videoRef.current) {
+      syncCore.recordVideoLifecycleEvent('mv', 'watchdog-hard', videoRef.current);
+    }
+    if (syncCore) syncCore.clearObservability();
+    mvEngine.softReset();
+    bgEngine.softReset();
     syncedRef.current = false;
     syncedOffsetRef.current = null;
     readyFiredRef.current = false;
@@ -1793,7 +1956,7 @@ const recoverVideo = useCallback(() => {
     videoRemountCountRef.current += 1;
     try { registerVideoRemountCount(videoRemountCountRef.current); } catch {}
     setVideoRemountKey((k) => k + 1);
-}, [mvEngine, syncCore, registerVideoRemountCount]);
+}, [mvEngine, bgEngine, syncCore, registerVideoRemountCount]);
 
 // Genuine <video> error (e.g. stream hiccup / source down).
 const handleVideoError = useCallback(() => {
@@ -1890,31 +2053,15 @@ const handleSeekSync = useCallback((seconds) => {
     const diff = target - currentVideoTime;
     const playing = usePlaybackStore.getState().isPlaying;
     syncLog('seek', 'mv', { target, current: currentVideoTime.toFixed(3), diff: diff.toFixed(3) });
-    // Seamless seek: after a scrub the video is already parked at/near the
-    // target (handleScrubChange tracked it). Force-seeking it back to the
-    // exact target after it landed (and possibly advanced a few frames) is a
-    // visible yank back. Skip the hard re-anchor when within tolerance; resume
-    // playback and let SET_RATE absorb the small residual drift invisibly.
-    // Genuine jumps still hard-seek.
     if (Math.abs(diff) <= 0.5) {
         if (playing) mvEngine.resume();
-        if (youtubeId) {
-            const bgCurrent = bgVideoRef.current?.currentTime ?? 0;
-            if (Math.abs(target - bgCurrent) > 0.5) {
-                try { bgEngine.anchor({ play: true, target }); } catch (_) {}
-            }
-        }
         return;
     }
     mvEngine.anchor({ play: true, target });
     if (youtubeId) {
-        // Issue BG's seek in the SAME tick as MV so both start together and
-        // land as close together as their sources allow. The old 150ms delay
-        // on large backward seeks made BG start later and finish visibly after
-        // MV (MV lands + resumes, BG still seeking).
-        try { bgEngine.anchor({ play: true, target }); } catch (_) {}
+      try { bgEngine.anchor({ play: true, target }); } catch (_) {}
     }
-}, [mvEngine, bgEngine, setStorePosition]);
+}, [mvEngine, setStorePosition]);
 
   const [favLoading, setFavLoading] = useState(false);
   const isFav = useIsFavorite(activeFile?.file_id || activeFile?.id, activeFile?.is_favorite ? 1 : 0);
@@ -1957,17 +2104,23 @@ const handleSeekSync = useCallback((seconds) => {
   }, []);
 
   const handleToggleEngine = useCallback(() => {
-    setUseBgEngine(prev => {
-      const next = !prev;
-      try { localStorage.setItem('mv_bg_engine', next ? '1' : '0'); } catch {}
-      return next;
+    setPlayerMode(prev => {
+      if (prev === 'cover') return 'video';
+      return 'cover';
     });
   }, []);
+
+  function formatTime(seconds) {
+    if (!seconds || isNaN(seconds)) return '0:00';
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  }
 
   const headerNode = useMemo(() => {
     return (
       <>
-        <div className="relative flex items-center justify-between w-full">
+        <div className="relative flex items-center justify-between w-full" style={{ background: 'rgb(12,12,16)' }}>
           <button
             onClick={onClose}
             className="p-2 rounded-full hover:bg-white/20 transition-colors"
@@ -2005,21 +2158,21 @@ const handleSeekSync = useCallback((seconds) => {
              >
                <Activity size={20} />
              </button>
-             <button
-               onClick={handleToggleEngine}
-               className={`p-2 rounded-full transition-colors ${useBgEngine ? 'bg-white/20 text-emerald-400' : 'text-white/70 hover:bg-white/20 hover:text-white'}`}
-               title={useBgEngine ? 'Switch to MV only' : 'Switch to MV + BG'}
-             >
-               <span className="text-xs font-bold">{useBgEngine ? 'BG' : 'MV'}</span>
-             </button>
-             <button
-               onClick={handleToggleFavorite}
-               disabled={favLoading}
-               className={`p-2 rounded-full transition-colors ${isFav ? 'text-red-500 hover:bg-white/20' : 'text-white/70 hover:bg-white/20 hover:text-white'}`}
-               title={isFav ? 'Remove from favorites' : 'Add to favorites'}
-             >
-               <Heart size={20} className={isFav ? 'fill-red-500' : ''} />
-             </button>
+               <button
+                 onClick={handleToggleEngine}
+                 className={`p-2 rounded-full transition-colors min-w-[3.5rem] text-center ${isVideoMode ? 'bg-white/20 text-emerald-400' : 'text-white/70 hover:bg-white/20 hover:text-white'}`}
+                 title={isVideoMode ? 'Switch to Cover mode' : 'Switch to MV mode'}
+               >
+                 <span className="text-xs font-bold">{isVideoMode ? 'Cover' : 'MV'}</span>
+               </button>
+              <button
+                onClick={handleToggleFavorite}
+                disabled={favLoading}
+                className={`p-2 rounded-full transition-colors ${isFav ? 'text-red-500 hover:bg-white/20' : 'text-white/70 hover:bg-white/20 hover:text-white'}`}
+                title={isFav ? 'Remove from favorites' : 'Add to favorites'}
+              >
+                <Heart size={20} className={isFav ? 'fill-red-500' : ''} />
+              </button>
             </>
            )}
           {hasPlaylist && (
@@ -2045,7 +2198,7 @@ const handleSeekSync = useCallback((seconds) => {
         </div>
       </>
     );
-  }, [onClose, onMinimize, hasPlaylist, showQueuePanel, isFav, favLoading, handleToggleFavorite, handleToggleSyncOverlay, handleToggleEngine, showSyncOverlay, useBgEngine, displayTitle]);
+  }, [onClose, onMinimize, hasPlaylist, showQueuePanel, isFav, favLoading, handleToggleFavorite, handleToggleSyncOverlay, handleToggleEngine, showSyncOverlay, isVideoMode, playerMode, displayTitle]);
         const handleClick = useCallback((e) => {
           if (e.button !== 0 && e.button !== 1) return;   // left / middle only
           e.preventDefault();
@@ -2376,7 +2529,7 @@ const handleSeekSync = useCallback((seconds) => {
         height: containerH + 'px',
         maxWidth: '100%',
         transition: containerTransition,
-        opacity: isPlaying ? 1 : 0.5,
+        opacity: 1,
       };
 
     let regionLeft, regionTop, regionW, regionH;
@@ -2747,15 +2900,17 @@ const handleSeekSync = useCallback((seconds) => {
      return () => clearInterval(id);
    }, []);
 
+
+
   return (
-    <div data-debug-id="1.1.9.3" data-debug-name="AudioPlayer" data-debug-type="player" className={`w-full h-full overflow-hidden max-w-full flex flex-col text-slate-100 select-none relative ${isVideoMode && youtubeId ? '' : 'bg-neutral-950'}`}>
+    <div data-debug-id="1.1.9.3" data-debug-name="AudioPlayer" data-debug-type="player" className="w-full h-full overflow-hidden max-w-full flex flex-col text-slate-100 select-none relative">
       {/* Sync debug overlay — toggle with window.__SYNC_DEBUG = true */}
       <SyncOverlay onClose={() => setShowSyncOverlay(false)} />
        {/* Video background: blurred, stretched video behind all content when in video mode */}
-        {youtubeId && useBgEngine && (
+        {youtubeId && (
         <video
           className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-          style={{ filter: `blur(12px) saturate(1.4) brightness(${isPlaying ? 0.85 : 0.45})`, transition: 'filter 400ms ease', transform: 'scale(1.2)', zIndex: 0, opacity: isVideoMode ? 0.45 : 0, maskImage: 'radial-gradient(ellipse at center, black 25%, transparent 70%)', WebkitMaskImage: 'radial-gradient(ellipse at center, black 25%, transparent 70%)', maskSize: '100% 100%', WebkitMaskSize: '100% 100%' }}
+          style={{ filter: `blur(12px) saturate(1.4) brightness(${isPlaying ? 0.85 : 0.45})`, transition: 'filter 400ms ease', transform: 'scale(1.2)', zIndex: 0, opacity: isVideoMode ? 0.45 : playerMode === 'cover' ? 0.35 : 0, maskImage: 'radial-gradient(ellipse at center, black 25%, transparent 70%)', WebkitMaskImage: 'radial-gradient(ellipse at center, black 25%, transparent 70%)', maskSize: '100% 100%', WebkitMaskSize: '100% 100%' }}
           src={`/api/video-cache/stream/${youtubeId}`}
           muted
           playsInline
@@ -2825,13 +2980,15 @@ const handleSeekSync = useCallback((seconds) => {
             onSeeked={() => {
               const bg = bgVideoRef.current;
               if (syncCore && bg) syncCore.recordVideoLifecycleEvent('bg', 'seeked', bg);
-              syncLog('seeked', 'bg', {});
+              const pendingForce = bgPendingForceSeekRef.current;
+              syncLog('bg_seeked', 'bg', {
+                currentTime: bg?.currentTime ?? null,
+                seekInProgressWas: bgSeekInProgressRef.current,
+                pendingForceSeek: pendingForce,
+              });
 
               bgSeekInProgressRef.current = false;
               bgSeekStartedAtRef.current = 0;
-              // A seek issued while another was in flight was parked here; it is
-              // now superseded by onSeeked's live re-anchor, so drop it instead
-              // of re-applying a stale position.
               bgPendingForceSeekRef.current = null;
 
               bgEngine.onSeeked();
@@ -2854,8 +3011,17 @@ const handleSeekSync = useCallback((seconds) => {
             }}
         />
       )}
+       {/* Translucent blur scrim over the background (playlist behind, or the
+           blurred MV video). Renders in BOTH cover and MV modes so the background
+           reads consistently dimmed + blurred. */}
+        <>
+          <div
+            className="absolute inset-0"
+            style={{ zIndex: 0, background: 'rgba(12,12,16,0.4)', backdropFilter: 'blur(16px) saturate(1.2)', WebkitBackdropFilter: 'blur(16px) saturate(1.2)' }}
+          />
+        </>
       <div className="relative flex flex-col flex-1 min-h-0" style={{ zIndex: 1 }}>
-      <div className="relative flex-none flex flex-col border-b border-white/5 px-4 py-1.5">
+       <div className="relative flex-none flex flex-col px-4 py-3" style={{ background: 'rgb(12,12,16)' }}>
         {headerNode}
       </div>
 
@@ -2886,7 +3052,7 @@ const handleSeekSync = useCallback((seconds) => {
       {/* Playlist / queue strip pinned to the bottom, large thumbnails, with a
           hide toggle. Uses its own collapse so it never overlaps the audio UI. */}
       {showCarousel && (
-        <div className="w-full relative">
+        <div className="w-full relative bg-neutral-950">
           <div className={`grid transition-all duration-300 ease-out ${manualHidden ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100'}`}>
             <div className="overflow-hidden">
                <Carousel

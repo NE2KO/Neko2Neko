@@ -3,7 +3,9 @@ import { Play, Pause, SkipBack, SkipForward, X, Maximize2, Heart } from 'lucide-
 import usePlaybackStore from '../store/playbackStore';
 import { useIsFavorite } from '../store/favoritesStore';
 import { fetchBlob, getCached } from '../utils/thumbCache';
+import { listeningTracker } from '../utils/listeningTracker.js';
 import NetworkImage from './NetworkImage';
+import { cancelAutoPlayPending, isAutoPlayPendingCanceled, resetAutoPlayPending } from '../utils/autoPlayPending';
 
 function formatTime(seconds) {
   if (!seconds || isNaN(seconds)) return '0:00';
@@ -12,7 +14,7 @@ function formatTime(seconds) {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPrevFileIdRef, audioReady, onFavoriteToggle }) {
+export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPrevFileIdRef, audioReady, onFavoriteToggle, view = null }) {
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [coverUrl, setCoverUrl] = useState(null);
@@ -20,6 +22,9 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
   const [mvError, setMvError] = useState(false);
   const [audioPlaying, setAudioPlaying] = useState(false);
   const bgVideoRef = useRef(null);
+
+  const [autoPlayPending, setAutoPlayPending] = useState(false);
+  const [userInteracted, setUserInteracted] = useState(false);
 
   const {
     isPlaying,
@@ -29,6 +34,10 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
     previous,
     queue,
     currentTrackIndex,
+    shuffle,
+    loopMode,
+    setShuffle,
+    setLoopMode,
   } = usePlaybackStore();
 
   const audioRef = sharedAudioRef;
@@ -84,7 +93,7 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
   useEffect(() => {
     const audio = audioRef?.current;
     const video = bgVideoRef.current;
-    if (!audio || !video) return;
+    if (!audio || !video || !audioReady) return;
 
     const offset = Number(currentTrack?.video_offset) || 0;
     const syncPosition = () => {
@@ -120,7 +129,7 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
       video.removeEventListener('loadedmetadata', syncPosition);
       video.removeEventListener('canplay', onCanPlay);
     };
-  }, [audioRef, mvId, currentTrack?.video_offset]);
+  }, [audioRef, audioReady, mvId, currentTrack?.video_offset]);
 
   // Re-fetch the cover if the connection returns (wifi toggled off then on)
   useEffect(() => {
@@ -155,7 +164,9 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
     }
 
     // New track — load and play
-    audio.currentTime = 0;
+    const store = usePlaybackStore.getState();
+    console.log('[MiniPlayer] Loading track:', fileId, 'position:', store.position, 'isPlaying:', store.isPlaying);
+    audio.currentTime = store.position > 0 ? store.position : 0;
     audio.src = `/file/${fileId}`;
     audio.load();
 
@@ -184,7 +195,7 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
   // when returning to the MiniPlayer while the audio is still playing.
   useEffect(() => {
     const audio = audioRef?.current;
-    if (!audio) return;
+    if (!audio || !audioReady) return;
     const update = () => setAudioPlaying(!audio.paused);
     update();
     audio.addEventListener('play', update);
@@ -195,18 +206,55 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
       audio.removeEventListener('pause', update);
       audio.removeEventListener('playing', update);
     };
-  }, [audioRef]);
+  }, [audioRef, audioReady]);
 
   // Resume-only sync: if the store wants playback but the element is paused
   // (e.g. a play intent from MediaControls), retry play. Never pauses the audio
   // based on store state — the element itself is the source of truth.
   useEffect(() => {
     const audio = audioRef?.current;
-    if (!audio) return;
+    if (!audio || !audioReady) return;
     if (isPlaying && audio.paused) {
-      audio.play().catch(() => {});
+      audio.play().catch((err) => {
+        if (err?.name === 'NotAllowedError') {
+          setAutoPlayPending(true);
+          resetAutoPlayPending();
+        }
+      });
     }
-  }, [isPlaying, audioRef]);
+  }, [isPlaying, audioRef, audioReady]);
+
+  // Retry autoplay after user gesture
+  useEffect(() => {
+    if (autoPlayPending && userInteracted && audioRef?.current && !isAutoPlayPendingCanceled()) {
+      audioRef.current.play().catch(() => {});
+      setAutoPlayPending(false);
+      resetAutoPlayPending();
+    }
+  }, [autoPlayPending, userInteracted, audioRef]);
+
+  // Mark the first user gesture so a previously-blocked autoplay can resume.
+  useEffect(() => {
+    const mark = () => setUserInteracted(true);
+    window.addEventListener('pointerdown', mark);
+    window.addEventListener('keydown', mark);
+    return () => {
+      window.removeEventListener('pointerdown', mark);
+      window.removeEventListener('keydown', mark);
+    };
+  }, []);
+
+  // ListeningTracker: attach to shared audio so stats accumulate in mini player too.
+  useEffect(() => {
+    const audio = audioRef?.current;
+    if (!audio || !audioReady || !fileId) return;
+    const displayName = currentTrack?.display_name || currentTrack?.name || null;
+    listeningTracker.attach(audio, fileId, displayName);
+    return () => {
+      listeningTracker.detach();
+      listeningTracker.forcePersist();
+    };
+  }, [fileId, audioReady, audioRef, currentTrack?.display_name, currentTrack?.name]);
 
   // Handle seek bar click
   const handleSeek = useCallback((e) => {
@@ -227,7 +275,10 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
     if (audio.paused) {
       audio.play().catch(() => {});
       play();
+      setAutoPlayPending(false);
+      resetAutoPlayPending();
     } else {
+      cancelAutoPlayPending();
       audio.pause();
       pause();
     }
@@ -235,6 +286,7 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
 
   // Handle close: pause + clear store + callback
   const handleClose = useCallback(() => {
+    cancelAutoPlayPending();
     pause();
     if (audioRef?.current) audioRef.current.pause();
     onClose?.();
@@ -244,6 +296,88 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
   const handleExpand = useCallback(() => {
     onExpand?.();
   }, [onExpand]);
+
+  // Keyboard bindings — mirror the full player so the MiniPlayer is fully
+  // controllable without the mouse (space = play/pause, m = next, n = previous,
+  // l = love). The MiniPlayer only mounts when the full player is collapsed, so
+  // these keys belong to it. We register in the CAPTURE phase on window (which
+  // fires before App.jsx's document-capture global handler) and stopPropagation
+  // so the keys are authoritative and never double-fire with the full player's
+  // bindings. Switch-player key is intentionally left out for now (UI button pending).
+  useEffect(() => {
+    const onKey = (e) => {
+      // When the user is typing in an input/textarea/contenteditable, do NOT
+      // intercept keystrokes — otherwise characters like m/n/b/j/g/h/l/Space
+      // never reach the field (e.g. playlist search box).
+      const target = e.target;
+      if (target && (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.isContentEditable
+      )) return;
+
+      // Views that own their own full-screen media shortcuts ('media' and
+      // 'sendqueue') dispatch their own custom events from App.jsx. If we
+      // handle the keys here in capture phase and stopPropagation, those
+      // events never fire and the video/queue controls appear broken.
+      if (view === 'media' || view === 'sendqueue') return;
+
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.repeat) return;
+
+      let handled = true;
+      switch (e.key) {
+        case ' ':
+        case 'Spacebar':
+          handlePlayPause();
+          break;
+        case 'm':
+        case 'M':
+          next();
+          break;
+        case 'n':
+        case 'N':
+          previous();
+          break;
+        case 'l':
+        case 'L':
+          handleToggleFavorite();
+          break;
+        case 'b':
+        case 'B':
+          setShuffle(!shuffle);
+          break;
+        case 'j':
+        case 'J': {
+          const modes = ['off', 'all', 'one'];
+          const idx = modes.indexOf(loopMode);
+          setLoopMode(modes[(idx + 1) % modes.length]);
+          break;
+        }
+        case 'g':
+        case 'G': {
+          const audio = audioRef?.current;
+          if (audio) audio.currentTime = Math.max(0, audio.currentTime - 5);
+          break;
+        }
+        case 'h':
+        case 'H': {
+          const audio = audioRef?.current;
+          if (audio) audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 5);
+          break;
+        }
+        default:
+          handled = false;
+          break;
+      }
+      if (handled) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [handlePlayPause, next, previous, handleToggleFavorite, setShuffle, setLoopMode, shuffle, loopMode, view]);
 
   if (!currentTrack) return null;
 
