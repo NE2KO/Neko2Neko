@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Play, Pause, SkipBack, SkipForward, X, Maximize2, Heart, Shuffle, Repeat, Volume2, VolumeX } from 'lucide-react';
+import { Play, Pause, SkipBack, SkipForward, Maximize2, Heart, Shuffle, Repeat, Volume2, VolumeX } from 'lucide-react';
 import usePlaybackStore from '../store/playbackStore';
 import { useIsFavorite } from '../store/favoritesStore';
 import { fetchBlob, getCached } from '../utils/thumbCache';
@@ -266,13 +266,6 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
     }
   }, [play, pause, audioRef]);
 
-  const handleClose = useCallback(() => {
-    cancelAutoPlayPending();
-    pause();
-    if (audioRef?.current) audioRef.current.pause();
-    onClose?.();
-  }, [pause, onClose, audioRef]);
-
   const handleExpand = useCallback(() => {
     onExpand?.();
   }, [onExpand]);
@@ -384,7 +377,7 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
         data-debug-id="1.2"
         data-debug-name="MiniPlayer"
         data-debug-type="floating"
-        className="fixed bottom-4 left-1/2 -translate-x-1/2 w-[min(92vw,520px)] bg-neutral-900/40 backdrop-blur-md border border-neutral-700/50 shadow-2xl z-40 rounded-2xl overflow-hidden"
+        className="fixed bottom-0 left-0 right-0 bg-neutral-900/95 backdrop-blur-md border-t border-neutral-700/50 shadow-2xl z-40"
       >
         <div className="absolute inset-0 pointer-events-none">
           <NetworkImage
@@ -416,24 +409,24 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
           <div className="absolute inset-0" style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.75), rgba(0,0,0,0.15))' }} />
         </div>
 
-        <div className="relative z-10 flex items-center gap-3 px-3 py-2">
-          <div className="flex items-center gap-2.5 flex-1 min-w-0">
-            <div className="w-10 h-10 flex-shrink-0 rounded-lg overflow-hidden bg-neutral-800">
+        <div className="relative z-10 flex items-center gap-4 px-4 py-2.5">
+          <div className="flex items-center gap-3 flex-1 min-w-0">
+            <div className="w-11 h-11 flex-shrink-0 rounded-lg overflow-hidden bg-neutral-800">
               <NetworkImage
                 src={coverUrl || `/thumbnails/${fileId}.jpg`}
                 alt=""
                 className="w-full h-full object-cover"
               />
             </div>
-            <div className="min-w-0 flex flex-col gap-0.5">
-              <div className="text-[11px] font-medium text-white truncate">
+            <div className="min-w-0 flex flex-col gap-1">
+              <div className="text-[12px] font-medium text-white truncate">
                 {currentTrack?.display_name || currentTrack?.name || 'Unknown Track'}
               </div>
               <div className="flex items-center gap-1.5">
-                <span className="text-[9px] text-neutral-500">{formatTime(currentTime)}</span>
+                <span className="text-[10px] text-neutral-500 w-8">{formatTime(currentTime)}</span>
                 <div
                   onClick={handleSeek}
-                  className="flex-1 h-1 bg-neutral-700/60 rounded-full cursor-pointer hover:h-1.5 transition-all group relative"
+                  className="flex-1 h-1.5 bg-neutral-700/60 rounded-full cursor-pointer group relative"
                 >
                   <div
                     className="h-full bg-indigo-500 rounded-full transition-all"
@@ -444,64 +437,64 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
                     style={{ left: `calc(${progress}% - 5px)` }}
                   />
                 </div>
-                <span className="text-[9px] text-neutral-500">{formatTime(duration)}</span>
+                <span className="text-[10px] text-neutral-500 w-8 text-right">{formatTime(duration)}</span>
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-0.5 flex-shrink-0">
+          <div className="flex items-center gap-1 flex-shrink-0">
             <button
               onClick={handleShuffle}
-              className={`transition-colors p-1.5 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0 ${shuffle ? 'text-indigo-400' : 'text-neutral-400 hover:text-white'}`}
+              className={`transition-colors p-2 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0 ${shuffle ? 'text-indigo-400' : 'text-neutral-400 hover:text-white'}`}
               title={shuffle ? 'Shuffle on' : 'Shuffle off'}
             >
-              <Shuffle size={14} />
+              <Shuffle size={16} />
             </button>
             <button
               onClick={previous}
-              className="text-neutral-400 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0"
+              className="text-neutral-400 hover:text-white transition-colors p-2 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0"
               tabIndex={-1}
               onMouseDown={(e) => e.preventDefault()}
             >
-              <SkipBack size={14} />
+              <SkipBack size={18} />
             </button>
             <button
               onClick={handlePlayPause}
-              className="w-8 h-8 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 transition-all flex-shrink-0 focus:outline-none focus:ring-0"
+              className="w-10 h-10 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 transition-all flex-shrink-0 focus:outline-none focus:ring-0"
               tabIndex={-1}
               onMouseDown={(e) => e.preventDefault()}
             >
               {audioPlaying ? (
-                <Pause size={14} fill="currentColor" />
+                <Pause size={18} fill="currentColor" />
               ) : (
-                <Play size={14} fill="currentColor" className="ml-0.5" />
+                <Play size={18} fill="currentColor" className="ml-0.5" />
               )}
             </button>
             <button
               onClick={next}
-              className="text-neutral-400 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0"
+              className="text-neutral-400 hover:text-white transition-colors p-2 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0"
               tabIndex={-1}
               onMouseDown={(e) => e.preventDefault()}
             >
-              <SkipForward size={14} />
+              <SkipForward size={18} />
             </button>
             <button
               onClick={handleLoop}
-              className={`transition-colors p-1.5 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0 ${loopMode !== 'off' ? 'text-indigo-400' : 'text-neutral-400 hover:text-white'}`}
+              className={`transition-colors p-2 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0 ${loopMode !== 'off' ? 'text-indigo-400' : 'text-neutral-400 hover:text-white'}`}
               title={`Loop: ${loopMode}`}
             >
-              <Repeat size={14} />
-              {loopMode === 'one' && <span className="text-[8px] font-bold ml-0.5">1</span>}
+              <Repeat size={16} />
+              {loopMode === 'one' && <span className="text-[9px] font-bold ml-0.5">1</span>}
             </button>
           </div>
 
-          <div className="flex items-center gap-1 flex-shrink-0">
+          <div className="flex items-center gap-1.5 flex-shrink-0">
             <button
               onClick={toggleMute}
-              className="text-neutral-400 hover:text-white transition-colors p-1 rounded hover:bg-neutral-800 focus:outline-none focus:ring-0"
+              className="text-neutral-400 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0"
               title={volume === 0 ? 'Unmute' : 'Mute'}
             >
-              {volume === 0 ? <VolumeX size={14} /> : <Volume2 size={14} />}
+              {volume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
             </button>
             <input
               type="range"
@@ -510,14 +503,14 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
               step="0.01"
               value={volume}
               onChange={handleVolumeChange}
-              className="w-16 h-1 bg-neutral-700 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-md"
+              className="w-20 h-1 bg-neutral-700 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-md"
             />
             <button
               onClick={handleExpand}
-              className="text-neutral-400 hover:text-white transition-colors p-1 rounded hover:bg-neutral-800 focus:outline-none focus:ring-0"
+              className="text-neutral-400 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0"
               title="Full player"
             >
-              <Maximize2 size={14} />
+              <Maximize2 size={16} />
             </button>
           </div>
         </div>
