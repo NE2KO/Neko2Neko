@@ -18,6 +18,16 @@ const MIN_CARD = 135;
 const MAX_CARD = 165;
 const MAX_COLUMNS = 10;
 const GUTTER = 8;
+const META_HEIGHT = 44;
+
+function formatDuration(seconds) {
+  if (!seconds) return '0:00';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
 
 const ThumbnailImage = memo(({ src, alt, file }) => {
   const [loaded, setLoaded] = useState(false);
@@ -58,11 +68,16 @@ const ThumbnailImage = memo(({ src, alt, file }) => {
   );
 });
 
-const VirtualizedMediaCard = memo(({ file, onSelect, onToggleFavorite, itemWidth, cardHeight }) => {
+const VirtualizedMediaCard = memo(({ file, onSelect, onToggleFavorite, itemWidth, cardHeight, selectionMode, isSelected, onToggleSelect }) => {
 
   const handleClick = () => {
     if (!file || !file.id) return;
-    onSelect && onSelect(file);
+    if (selectionMode) {
+      if (file.type === 'folder') return;
+      onToggleSelect && onToggleSelect(file);
+    } else {
+      onSelect && onSelect(file);
+    }
   };
 
   const handleFavorite = (e) => {
@@ -124,8 +139,14 @@ const VirtualizedMediaCard = memo(({ file, onSelect, onToggleFavorite, itemWidth
               ))}
             </div>
             )}
+            {selectionMode && (
+              <div className="absolute top-1 left-1 w-5 h-5 rounded-full border-2 flex items-center justify-center z-10"
+                style={{ borderColor: isSelected ? '#38bdf8' : 'rgba(255,255,255,0.5)', background: isSelected ? 'rgba(56,189,248,0.2)' : 'rgba(0,0,0,0.4)' }}>
+                {isSelected && <svg className="w-3 h-3 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+              </div>
+            )}
             <div className="absolute top-1 left-1 px-1.5 py-0.5 bg-blue-900/75 rounded text-[8px] font-bold tracking-wide text-blue-300">
-              {file.subfolder_count} subfolder{file.subfolder_count > 1 ? 's' : ''}
+               {file.subfolder_count} subfolder{file.subfolder_count > 1 ? 's' : ''}
             </div>
             <div className="absolute top-1 right-1 px-1.5 py-0.5 bg-black/75 rounded text-[8px] font-bold tracking-wide text-white/90 uppercase">FOLDER</div>
           </div>
@@ -159,9 +180,15 @@ const VirtualizedMediaCard = memo(({ file, onSelect, onToggleFavorite, itemWidth
                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                </svg>
              </div>
-           )}
-           <div data-debug-id="1.1.6.1.4" data-debug-name="GridTypeIcon" data-debug-type="other" className="absolute top-1 right-1 px-1.5 py-0.5 bg-black/75 rounded text-[8px] font-bold tracking-wide text-white/90 uppercase">{file.type || 'FILE'}</div>
-           {file.type !== 'folder' && (
+            )}
+            {selectionMode && (
+              <div className="absolute top-1 left-1 w-5 h-5 rounded-full border-2 flex items-center justify-center z-10"
+                style={{ borderColor: isSelected ? '#38bdf8' : 'rgba(255,255,255,0.5)', background: isSelected ? 'rgba(56,189,248,0.2)' : 'rgba(0,0,0,0.4)' }}>
+                {isSelected && <svg className="w-3 h-3 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+              </div>
+            )}
+            <div data-debug-id="1.1.6.1.4" data-debug-name="GridTypeIcon" data-debug-type="other" className="absolute top-1 right-1 px-1.5 py-0.5 bg-black/75 rounded text-[8px] font-bold tracking-wide text-white/90 uppercase">{file.type || 'FILE'}</div>
+            {file.type !== 'folder' && !selectionMode && (
              <button
                onClick={handleFavorite}
                className="absolute top-1 left-1 p-1 rounded-full bg-black/50 backdrop-blur-sm transition-transform active:scale-90 z-10"
@@ -174,10 +201,19 @@ const VirtualizedMediaCard = memo(({ file, onSelect, onToggleFavorite, itemWidth
              </button>
            )}
          </div>
-         <div data-debug-id="1.1.6.1.2" data-debug-name="GridMeta" data-debug-type="other" className="h-[44px] p-2 bg-neutral-900 border-t border-neutral-800/60 flex flex-col justify-center flex-shrink-0 w-full overflow-hidden">
-           <p className="text-[10px] sm:text-[11px] font-medium truncate text-neutral-200 w-full leading-tight">{file.name}</p>
-           <p className="text-[9px] text-neutral-500 mt-0.5 font-mono">{file.size ? formatSize(file.size) : '0 MB'}</p>
-         </div>
+          <div data-debug-id="1.1.6.1.2" data-debug-name="GridMeta" data-debug-type="other" className="h-[44px] p-2 bg-neutral-900 border-t border-neutral-800/60 flex flex-col justify-center flex-shrink-0 w-full overflow-hidden">
+            {file.type === 'audio' ? (
+              <>
+                <p className="text-[10px] sm:text-[11px] font-medium truncate text-neutral-200 w-full leading-tight">{file.display_name || file.name}</p>
+                <p className="text-[9px] text-neutral-500 mt-0.5 font-mono">{file.duration ? formatDuration(file.duration) : (file.size ? formatSize(file.size) : '0 MB')}</p>
+              </>
+            ) : (
+              <>
+                <p className="text-[10px] sm:text-[11px] font-medium truncate text-neutral-200 w-full leading-tight">{file.name}</p>
+                <p className="text-[9px] text-neutral-500 mt-0.5 font-mono">{file.size ? formatSize(file.size) : '0 MB'}</p>
+              </>
+            )}
+          </div>
        </div>
     </div>
   );
@@ -186,7 +222,7 @@ const VirtualizedMediaCard = memo(({ file, onSelect, onToggleFavorite, itemWidth
 });
 
 const Row = memo(({ index, style, data }) => {
-  const { rows, onSelect, onToggleFavorite, itemWidth, cardHeight, columnCount } = data;
+  const { rows, onSelect, onToggleFavorite, itemWidth, cardHeight, columnCount, selectionMode, selectedIds, onToggleSelect } = data;
   const row = rows[index];
 
   if (row.type === 'separator') {
@@ -216,7 +252,7 @@ const Row = memo(({ index, style, data }) => {
         justifyContent: 'center',
       }}>
         {row.items.map(item => (
-          <VirtualizedMediaCard key={item.id} file={item} onSelect={onSelect} onToggleFavorite={onToggleFavorite} itemWidth={itemWidth} cardHeight={cardHeight} />
+          <VirtualizedMediaCard key={item.id} file={item} onSelect={onSelect} onToggleFavorite={onToggleFavorite} itemWidth={itemWidth} cardHeight={cardHeight} selectionMode={selectionMode} isSelected={selectedIds.has(item.id)} onToggleSelect={onToggleSelect} />
         ))}
       </div>
     </div>
@@ -232,10 +268,13 @@ const Row = memo(({ index, style, data }) => {
   if (prev.data.itemWidth !== next.data.itemWidth) return false;
   if (prev.data.cardHeight !== next.data.cardHeight) return false;
   if (prev.data.columnCount !== next.data.columnCount) return false;
+  if (prev.data.selectionMode !== next.data.selectionMode) return false;
+  if (prev.data.selectedIds !== next.data.selectedIds) return false;
+  if (prev.data.onToggleSelect !== next.data.onToggleSelect) return false;
   return true;
 });
 
-const MediaGrid = forwardRef(({ folders = [], files = [], onSelect, onToggleFavorite, hasMore, fetchingMore, onLoadMore, sortBy = null, sortOrder = 'asc', groupByFolder = false, onNearTop = null }, ref) => {
+const MediaGrid = forwardRef(({ folders = [], files = [], onSelect, onToggleFavorite, hasMore, fetchingMore, onLoadMore, sortBy = null, sortOrder = 'asc', groupByFolder = false, onNearTop = null, selectionMode = false, selectedIds, onToggleSelect }, ref) => {
   const listRef = useRef(null);
   const outerListRef = useRef(null);
   const hasDividers = sortBy && sortBy !== 'size';
@@ -388,7 +427,7 @@ const MediaGrid = forwardRef(({ folders = [], files = [], onSelect, onToggleFavo
             }
             const effectiveWidth = Math.min(width, CONTAINER_MAX);
             const ITEM_WIDTH = Math.min(MAX_CARD, Math.max(MIN_CARD, Math.round(effectiveWidth * 0.10)));
-            const CARD_HEIGHT = Math.round(ITEM_WIDTH * 180 / 140);
+            const CARD_HEIGHT = ITEM_WIDTH + META_HEIGHT;
             const columnCount = Math.max(1, Math.min(MAX_COLUMNS, Math.floor((effectiveWidth - GUTTER) / (ITEM_WIDTH + GUTTER))));
             const gridHeight = Math.max(0, height - GUTTER);
 
@@ -421,7 +460,7 @@ const MediaGrid = forwardRef(({ folders = [], files = [], onSelect, onToggleFavo
               return row.type === 'separator' ? 44 : CARD_HEIGHT + GUTTER;
             };
 
-            const itemData = { rows, onSelect, onToggleFavorite, itemWidth: ITEM_WIDTH, cardHeight: CARD_HEIGHT, columnCount };
+            const itemData = { rows, onSelect, onToggleFavorite, itemWidth: ITEM_WIDTH, cardHeight: CARD_HEIGHT, columnCount, selectionMode, selectedIds, onToggleSelect };
 
             return (
               <List

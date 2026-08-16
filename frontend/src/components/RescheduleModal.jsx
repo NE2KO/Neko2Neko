@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronLeft, ChevronRight, X, File as FileIcon } from 'lucide-react';
+import { ChevronLeft, ChevronRight, X, File as FileIcon, PinOff } from 'lucide-react';
 import { getThumbnailUrl } from '../utils/api';
 
 const MONTHS = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
@@ -85,7 +85,7 @@ function getSlotOccupants(perDay, dateObj, items, etaMap) {
 // overflow-hidden) and never shifts the calendar layout (no flicker). Hover and
 // click show the SAME interactive UI: a date with items shows the items grid,
 // an empty date shows the clickable slot picker with a confirm button.
-function DayPopover({ dateStr, slots, occupants, dayItems, targetQid, selectedSlot, onSelectSlot, onConfirm, loading, anchor, onHoverChange, etaMap = {} }) {
+function DayPopover({ dateStr, slots, occupants, dayItems, targetQid, selectedSlot, onSelectSlot, onConfirm, onUnpin, loading, anchor, onHoverChange, etaMap = {} }) {
   if (!anchor) return null;
   const d = new Date(dateStr + 'T00:00:00');
   const dayName = DAYS[d.getDay()];
@@ -171,14 +171,24 @@ function DayPopover({ dateStr, slots, occupants, dayItems, targetQid, selectedSl
           })}
         </div>
 
-      <div className="px-2 py-2 border-t border-neutral-700/60">
+      <div className="px-2 py-2 border-t border-neutral-700/60 flex flex-col gap-1.5">
+          {targetQid != null && dayItems && dayItems.find((it) => it.qid === targetQid)?.pinned ? (
+            <button
+              type="button"
+              onClick={onUnpin}
+              disabled={loading}
+              className="w-full py-1.5 rounded-lg bg-neutral-800 text-cyan-300 text-xs font-medium hover:bg-neutral-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-1.5"
+            >
+              <PinOff size={13} /> Lepas sematan (otomatis)
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={onConfirm}
             disabled={!selectedSlot || loading}
             className="w-full py-2 rounded-lg bg-cyan-500 text-white text-sm font-medium hover:bg-cyan-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            {loading ? 'Menyimpan...' : 'Jadwalkan'}
+            {loading ? 'Menyimpan...' : 'Sematkan ke slot ini'}
           </button>
         </div>
     </div>,
@@ -186,7 +196,7 @@ function DayPopover({ dateStr, slots, occupants, dayItems, targetQid, selectedSl
   );
 }
 
-export default function RescheduleModal({ open, item, allItems, etaMap = {}, onClose, onConfirm }) {
+export default function RescheduleModal({ open, item, allItems, etaMap = {}, onClose, onConfirm, onUnpin }) {
   const today = startOfDay(new Date());
   const [currentMonth, setCurrentMonth] = useState(() => {
     const d = startOfDay(new Date());
@@ -443,6 +453,7 @@ export default function RescheduleModal({ open, item, allItems, etaMap = {}, onC
             selectedSlot={selectedSlot}
             onSelectSlot={handleSlotClick}
             onConfirm={handleConfirm}
+            onUnpin={onUnpin ? () => onUnpin(item?.qid) : undefined}
             loading={loading}
             anchor={anchor}
             etaMap={etaMap}

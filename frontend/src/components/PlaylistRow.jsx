@@ -4,7 +4,7 @@ import { PlaylistGridCard } from './PlaylistGridCard';
 const GUTTER = 8;
 
 const PlaylistRow = memo(({ index, style, data }) => {
-  const { rows, onSelect, onDelete, itemWidth, cardHeight, columnCount, selectedForDelete, deletingTrackIds, selectMode, slideMap } = data;
+  const { rows, onSelect, onDelete, itemWidth, cardHeight, columnCount, selectedForDelete, deletingTrackIds, selectMode, slideMap, playingFileId } = data;
   const row = rows[index];
 
   const cardItems = useMemo(() => {
@@ -54,6 +54,7 @@ const PlaylistRow = memo(({ index, style, data }) => {
             slideX={slideX}
             slideY={slideY}
             selectMode={selectMode}
+            isPlaying={rawItem._file_id && playingFileId && String(rawItem._file_id) === String(playingFileId)}
           />
         ))}
       </div>

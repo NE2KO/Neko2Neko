@@ -10,6 +10,14 @@ const CARD_ANIM_STYLE = `
   .playlist-card-in {
     animation: playlistCardIn 0.25s ease;
   }
+  .grid-card-eq {
+    width: 3px; border-radius: 2px; background: #052e16; height: 6px;
+    animation: gridCardEq 0.9s ease-in-out infinite;
+  }
+  @keyframes gridCardEq {
+    0%, 100% { height: 5px; }
+    50% { height: 14px; }
+  }
 `;
 
 let animStyleInjected = false;
@@ -58,7 +66,7 @@ const ThumbnailImage = memo(({ src, alt }) => {
   );
 });
 
-const PlaylistGridCard = memo(({ item, onSelect, onDelete, onToggleFavorite, typeLabel = 'PLAYLIST', itemWidth, cardHeight, _rawItem, isSelected, isDeleting, isLeaving, isEntering, slideX = 0, slideY = 0, selectMode }) => {
+const PlaylistGridCard = memo(({ item, onSelect, onDelete, onToggleFavorite, typeLabel = 'PLAYLIST', itemWidth, cardHeight, _rawItem, isSelected, isDeleting, isLeaving, isEntering, slideX = 0, slideY = 0, selectMode, isPlaying }) => {
   const { title, subtitle, thumbnailUrl, isFavorite } = item;
   const [localFav, setLocalFav] = useState(null);
   const isFav = localFav !== null ? localFav : isFavorite;
@@ -103,7 +111,7 @@ const PlaylistGridCard = memo(({ item, onSelect, onDelete, onToggleFavorite, typ
         onClick={handleClick}
         onContextMenu={handleContextMenu}
         className={`group relative rounded-xl overflow-hidden bg-neutral-900 border w-full h-full cursor-pointer flex flex-col flex-shrink-0 select-none transition-[border-color,opacity,transform] duration-200 ${
-          isSelected ? 'border-sky-500 ring-2 ring-sky-500/40' : 'border-neutral-800/80'
+          isSelected ? 'border-sky-500 ring-2 ring-sky-500/40' : isPlaying ? 'border-green-500 ring-2 ring-green-500/50' : 'border-neutral-800/80'
         } ${isDeleting ? 'opacity-0 scale-90' : ''} ${isLeaving ? 'opacity-0' : ''} ${isEntering ? 'playlist-card-in' : ''} ${selectMode ? (isSelected ? 'opacity-100 scale-100' : 'opacity-40 scale-90') : ''}`}
         style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
       >
@@ -130,6 +138,15 @@ const PlaylistGridCard = memo(({ item, onSelect, onDelete, onToggleFavorite, typ
           {isSelected && (
             <div className="absolute top-1 left-1 w-5 h-5 bg-sky-500 rounded-full flex items-center justify-center">
               <svg className="w-3 h-3 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            </div>
+          )}
+
+          {/* Now-playing badge */}
+          {isPlaying && (
+            <div className="absolute bottom-1 left-1 flex items-end gap-[2px] h-3.5 px-1 py-0.5 rounded bg-green-500/90 z-10" title="Now playing">
+              <span className="grid-card-eq" />
+              <span className="grid-card-eq" style={{ animationDelay: '0.15s' }} />
+              <span className="grid-card-eq" style={{ animationDelay: '0.3s' }} />
             </div>
           )}
 
@@ -163,7 +180,8 @@ const PlaylistGridCard = memo(({ item, onSelect, onDelete, onToggleFavorite, typ
     && prev.isEntering === next.isEntering
     && prev.slideX === next.slideX
     && prev.slideY === next.slideY
-    && prev.selectMode === next.selectMode;
+    && prev.selectMode === next.selectMode
+    && prev.isPlaying === next.isPlaying;
 });
 
 export { PlaylistGridCard };

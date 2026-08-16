@@ -10,7 +10,7 @@ import CarouselLockToggle from './CarouselLockToggle';
 import WaLogo from './icons/WaLogo';
 import SendStatusPill from './SendStatusPill';
 
-function ImageViewer({ file, folderFiles, currentSortBy, currentSortOrder, onClose, onImageChange, onLoadFolderFiles, onToggleFavorite, queueMode = false, queueItem = null, onQueueChanged = null, onEditCaption = null, onReschedule = null, bottomClusterAnim = null, embedded = false, lockEnabled = true, onToggleLock = null, onRepoNext = null, onRepoPrev = null, onSend = null, isFileQueued = false, isFileSent = false, sendStatus = 'idle', sendMessage = '', sendExtraInfo = null }) {
+function ImageViewer({ file, folderFiles, currentSortBy, currentSortOrder, onClose, onImageChange, onLoadFolderFiles, onToggleFavorite, queueMode = false, queueItem = null, onQueueChanged = null, onEditCaption = null, onReschedule = null, onSchedule = null, bottomClusterAnim = null, embedded = false, lockEnabled = true, onToggleLock = null, onRepoNext = null, onRepoPrev = null, onSend = null, isFileQueued = false, isFileSent = false, sendStatus = 'idle', sendMessage = '', sendExtraInfo = null }) {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -304,6 +304,11 @@ function ImageViewer({ file, folderFiles, currentSortBy, currentSortOrder, onClo
       <div className="ml-auto flex items-center gap-1">
         {onToggleLock && (
           <CarouselLockToggle lockEnabled={lockEnabled} onToggleLock={onToggleLock} />
+        )}
+        {onSchedule && (
+          <button onClick={() => onSchedule(file)} className="p-2.5 rounded-full bg-neutral-900/50 border border-white/5 active:bg-white/10 transition-colors text-white/70 hover:text-cyan-400 focus:outline-none focus:ring-0" title="Jadwalkan berdasarkan tanggal">
+            <Calendar size={18} />
+          </button>
         )}
         {queueMode ? (
           <>

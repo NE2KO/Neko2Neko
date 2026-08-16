@@ -26,9 +26,10 @@ export default function VideoPlayer({
      queueMode = false,
      queueItem = null,
      onQueueChanged = null,
-      onEditCaption = null,
-      onReschedule = null,
-       bottomClusterAnim = null,
+       onEditCaption = null,
+       onReschedule = null,
+       onSchedule = null,
+        bottomClusterAnim = null,
       embedded = false,
       mediaRef = null,
       startPaused = false,
@@ -322,6 +323,15 @@ const handleSend = useCallback(async (target) => {
             )}
             {onToggleLock && (
               <CarouselLockToggle lockEnabled={lockEnabled} onToggleLock={onToggleLock} />
+            )}
+            {onSchedule && (
+              <button
+                onClick={() => onSchedule(file)}
+                className="p-2 rounded-full transition-colors text-white/70 hover:bg-white/10 hover:text-cyan-400 focus:outline-none focus:ring-0"
+                title="Jadwalkan berdasarkan tanggal"
+              >
+                <Calendar size={20} />
+              </button>
             )}
              {queueMode ? (
                  <>

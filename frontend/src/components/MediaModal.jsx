@@ -4,7 +4,9 @@ import VaultAudioPlayer from './VaultAudioPlayer';
 import ImageViewer from './ImageViewer';
 import VaultBottomCluster from './VaultBottomCluster';
 import SendProgressPills from './SendProgressPills';
+import RescheduleModal from './RescheduleModal';
 import { useVaultMediaActions } from '../hooks/useVaultMediaActions';
+import { enqueueSendItem, rescheduleQueueItem, unpinQueueItem, getSendQueue, getSendQueueStatuses } from '../utils/api';
 
 const WINDOW_RADIUS = 60;
 
@@ -149,8 +151,77 @@ const handleFileChange = useCallback((newFile) => {
 
     // Favorite + send + progress logic for the persistent bottom cluster (driven
     // by the currently displayed file). Mirrors the standalone players' logic.
-    const { progress, handleToggleFavorite, handleSend, isFileQueued, isFileSent, sendStatus, sendMessage, sendExtraInfo, isFileLocked, toggleItemLock } =
-      useVaultMediaActions(displayFile, onToggleFavorite);
+     const { progress, handleToggleFavorite, handleSend, isFileQueued, isFileSent, sendStatus, sendMessage, sendExtraInfo, isFileLocked, toggleItemLock, checkFileSendStatus } =
+       useVaultMediaActions(displayFile, onToggleFavorite);
+
+     // "Jadwalkan" (schedule by date) flow for the currently-opened Media Vault
+     // item. If the item isn't in the queue yet, it's enqueued as PENDING first
+     // (no immediate send), then the calendar modal pins it to the chosen slot.
+     const [scheduleItem, setScheduleItem] = useState(null);
+     const [scheduleAllItems, setScheduleAllItems] = useState([]);
+     const [scheduleEtaMap, setScheduleEtaMap] = useState({});
+     const [showScheduleModal, setShowScheduleModal] = useState(false);
+
+     const handleSchedule = useCallback(async () => {
+       const fid = displayFileRef.current?.id;
+       if (!fid) return;
+       let item = null;
+       try {
+         const qData = await getSendQueue('pending', 0, 500);
+         const existing = (qData?.items || []).find(
+           (it) => String(it.file_id) === String(fid) || String(it.qid) === String(fid) || String(it.id) === String(fid)
+         );
+         if (existing) item = existing;
+       } catch {}
+       if (!item) {
+         try {
+           const res = await enqueueSendItem(fid, 'status');
+           const qid = res?.qid ?? res?.queueId;
+           if (qid == null) return;
+           item = { qid };
+         } catch {
+           return;
+         }
+       }
+       try {
+         const [qAll, statusData] = await Promise.all([
+           getSendQueue('pending', 0, 500),
+           getSendQueueStatuses('whatsapp,channel,status,all'),
+         ]);
+         const allItems = qAll?.items || [];
+         const etaMap = {};
+         for (const t of statusData?.timeline || []) etaMap[t.id] = t.eta;
+         setScheduleAllItems(allItems);
+         setScheduleEtaMap(etaMap);
+       } catch {}
+       setScheduleItem(item);
+       setShowScheduleModal(true);
+     }, []);
+
+     const closeScheduleModal = useCallback(() => {
+       setShowScheduleModal(false);
+       setScheduleItem(null);
+     }, []);
+
+     const handleScheduleConfirm = useCallback(async (qid, timestamp) => {
+       try {
+         await rescheduleQueueItem(qid, timestamp);
+         window.dispatchEvent(new Event('media-vault:send-changed'));
+         if (checkFileSendStatus) checkFileSendStatus();
+       } finally {
+         closeScheduleModal();
+       }
+     }, [checkFileSendStatus, closeScheduleModal]);
+
+     const handleScheduleUnpin = useCallback(async (qid) => {
+       try {
+         await unpinQueueItem(qid);
+         window.dispatchEvent(new Event('media-vault:send-changed'));
+         if (checkFileSendStatus) checkFileSendStatus();
+       } finally {
+         closeScheduleModal();
+       }
+     }, [checkFileSendStatus, closeScheduleModal]);
 
      // playlistFiles supplies both the player and the carousel. For folders with many
      // items we intentionally pass the full filtered list so the carousel can scroll
@@ -232,11 +303,12 @@ const handleFileChange = useCallback((newFile) => {
                    isFileSent={isFileSent}
                    isFileLocked={isFileLocked}
                    onToggleItemLock={toggleItemLock}
-                   sendStatus={sendStatus}
-                  sendMessage={sendMessage}
-                  sendExtraInfo={sendExtraInfo}
-                />
-            );
+                    sendStatus={sendStatus}
+                   sendMessage={sendMessage}
+                   sendExtraInfo={sendExtraInfo}
+                   onSchedule={handleSchedule}
+                 />
+             );
     }
     if (f.type === 'audio') {
       return (
@@ -254,6 +326,7 @@ const handleFileChange = useCallback((newFile) => {
               embedded
               lockEnabled={carouselLock}
               onToggleLock={toggleCarouselLock}
+              onSchedule={handleSchedule}
             />
           );
         }
@@ -279,11 +352,12 @@ const handleFileChange = useCallback((newFile) => {
                 sendStatus={sendStatus}
                 sendMessage={sendMessage}
                 sendExtraInfo={sendExtraInfo}
+                onSchedule={handleSchedule}
               />
         );
         }
         return null;
-      }, [playlistFiles, currentSortBy, currentSortOrder, onClose, handleFileChange, onToggleFavorite, onLoadFolderFiles, sharedAudioRef, audioReady, handleRepoNext, handleRepoPrev, carouselLock, toggleCarouselLock, handleSend, isFileQueued, sendStatus, sendMessage, sendExtraInfo]);
+      }, [playlistFiles, currentSortBy, currentSortOrder, onClose, handleFileChange, onToggleFavorite, onLoadFolderFiles, sharedAudioRef, audioReady, handleRepoNext, handleRepoPrev, carouselLock, toggleCarouselLock, handleSend, isFileQueued, sendStatus, sendMessage, sendExtraInfo, handleSchedule]);
 
      return (
       <div
@@ -356,12 +430,24 @@ const handleFileChange = useCallback((newFile) => {
 
               {/* Send progress pills: rendered once, top-right of the modal,
                   driven by the cluster's send action (not per-player). */}
-              {progress && (
-                <div className="absolute top-16 right-3 z-50 pointer-events-none">
-                  <SendProgressPills progress={progress} />
-                </div>
-              )}
-          </div>
+               {progress && (
+                 <div className="absolute top-16 right-3 z-50 pointer-events-none">
+                   <SendProgressPills progress={progress} />
+                 </div>
+               )}
+
+               {showScheduleModal && (
+                 <RescheduleModal
+                   open={showScheduleModal}
+                   item={scheduleItem}
+                   allItems={scheduleAllItems}
+                   etaMap={scheduleEtaMap}
+                   onClose={closeScheduleModal}
+                   onConfirm={handleScheduleConfirm}
+                   onUnpin={handleScheduleUnpin}
+                 />
+               )}
+           </div>
          )}
        </div>
      );

@@ -162,8 +162,8 @@ const PlaylistGrid = forwardRef(({
           {({ height, width }) => {
             if (height <= 0 || width <= 0) return null;
             const effectiveWidth = Math.min(width, CONTAINER_MAX);
-            const ITEM_W = Math.min(MAX_CARD, Math.max(MIN_CARD, Math.round(effectiveWidth * 0.10)));
-            const CARD_H = Math.round(ITEM_W * 180 / 140);
+             const ITEM_W = Math.min(MAX_CARD, Math.max(MIN_CARD, Math.round(effectiveWidth * 0.10)));
+             const CARD_H = ITEM_W + 44;
             const cols = Math.max(1, Math.min(MAX_COLUMNS,
               Math.floor((effectiveWidth - GUTTER) / (ITEM_W + GUTTER))));
 

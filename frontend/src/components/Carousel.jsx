@@ -27,7 +27,10 @@ const WINDOW_RADIUS = 12;   // ~25 nodes mounted around the active item initiall
 const SCROLL_BUFFER = 8;    // extra nodes kept mounted beyond the viewport
 const INCLUDE_ACTIVE_MARGIN = 4; // keep the active item mounted near the window edge
 const DRAG_THRESHOLD = 4;   // pointer movement before it becomes a drag-scroll
-const HYDRATE_STEP = 14;    // scroll distance before the next prefetch window fires
+const HYDRATE_STEP = 8;     // scroll distance before the next prefetch window fires
+const JUMP_THRESHOLD = 200; // index delta that counts as a large scrollbar jump
+const JUMP_RADIUS = 200;    // prefetch radius used right after a large jump
+const SCROLL_RADIUS = 60;   // prefetch radius used during normal incremental scroll
 const RECENTER_IDLE_MS = 30000; // with lock ON, re-center to the active item after this much idleness
 const DEFAULT_PITCH = { sm: 56, lg: 104 }; // item width + gap estimates (md+)
 
@@ -196,6 +199,8 @@ export function Carousel({ files, currentFile, onSelect, sortBy = null, sortOrde
   const winRef = useRef(win);
   winRef.current = win;
   const lastPrefetchRef = useRef(-1);
+  const lastHydrationCenterRef = useRef(-1); // last prefetch center, for jump detection
+  const abortControllerRef = useRef(null);   // cancels in-flight carousel prefetch
 
   // Virtual-only: keep a hydration window around the active item and funnel
   // loaded objects into a local re-render tick (the repo has no subscription,
@@ -209,7 +214,7 @@ const ai = repo.findIndex(currentFileId);
         // forward/back several screens without ever reaching an un-hydrated slot.
         // Without this, the hydrated region lagged behind and the carousel showed
         // empty placeholder blocks until you physically reached the boundary item.
-        repo.prefetchWindow(ai, 60).then(() => {
+        repo.prefetchWindow(ai, 120, undefined).then(() => {
           if (on) setHydrateTick((t) => t + 1);
         });
       }
@@ -406,13 +411,24 @@ const handleScroll = useCallback(() => {
       // fire batches of network requests and re-renders on every scroll frame.
       if (virtualRef.current) {
         const c = winRef.current;
-        const ahead = c.end;
-        // Prefetch a generous block BEYOND the visible right edge (not just
-        // around the middle) so the next few screens are already hydrated and
-        // scrolling forward never drops into empty placeholder slots.
-        if (ahead >= 0 && Math.abs(ahead - lastPrefetchRef.current) >= HYDRATE_STEP) {
-          lastPrefetchRef.current = ahead;
-          repo.prefetchWindow(ahead, 30);
+        // Center the prefetch window on the MIDDLE of the visible range (not just
+        // the trailing edge). This makes the hydration bidirectional, so scrolling
+        // backwards after a large jump never drops into a blind cache gap. A large
+        // delta from the last hydration center is treated as a jump and uses a
+        // bigger radius to pre-fill the entire new region in one shot.
+        const center = Math.max(0, Math.min(virtualTotalRef.current - 1, Math.floor((c.start + c.end) / 2)));
+        const isJump = Math.abs(center - lastHydrationCenterRef.current) >= JUMP_THRESHOLD;
+        lastHydrationCenterRef.current = center;
+        if (center >= 0 && Math.abs(center - lastPrefetchRef.current) >= HYDRATE_STEP) {
+          lastPrefetchRef.current = center;
+          const radius = isJump ? JUMP_RADIUS : SCROLL_RADIUS;
+          // Cancel any in-flight carousel prefetch so a stale request can't
+          // overwrite the latest target after a rapid jump. Navigation
+          // (MediaModal) uses its own signal-free hydration and is never aborted.
+          if (abortControllerRef.current) abortControllerRef.current.abort();
+          const controller = new AbortController();
+          abortControllerRef.current = controller;
+          repo.prefetchWindow(center, radius, controller.signal);
         }
         if (scrollSettleRef.current) clearTimeout(scrollSettleRef.current);
         scrollSettleRef.current = setTimeout(() => {
@@ -636,6 +652,7 @@ const handleScroll = useCallback(() => {
   useEffect(() => () => {
     if (recenterTimerRef.current) clearTimeout(recenterTimerRef.current);
     if (scrollSettleRef.current) clearTimeout(scrollSettleRef.current);
+    if (abortControllerRef.current) abortControllerRef.current.abort();
   }, []);
 
   // Scroll restoration: on mount, restore the last scroll position from

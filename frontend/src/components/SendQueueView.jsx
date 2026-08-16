@@ -2,8 +2,8 @@ import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMe
 import AutoSizer from 'react-virtualized-auto-sizer';
 import { FixedSizeGrid as Grid } from 'react-window';
 
-import { Inbox, CheckCircle2, XCircle, Ban, Trash2, Clock, ArrowLeft, X, Settings, Bug, Power, Square, Play, AlertTriangle, Pencil, ChevronUp, ChevronDown, Calendar, RotateCw } from 'lucide-react';
-import { getSendQueueStatuses, getSendQueue, clearSendQueueHistory, getThumbnailUrl, cancelSendQueueItem, retrySendQueueItem, removeSendQueueItem, getSendSettings, setSendSettings, getWhatsAppSendStatus, setQueueCaption, reorderQueueItem, resendQueueItem, rescheduleQueueItem } from '../utils/api';
+import { Inbox, CheckCircle2, XCircle, Ban, Trash2, Clock, ArrowLeft, X, Settings, Bug, Power, Square, Play, AlertTriangle, Pencil, ChevronUp, ChevronDown, RotateCw, Pin, PinOff } from 'lucide-react';
+import { getSendQueueStatuses, getSendQueue, clearSendQueueHistory, getThumbnailUrl, cancelSendQueueItem, retrySendQueueItem, removeSendQueueItem, getSendSettings, setSendSettings, getWhatsAppSendStatus, setQueueCaption, reorderQueueItem, resendQueueItem, rescheduleQueueItem, unpinQueueItem } from '../utils/api';
 
 import SendQueuePlayer from './SendQueuePlayer';
 import CaptionEditorModal from './CaptionEditorModal';
@@ -198,6 +198,11 @@ export const ItemCard = memo(function ItemCard({ item, onOpen, onAction, onCapti
             Debug
           </span>
         ) : null}
+        {item.pinned ? (
+          <span className="absolute bottom-1.5 left-1.5 flex items-center gap-0.5 text-[8px] px-1 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-400/40 font-bold uppercase tracking-wider">
+            <Pin size={9} /> Pin
+          </span>
+        ) : null}
         {/* Index badge - top left */}
         {index !== undefined && (
           <span className="absolute top-1.5 left-1.5 text-[11px] px-1.5 py-0.5 rounded bg-neutral-900/90 text-neutral-200 font-mono font-medium border border-neutral-700">
@@ -267,10 +272,17 @@ export const ItemCard = memo(function ItemCard({ item, onOpen, onAction, onCapti
               className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-white focus:outline-none focus:ring-0">
               <Ban size={12} />
             </button>
-            <button title="Jadwalkan ulang" onClick={(e) => quick(e, () => onAction('reschedule', item))}
-              className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-cyan-400 focus:outline-none focus:ring-0">
-              <Calendar size={12} />
-            </button>
+            {item.pinned ? (
+              <button title="Lepas sematan" onClick={(e) => quick(e, () => onAction('unpin', item))}
+                className="p-1 rounded-full bg-cyan-500/20 border border-cyan-400/50 text-cyan-300 hover:text-white focus:outline-none focus:ring-0">
+                <PinOff size={12} />
+              </button>
+            ) : (
+              <button title="Sematkan ke tanggal" onClick={(e) => quick(e, () => onAction('reschedule', item))}
+                className="p-1 rounded-full bg-neutral-800/90 border border-neutral-700 text-neutral-300 hover:text-cyan-400 focus:outline-none focus:ring-0">
+                <Pin size={12} />
+              </button>
+            )}
           </>
         )}
         {item.status === 'failed' && (
@@ -1292,6 +1304,7 @@ const openStatus = (groupKey, status) => {
         return;
       }
       if (action === 'cancel') await cancelSendQueueItem(id);
+      if (action === 'unpin') await unpinQueueItem(id);
       if (action === 'retry') await retrySendQueueItem(id);
       if (action === 'remove') await removeSendQueueItem(id);
       if (action === 'resend') await resendQueueItem(id);
@@ -1765,6 +1778,14 @@ const openStatus = (groupKey, status) => {
           onConfirm={async (qid, timestamp) => {
             await flipAndRefresh(async () => {
               await rescheduleQueueItem(qid, timestamp);
+              setShowRescheduleModal(false);
+              setRescheduleItem(null);
+              await refresh();
+            });
+          }}
+          onUnpin={async (qid) => {
+            await flipAndRefresh(async () => {
+              await unpinQueueItem(qid);
               setShowRescheduleModal(false);
               setRescheduleItem(null);
               await refresh();
