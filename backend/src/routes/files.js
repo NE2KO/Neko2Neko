@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import { join } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync, unlinkSync } from 'node:fs';
 import db, { stmts } from '../db.js';
 import { getFileWithRelPath } from '../utils/fileResolver.js';
-import { THUMBNAIL_DIR } from '../utils/thumbnailUtils.js';
+import { THUMBNAIL_DIR, getThumbPath } from '../utils/thumbnailUtils.js';
 import { ensureThumbnailForFile } from './thumbnails.js';
 mkdirSync(THUMBNAIL_DIR, { recursive: true });
 
@@ -749,6 +749,79 @@ router.post('/resolve-batch', (req, res) => {
   } catch (err) {
     console.error('[files/resolve-batch] Error:', err);
     res.status(500).json({ error: 'Failed to resolve batch' });
+  }
+});
+
+// DELETE /api/files/:id — delete file from disk + DB
+router.delete('/:id', (req, res) => {
+  try {
+    const file = getFileWithRelPath(req.params.id);
+    if (!file) return res.status(404).json({ error: 'File not found' });
+
+    const thumbPath = getThumbPath(req.params.id);
+    try { unlinkSync(thumbPath); } catch {}
+
+    if (file.fullPath) {
+      try { unlinkSync(file.fullPath); } catch (err) {
+        console.error('[files/delete] Failed to delete file:', file.fullPath, err.message);
+      }
+    }
+
+    db.prepare('DELETE FROM files WHERE id = ?').run(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[files/delete] Error:', err);
+    res.status(500).json({ error: 'Failed to delete file' });
+  }
+});
+
+// POST /api/files/batch/lock — bulk lock/unlock files
+router.post('/batch/lock', (req, res) => {
+  try {
+    const { ids, lock } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'ids array required' });
+    }
+    if (typeof lock !== 'boolean') {
+      return res.status(400).json({ error: 'lock boolean required' });
+    }
+    const placeholders = ids.map(() => '?').join(',');
+    const result = db.prepare(`UPDATE files SET is_locked = ? WHERE id IN (${placeholders})`).run(lock ? 1 : 0, ...ids);
+    res.json({ updated: result.changes });
+  } catch (err) {
+    console.error('[files/batch/lock] Error:', err);
+    res.status(500).json({ error: 'Failed to batch lock' });
+  }
+});
+
+// POST /api/files/batch/delete — bulk delete files
+router.post('/batch/delete', (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'ids array required' });
+    }
+    let deleted = 0;
+    for (const id of ids) {
+      const file = getFileWithRelPath(id);
+      if (!file) continue;
+
+      const thumbPath = getThumbPath(id);
+      try { unlinkSync(thumbPath); } catch {}
+
+      if (file.fullPath) {
+        try { unlinkSync(file.fullPath); } catch (err) {
+          console.error('[files/batch/delete] Failed to delete file:', file.fullPath, err.message);
+        }
+      }
+
+      db.prepare('DELETE FROM files WHERE id = ?').run(id);
+      deleted++;
+    }
+    res.json({ deleted });
+  } catch (err) {
+    console.error('[files/batch/delete] Error:', err);
+    res.status(500).json({ error: 'Failed to batch delete' });
   }
 });
 

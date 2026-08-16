@@ -105,7 +105,10 @@ router.post('/repair-metadata', async (req, res) => {
 // POST /api/upload/repair-durations — Re-extract durations for existing media files
 router.post('/repair-durations', async (req, res) => {
   try {
-    const result = await repairDurations(req.query.limit ? parseInt(req.query.limit) : 100);
+    const result = await repairDurations(
+      req.query.limit ? parseInt(req.query.limit) : 100,
+      req.query.type || 'audio'
+    );
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });

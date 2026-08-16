@@ -6,7 +6,9 @@ import { fork } from 'node:child_process';
 import { PATHS } from './config/paths.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_PATH = join(__dirname, '../../data/media.db');
+// Allow tests to point at an isolated temp SQLite file without touching the
+// production database. No effect in normal operation (env var unset).
+const DB_PATH = process.env.MEDIA_DB_PATH || join(__dirname, '../../data/media.db');
 
 mkdirSync(dirname(DB_PATH), { recursive: true });
 
@@ -62,6 +64,10 @@ db.exec(`
     generation INTEGER NOT NULL DEFAULT 0
   );
 `);
+
+// Add faststart_state at module load so statements that reference it (prepared
+// below) compile before deferredDbInit runs. Idempotent for existing DBs.
+try { db.prepare('ALTER TABLE files ADD COLUMN faststart_state INTEGER DEFAULT NULL').run(); } catch(e) {}
 
 db.exec(`
   DROP TRIGGER IF EXISTS folder_gen_ai;
@@ -276,6 +282,9 @@ CREATE TABLE IF NOT EXISTS send_queue (
   try { db.prepare('ALTER TABLE send_queue ADD COLUMN processing_started_at INTEGER').run(); } catch (e) {}
   try { db.prepare('ALTER TABLE send_queue ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0').run(); } catch (e) {}
   try { db.prepare('ALTER TABLE send_queue ADD COLUMN attempt_log TEXT').run(); } catch (e) {}
+  // Pinned items (user chose an explicit date via the re-schedule UI). They must
+  // NOT be moved by scheduler maintenance (compaction / backfill / cascade shift).
+  try { db.prepare('ALTER TABLE send_queue ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0').run(); } catch (e) {}
   // Initialize sort_order for existing rows that have NULL
   db.prepare("UPDATE send_queue SET sort_order = id WHERE sort_order IS NULL").run();
 
@@ -617,6 +626,7 @@ export function deferredDbInit() {
   try { db.prepare('CREATE INDEX IF NOT EXISTS idx_files_locked ON files(is_locked DESC, id)').run(); } catch(e) {}
   try { db.prepare("ALTER TABLE files ADD COLUMN youtube_id TEXT").run(); } catch(e) {}
   try { db.prepare("ALTER TABLE files ADD COLUMN video_offset REAL DEFAULT 0").run(); } catch(e) {}
+  try { db.prepare('ALTER TABLE files ADD COLUMN faststart_state INTEGER DEFAULT NULL').run(); } catch(e) {}
   try { db.prepare('ALTER TABLE folders ADD COLUMN recursive_file_count INTEGER').run(); } catch(e) {}
   try { db.prepare('ALTER TABLE folders ADD COLUMN recursive_total_size INTEGER').run(); } catch(e) {}
   try { db.prepare("UPDATE folders SET recursive_file_count = NULL WHERE recursive_file_count = 0").run(); } catch(e) {}
@@ -977,6 +987,7 @@ const stmts = {
   updateThumbCachePath: db.prepare('UPDATE files SET thumb_cache_path = ? WHERE id = ?'),
   updateLastAccessed: db.prepare('UPDATE files SET last_accessed = ? WHERE id = ?'),
   updateCodecInfo: db.prepare('UPDATE files SET codec_info = ?, is_stream_compatible = ? WHERE id = ?'),
+  updateFaststartState: db.prepare('UPDATE files SET faststart_state = ? WHERE id = ?'),
   getCodecInfo: db.prepare('SELECT codec_info, is_stream_compatible FROM files WHERE id = ?'),
 
   // Cursor Pagination - DETERMINISTIC with (created_at, id) composite
@@ -1126,7 +1137,7 @@ const stmts = {
   // File + folder path resolution
   getFileWithPath: db.prepare(`
     SELECT f.id, f.name, f.type, f.ext, f.size, f.mtime, f.duration, f.has_thumb, f.thumb_cache_path, f.uploaded_at, f.is_favorite,
-           f.title, f.artist, f.album, f.genre, f.lyrics, f.lyrics_synced, f.cover_source, f.youtube_id, f.video_offset, f.codec_info, f.is_stream_compatible,
+           f.title, f.artist, f.album, f.genre, f.lyrics, f.lyrics_synced, f.cover_source, f.youtube_id, f.video_offset, f.codec_info, f.is_stream_compatible, f.faststart_state,
            d.path as dir_path
     FROM files f
     JOIN folders d ON f.dir_id = d.id

@@ -35,6 +35,7 @@ const PATHS = {
   get cacheRoot()          { return ensureDir(join(PROJECT_ROOT, 'cache')); },
   get playbackRemux()      { return ensureDir(join(this.cacheRoot, 'playback', 'remux')); },
   get playbackTranscode()  { return ensureDir(join(this.cacheRoot, 'playback', 'transcode')); },
+  get playbackFaststart()  { return ensureDir(join(this.cacheRoot, 'playback', 'faststart')); },
   get playbackLru()        { return join(this.cacheRoot, 'playback', 'lru.json'); },
   get hls()                { return ensureDir(join(this.cacheRoot, 'hls')); },
   get thumbnails()         { return ensureDir(join(PROJECT_ROOT, 'data', 'thumbnails')); },

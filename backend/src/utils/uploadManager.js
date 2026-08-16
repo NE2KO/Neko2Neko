@@ -8,6 +8,7 @@ import { PATHS } from '../config/paths.js';
 import { get } from './runtimeSettings.js';
 import { detectType, getFileId, ensureFolder } from './fileScanner.js';
 import { addFile } from './thumbnailQueue.js';
+import { startScan } from './scannerClient.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('upload');
@@ -64,10 +65,7 @@ export function handleUpload(req, res) {
     if (get('upload.autoScan', true)) {
       setImmediate(async () => {
         try {
-          const { incrementalSync } = await import('./fileScanner.js');
-          await incrementalSync();
-          const { broadcastFolderUpdate } = await import('./watcher.js');
-          await broadcastFolderUpdate('');
+          await startScan('upload');
         } catch (e) {
           log.error({ msg: 'auto-scan error', error: e.message });
         }
@@ -409,19 +407,37 @@ export async function repairMetadata(limit = 100) {
   return { repaired, skipped, errors, total: files.length };
 }
 
-export async function repairDurations(limit = 100) {
-  const files = db.prepare(`SELECT id, name, type FROM files WHERE (duration IS NULL OR duration = 0) AND type IN ('video', 'audio') LIMIT ?`).all(limit);
+export async function repairDurations(limit = 100, type = 'audio') {
+  // Only repair the requested media type(s) so we don't accidentally ffprobe the
+  // entire (potentially huge) video library. Defaults to 'audio' which is what the
+  // playlist/Loved duration fix needs.
+  const typeList = (typeof type === 'string' && type.includes(','))
+    ? type.split(',').map(s => s.trim()).filter(Boolean)
+    : [type];
+  const placeholders = typeList.map(() => '?').join(',');
+  const files = db.prepare(`
+    SELECT f.id, d.path AS folder_path, f.name
+    FROM files f
+    JOIN folders d ON f.dir_id = d.id
+    WHERE (f.duration IS NULL OR f.duration = 0)
+      AND f.type IN (${placeholders})
+    LIMIT ?
+  `).all(...typeList, limit);
 
   const { getDuration, resolveFullPath } = await import('./fileScanner.js');
-  let repaired = 0, errors = 0;
+  let repaired = 0, errors = 0, skipped = 0;
 
   for (const file of files) {
     try {
-      const fullPath = resolveFullPath(file.name);
+      const relPath = file.folder_path ? join(file.folder_path, file.name) : file.name;
+      const fullPath = resolveFullPath(relPath);
+      if (!existsSync(fullPath)) { skipped++; continue; }
       const dur = await getDuration(fullPath);
       if (Math.round(dur) > 0) {
         db.prepare('UPDATE files SET duration = ? WHERE id = ?').run(Math.round(dur), file.id);
         repaired++;
+      } else {
+        skipped++;
       }
     } catch (err) {
       errors++;
@@ -429,6 +445,6 @@ export async function repairDurations(limit = 100) {
     }
   }
 
-  log.info({ msg: 'duration repair done', repaired, errors });
-  return { repaired, errors, total: files.length };
+  log.info({ msg: 'duration repair done', repaired, errors, skipped });
+  return { repaired, errors, skipped, total: files.length };
 }
