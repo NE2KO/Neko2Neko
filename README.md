@@ -74,9 +74,8 @@ Media Vault is a self-hosted media server born from the need to access media fil
 - **ADB Transfer**: Makes file transfer easier without slow file managers or memorizing terminal commands (under development)
 - **Scrcpy Monitor**: Simple remote phone screen viewing (under development)
 - **Send Queue**: Monitors sent/failed/cancelled files to Telegram and WA; tick-based queue system is dedicated for WA status
-- **Git Integration**: Web-based Git operations without opening terminal
+- **Git Integration**: Web-based Git operations without opening terminal (backend routes defined in `git.js` but **not yet mounted** in `server.js`; frontend `GitView.jsx` exists and calls `/api/git/*`, which currently returns 404)
 - **WhatsApp**: WhatsApp Web pairing and bot controls, accessible from the sidebar
-- **AI Chat**: Conversational AI assistant for help, context-aware answers, and tasks
 
 **Technology Stack:** Node.js, Express, SQLite, React, FFmpeg, HLS streaming, waveform visualization.
 
@@ -95,8 +94,7 @@ Media Vault is a self-hosted media server born from the need to access media fil
 | Music Player | Optional | Dual modes: cover mode (audio only) and video mode (separate audio/video with precision sync); fixes Strawberry player navigation bug | waveform, synced LRC, hls.js, precision sync engine |
 | Send Queue | Optional | Monitors sent/failed/cancelled files to Telegram and WA; tick-based queue for WA status (1-6 posts per day in 24h format) | Tick-based precision, SSE, WA/Telegram APIs |
 | WhatsApp | Optional | WhatsApp Web pairing (QR), connection status, and bot/message controls | whatsapp-web.js, whatsapp-bot, /api/whatsapp |
-| AI Chat | Optional | Conversational AI assistant with provider-based models, context awareness, and a settings UI | ai.js, ai-providers.js, ai-context.js, AIChat.jsx, AISettings.jsx |
-| Git Integration | API-only (not mounted) | Full Git operations without terminal (status, branches, tags, stash, commit, push, pull, diff, file editor, tree browser); routes defined in `git.js` but not yet wired into the server; web UI menu under development | Simple Git wrapper |
+| Git Integration | API-only (not mounted) | Full Git operations without terminal (status, branches, tags, stash, commit, push, pull, diff, file editor, tree browser); routes defined in `git.js` but not yet wired into the server; web UI (`GitView.jsx`) exists but hits 404 until routes are mounted | Simple Git wrapper |
 
 > **Note:** All menus are still actively worked on and under development. New menus may be added in the future.
 
@@ -152,11 +150,9 @@ flowchart LR
     SCR:::wip --> PTY[node-pty · scrcpy]
     DASH -->|ADB Transfer| ADB["ADB Transfer (WIP)"]
     ADB:::wip --> ADBT[adb push / pull]
-    DASH -->|AI Chat| AIC["AI Chat (WIP)"]
-    AIC:::wip --> AIS[ai.js · providers]
 ```
 
-> **Legend:** Boxes outlined in **red dashed** — **Scrcpy Monitor**, **ADB Transfer**, and **AI Chat** — are *not* the current development focus. They are usable but still rough, with known bugs and incomplete UX. Current effort concentrates on Media Vault, Music sync, Monitoring, Downloader, and Send Queue polish. Git Integration routes exist but are not yet mounted (see [ARCHITECTURE.md](ARCHITECTURE.md)).
+> **Legend:** Boxes outlined in **red dashed** — **Scrcpy Monitor** and **ADB Transfer** — are *not* the current development focus. They are usable but still rough, with known bugs and incomplete UX. Current effort concentrates on Media Vault, Music sync, Monitoring, Downloader, and Send Queue polish. Git Integration routes exist but are not yet mounted (see [ARCHITECTURE.md](ARCHITECTURE.md)).
 
 ## Tech Stack
 
@@ -189,10 +185,13 @@ flowchart LR
 | react | ^18.3.1 | UI framework |
 | react-dom | ^18.3.1 | DOM renderer |
 | react-intersection-observer | ^9.16.0 | Lazy loading |
+| react-markdown | ^10.1.0 | Markdown rendering |
 | react-router-dom | ^7.15.1 | Routing |
 | react-virtualized-auto-sizer | ^1.0.26 | Virtual sizing |
 | react-window | ^1.8.11 | Virtualized grid |
 | recharts | ^3.8.1 | Charts |
+| rehype-highlight | ^7.0.2 | Syntax highlighting |
+| remark-gfm | ^4.0.1 | GitHub-flavored markdown |
 | source-map-js | ^1.2.1 | Source maps |
 | tailwindcss-animate | ^1.0.7 | Tailwind animations |
 | zustand | ^5.0.13 | State management |
@@ -266,8 +265,7 @@ homelab-media-server/
 |------|-------------|
 | `backend/src/server.js` | Entry point, Express, lifecycle |
 | `backend/src/db.js` | SQLite database, FTS, settings |
-| `backend/src/routes/` | 22 route modules |
-| `backend/src/ai/` | AI chat engine (providers, context, chat) |
+| `backend/src/routes/` | 19 route modules |
 | `backend/src/monitor/` | System metrics |
 | `backend/src/services/` | Background service modules |
 | `backend/src/utils/` | Helpers (watcher, downloader, upload) |
@@ -279,6 +277,7 @@ homelab-media-server/
 | `downloader.js` | Download management (yt-dlp, gallery-dl, aria2c) |
 | `file.js` | Raw file serve (range, cache headers) |
 | `files.js` | File listing, FTS search, pagination |
+| `git.js` | Git operations (defined, NOT mounted — see Subsystems) |
 | `jobs.js` | Background job status |
 | `metadata.js` | Audio tags, covers, lyrics |
 | `monitoring.js` | Stats, history, alerts |
@@ -293,10 +292,6 @@ homelab-media-server/
 | `upload.js` | Multipart upload |
 | `videoCache.js` | Video cache management |
 | `whatsapp.js` | WhatsApp bridge |
-| `ai.js` | AI chat API (providers, context, chat) |
-| `ai-context.js` | AI context building |
-| `ai-providers.js` | AI provider configuration |
-| `git.js` | Git operations (status, diff, commit, push, pull, branches, stash, tree, file editor) |
 
 ### Frontend
 
@@ -304,10 +299,12 @@ homelab-media-server/
 |------|-------------|
 | `frontend/src/App.jsx` | Main application |
 | `frontend/src/main.jsx` | Vite entry |
-| `frontend/src/components/` | 70+ components |
+| `frontend/src/components/` | 65 components |
 | `frontend/src/store/` | Zustand stores |
 | `frontend/src/hooks/` | Custom hooks |
 | `frontend/src/utils/` | Utility functions |
+| `frontend/src/monitoring/` | Monitoring dashboard pages |
+| `frontend/src/debug/` | Debug utilities and inspectors |
 
 ### WhatsApp Bot
 
@@ -415,6 +412,34 @@ homelab-media-server/
 | GET | `/api/adb/jobs` | Transfer jobs |
 | GET | `/api/adb/jobs/:id/progress` | SSE progress |
 
+**Git** (NOT MOUNTED — `backend/src/routes/git.js`)
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| G | `/status` | Working tree status |
+| G | `/diff` | Unstaged diff |
+| G | `/diff-commit` | Commit diff |
+| G | `/unpushed` | Unpushed commits |
+| G | `/log` | Commit log |
+| G | `/branches` | Branches |
+| G | `/tags` | Tags |
+| G | `/stash-list` | Stash list |
+| G | `/tree` | File tree |
+| G | `/file` | Read file |
+| P | `/file` | Write file |
+| G | `/gitignore` | Show .gitignore |
+| P | `/gitignore` | Update .gitignore |
+| P | `/stage` | Stage changes |
+| P | `/commit` | Commit |
+| P | `/push` | Push |
+| P | `/pull` | Pull |
+| P | `/checkout` | Checkout branch/ref |
+| P | `/merge` | Merge |
+| P | `/stash` | Stash |
+| P | `/tag` | Create tag |
+
+> **Note:** Git routes are defined in `backend/src/routes/git.js` but **never registered** in `backend/src/server.js`. Calls to `/api/git/*` return 404 until they are mounted. The frontend `GitView.jsx` component already calls these endpoints.
+
 > For the complete API specification, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Development
@@ -435,10 +460,10 @@ homelab-media-server/
 
 | Directory | Files | Lines of Code |
 |-----------|-------|---------------|
-| `backend/src/` | ~110 | ~26,500 |
-| `frontend/src/` | ~198 | ~52,500 |
-| `whatsapp-bot/src/` | 6 | ~900 |
-| **Total** | **~314** | **~80,000** |
+| `backend/src/` | 91 | ~26,042 |
+| `frontend/src/` | 193 | ~46,858 |
+| `whatsapp-bot/src/` | 6 | ~921 |
+| **Total** | **290** | **~73,821** |
 
 > Note: Lines of code approximate. Does not include `node_modules`, `cache/`, `logs/`, or `data/`.
 
