@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, memo } from 'react';
 import { Histogram } from '../utils/syncCore';
+import './SyncOverlay.css';
 
 let _coreRef = null;
 let _audioRef = null;
@@ -27,42 +28,18 @@ export function registerRecordingState(ref) { _recordingStateRef = ref || _recor
 export function registerAnalyzerEvidence(ref) { _analyzerEvidenceRef = ref || _analyzerEvidenceRef; }
 export function registerDecisionOutput(ref) { _decisionOutputRef = ref || _decisionOutputRef; }
 
-const GRAPH_WIDTH = 56;
-
 function driftColor(ms) {
-  if (ms == null || !isFinite(ms)) return '#888';
+  if (ms == null || !isFinite(ms)) return 'var(--so-text-muted)';
   const abs = Math.abs(ms);
-  if (abs < 20) return '#22c55e';
-  if (abs < 50) return '#facc15';
-  if (abs < 100) return '#f97316';
-  return '#ef4444';
+  if (abs < 20) return 'var(--so-green)';
+  if (abs < 50) return 'var(--so-yellow)';
+  if (abs < 100) return 'var(--so-orange)';
+  return 'var(--so-red)';
 }
 
 function fmtMs(val) {
   if (val == null || !isFinite(val)) return '\u2014';
   return Math.round(val);
-}
-
-function driftStats(history) {
-  if (!Array.isArray(history) || history.length === 0) return null;
-  const vals = history.filter(v => v != null && isFinite(v));
-  if (vals.length === 0) return null;
-  const sorted = vals.slice().sort((a, b) => a - b);
-  const n = sorted.length;
-  const min = sorted[0];
-  const max = sorted[n - 1];
-  const sum = sorted.reduce((a, b) => a + b, 0);
-  const avg = sum / n;
-  const stdDev = Math.sqrt(sorted.reduce((s, v) => s + (v - avg) ** 2, 0) / n);
-  // Percentile = nearest-rank, so P99 over a large window is a genuine tail
-  // measure (unlike min/avg/max, which a single spike can fool).
-  const pct = (q) => sorted[Math.min(n - 1, Math.max(0, Math.ceil(q * n) - 1))];
-  return { min, max, avg, stdDev, p50: pct(0.5), p95: pct(0.95), p99: pct(0.99), n };
-}
-
-function pad(n, w = 5) {
-  const s = String(n);
-  return s.length < w ? ' '.repeat(w - s.length) + s : s;
 }
 
 function fmtVal(val, decimals = 0) {
@@ -72,44 +49,161 @@ function fmtVal(val, decimals = 0) {
 }
 
 function healthColor(pct) {
-  if (pct <= 5) return '#4ade80';
-  if (pct <= 15) return '#facc15';
-  return '#f87171';
+  if (pct <= 5) return 'var(--so-green)';
+  if (pct <= 15) return 'var(--so-yellow)';
+  return 'var(--so-red)';
 }
 
-function DriftGraph({ history }) {
-  const max = Math.max(1, ...history.map(Math.abs));
-  const mid = Math.floor(GRAPH_WIDTH / 2);
-  const chars = new Array(GRAPH_WIDTH).fill(' ');
-  for (let i = 0; i < history.length; i++) {
-    const offset = Math.round((history[i] / max) * mid);
-    const pos = mid + offset;
-    if (pos >= 0 && pos < GRAPH_WIDTH) chars[pos] = history[i] >= 0 ? '\u258f' : '\u2595';
-  }
-  chars[mid] = '\u2502';
+function badge(text, color = 'var(--so-text-muted)') {
+  return <span className="so-badge" style={{ background: `${color}18`, color }}>{text}</span>;
+}
+
+function sectionTitle(text) {
+  return <div className="so-section-title">{text}</div>;
+}
+
+function muted(text) {
+  return <div className="so-muted">{text}</div>;
+}
+
+function TriangleDiagram({ audioMs, mvMs, bgMs, offsetMs, audioMvDrift, audioBgDrift, mvBgDrift, triangleConsistency }) {
+  const W = 300, H = 150;
+  const nodes = {
+    audio: { x: 150, y: 18, label: 'AUDIO' },
+    mv: { x: 28, y: 138, label: 'MV' },
+    bg: { x: 272, y: 138, label: 'BG' },
+  };
+  const r = 10;
+  const edge = (from, to) => {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const len = Math.hypot(dx, dy);
+    const ux = dx / len;
+    const uy = dy / len;
+    return {
+      x1: from.x + ux * (r + 2), y1: from.y + uy * (r + 2),
+      x2: to.x - ux * (r + 4), y2: to.y - uy * (r + 4),
+      mx: (from.x + to.x) / 2, my: (from.y + to.y) / 2,
+    };
+  };
+  const e1 = edge(nodes.audio, nodes.mv);
+  const e2 = edge(nodes.audio, nodes.bg);
+  const e3 = edge(nodes.mv, nodes.bg);
+  const dc = (ms) => {
+    if (ms == null || !isFinite(ms)) return 'var(--so-text-muted)';
+    const abs = Math.abs(ms);
+    if (abs < 20) return 'var(--so-green)';
+    if (abs < 50) return 'var(--so-yellow)';
+    if (abs < 100) return 'var(--so-orange)';
+    return 'var(--so-red)';
+  };
+  const markerId = (color) => {
+    if (color === 'var(--so-green)') return 'arrow-g';
+    if (color === 'var(--so-yellow)') return 'arrow-y';
+    if (color === 'var(--so-orange)') return 'arrow-o';
+    if (color === 'var(--so-red)') return 'arrow-r';
+    return 'arrow-default';
+  };
+  const fmtDrift = (ms) => {
+    if (ms == null || !isFinite(ms)) return '\u2014';
+    const sign = ms > 0 ? '+' : '';
+    return `${sign}${Math.round(ms)}`;
+  };
+  const m1 = markerId(dc(audioMvDrift));
+  const m2 = markerId(dc(audioBgDrift));
+  const m3 = markerId(dc(mvBgDrift));
+
+  const centerY = 98;
+  const centerX1 = 65;
+  const centerX2 = 235;
+
   return (
-    <span style={{ fontFamily: 'monospace', fontSize: 12, letterSpacing: 0, whiteSpace: 'pre', lineHeight: 1.2 }}>
-      {chars.join('')}
-    </span>
+    <svg viewBox={`0 0 ${W} ${H}`} className="so-triangle">
+      <defs>
+        <marker id="arrow-default" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="var(--so-text-muted)" /></marker>
+        <marker id="arrow-g" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="var(--so-green)" /></marker>
+        <marker id="arrow-y" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="var(--so-yellow)" /></marker>
+        <marker id="arrow-o" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="var(--so-orange)" /></marker>
+        <marker id="arrow-r" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="var(--so-red)" /></marker>
+      </defs>
+      <line x1={e1.x1} y1={e1.y1} x2={e1.x2} y2={e1.y2} stroke={dc(audioMvDrift)} strokeWidth="2" markerEnd={`url(#${m1})`} />
+      <line x1={e2.x1} y1={e2.y1} x2={e2.x2} y2={e2.y2} stroke={dc(audioBgDrift)} strokeWidth="2" markerEnd={`url(#${m2})`} />
+      <line x1={e3.x1} y1={e3.y1} x2={e3.x2} y2={e3.y2} stroke={dc(mvBgDrift)} strokeWidth="2" markerEnd={`url(#${m3})`} />
+      <line x1={centerX1 + 5} y1={centerY} x2={centerX2 - 5} y2={centerY} stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
+      <line x1={centerX1 + 5} y1={centerY} x2={centerX1} y2={centerY} stroke="rgba(255,255,255,0.2)" strokeWidth="1" markerEnd="url(#arrow-default)" />
+      <line x1={centerX2 - 5} y1={centerY} x2={centerX2} y2={centerY} stroke="rgba(255,255,255,0.2)" strokeWidth="1" markerEnd="url(#arrow-default)" />
+      <text x={e1.mx - 6} y={e1.my - 4} fill={dc(audioMvDrift)} fontSize="9" fontFamily="var(--so-mono)" fontWeight="700">{fmtDrift(audioMvDrift)}</text>
+      <text x={e2.mx + 4} y={e2.my - 4} fill={dc(audioBgDrift)} fontSize="9" fontFamily="var(--so-mono)" fontWeight="700">{fmtDrift(audioBgDrift)}</text>
+      <text x={e3.mx - 6} y={e3.my + 12} fill={dc(mvBgDrift)} fontSize="9" fontFamily="var(--so-mono)" fontWeight="700">{fmtDrift(mvBgDrift)}</text>
+      {Object.entries(nodes).map(([key, n]) => {
+        const stroke = key === 'audio' ? 'var(--so-purple)' : key === 'mv' ? 'var(--so-blue)' : 'var(--so-green)';
+        return (
+          <text key={key} x={n.x} y={n.y + 4} textAnchor="middle" fill={stroke} fontSize="10" fontWeight="700" fontFamily="var(--so-mono)">{n.label}</text>
+        );
+      })}
+    </svg>
+  );
+}
+
+function FpsMeter({ fps, label }) {
+  const hasValue = fps != null && isFinite(fps);
+  const pct = hasValue ? Math.min(100, Math.max(0, (fps / 60) * 100)) : 0;
+  const color = hasValue ? (fps >= 55 ? 'var(--so-green)' : fps >= 30 ? 'var(--so-yellow)' : 'var(--so-red)') : 'var(--so-text-muted)';
+  const status = hasValue ? (fps >= 55 ? 'GOOD' : fps >= 30 ? 'LOW' : 'BAD') : 'NO DATA';
+  return (
+    <div className="so-fps-item">
+      <div className="so-fps-header">
+        <span className="so-stat-label">{label}</span>
+        <span className="so-fps-value" style={{ color }}>{hasValue ? `${Math.round(fps)}` : '\u2014'}</span>
+      </div>
+      <div className="so-fps-track">
+        <div className="so-fps-fill" style={{ width: `${pct}%`, background: color }} />
+      </div>
+      <div className="so-fps-status">{status}</div>
+    </div>
+  );
+}
+
+function DriftGraph({ history, colorFn, label }) {
+  if (!Array.isArray(history) || history.length === 0) {
+    return <span className="so-muted">no data</span>;
+  }
+  const maxAbs = Math.max(1, ...history.map(v => Math.abs(v ?? 0)));
+  const current = history[history.length - 1];
+  const color = colorFn ? colorFn(current) : driftColor(current);
+  const pct = (Math.abs(current) / maxAbs) * 50;
+  const side = current >= 0 ? 'right' : 'left';
+
+  return (
+    <div className="so-drift-row">
+      <span className="so-drift-label">{label}</span>
+      <div className="so-drift-track">
+        <div className="so-drift-center" />
+        <div className={`so-drift-fill so-drift-${side}`} style={{ width: `${pct}%`, background: color }} />
+      </div>
+      <span className="so-drift-value" style={{ color }}>{fmtMs(current)}ms</span>
+    </div>
   );
 }
 
 function HistogramDisplay({ histogram }) {
-  if (!histogram || histogram.total === 0) return <div style={{ fontSize: 12, color: '#555' }}>No data</div>;
-  const maxBarWidth = 8;
+  if (!histogram || histogram.total === 0) return <div className="so-muted">No data</div>;
   const normalized = histogram.getNormalized();
   const maxRatio = Math.max(0.001, ...normalized);
   return (
-    <div style={{ fontFamily: 'monospace', fontSize: 12, lineHeight: 1.4 }}>
+    <div className="so-hist">
       {Histogram.BINS.map((bin, i) => {
         const ratio = normalized[i] || 0;
-        const barLen = Math.round((ratio / maxRatio) * maxBarWidth);
         const pct = Math.round(ratio * 100);
+        const width = Math.round((ratio / maxRatio) * 100);
+        const color = ratio > 0.3 ? 'var(--so-green)' : ratio > 0.1 ? 'var(--so-yellow)' : 'var(--so-text-faint)';
         return (
-          <div key={bin.label} style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
-            <span style={{ width: 48, textAlign: 'right', color: '#666', flexShrink: 0 }}>{bin.label}</span>
-            <span style={{ color: ratio > 0.3 ? '#4ade80' : ratio > 0.1 ? '#facc15' : '#555', flexShrink: 0, letterSpacing: -1 }}>{'\u2588'.repeat(barLen)}</span>
-            <span style={{ color: '#555', width: 28, textAlign: 'right', flexShrink: 0 }}>{pct}%</span>
+          <div key={bin.label} className="so-hist-row">
+            <span className="so-hist-label">{bin.label}</span>
+            <div className="so-hist-track">
+              <div className="so-hist-fill" style={{ width: `${width}%`, background: color }} />
+            </div>
+            <span className="so-hist-pct">{pct}%</span>
           </div>
         );
       })}
@@ -117,33 +211,12 @@ function HistogramDisplay({ histogram }) {
   );
 }
 
-function Row({ label, value, valueColor = '#bbb' }) {
+function ComparisonRow({ label, mvValue, bgValue, mvColor, bgColor, mono = true }) {
   return (
-    <div style={S.row}>
-      <span style={S.label}>{label}</span>
-      <span style={{ ...S.value, color: valueColor }}>{value}</span>
-    </div>
-  );
-}
-
-function SectionLabel({ label }) {
-  return <div style={S.sectionLabel}>{label}</div>;
-}
-
-function DualCard({ title, mvContent, bgContent, sideBySide = false }) {
-  return (
-    <div style={S.section}>
-      <div style={S.sectionTitle}>{title}</div>
-      <div style={sideBySide ? { display: 'flex', gap: 6 } : { display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <div style={sideBySide ? { ...S.card, flex: 1, minWidth: 0 } : S.card}>
-          <div style={S.cardLabel}>MV</div>
-          {mvContent}
-        </div>
-        <div style={sideBySide ? { ...S.card, flex: 1, minWidth: 0 } : S.card}>
-          <div style={S.cardLabel}>BG</div>
-          {bgContent}
-        </div>
-      </div>
+    <div className="so-compare-row">
+      <span className="so-compare-label">{label}</span>
+      <span className="so-compare-value" style={{ color: mvColor || 'var(--so-text)', fontVariantNumeric: mono ? 'tabular-nums' : 'inherit' }}>{mvValue ?? '\u2014'}</span>
+      <span className="so-compare-value" style={{ color: bgColor || 'var(--so-text)', fontVariantNumeric: mono ? 'tabular-nums' : 'inherit' }}>{bgValue ?? '\u2014'}</span>
     </div>
   );
 }
@@ -153,13 +226,6 @@ const SyncOverlay = memo(function SyncOverlay({ onClose }) {
   const [visible, setVisible] = useState(false);
   const [driftHistoryMv, setDriftHistoryMv] = useState([]);
   const [driftHistoryBg, setDriftHistoryBg] = useState([]);
-  const [driftStatsMv, setDriftStatsMv] = useState(null);
-  const [driftStatsBg, setDriftStatsBg] = useState(null);
-  const lastDriftRef = useRef({ mv: [], bg: [] });
-  // Long window (~90s at 100ms sampling) so P95/P99 are real tail measures
-  // instead of collapsing to max on a tiny buffer.
-  const lastStatsRef = useRef({ mv: [], bg: [] });
-  const STATS_WINDOW = 900;
   const rafFpsRef = useRef({ lastTime: 0, ema: 0, fps: 0 });
 
   useEffect(() => {
@@ -187,20 +253,16 @@ const SyncOverlay = memo(function SyncOverlay({ onClose }) {
       const mvStats = _coreRef.getStats('mv');
       const bgStats = _coreRef.getStats('bg');
       if (mvStats) {
-        lastDriftRef.current.mv.push(mvStats.rawDrift);
-        if (lastDriftRef.current.mv.length > GRAPH_WIDTH) lastDriftRef.current.mv.shift();
-        setDriftHistoryMv([...lastDriftRef.current.mv]);
-        lastStatsRef.current.mv.push(mvStats.rawDrift);
-        if (lastStatsRef.current.mv.length > STATS_WINDOW) lastStatsRef.current.mv.shift();
-        setDriftStatsMv(driftStats(lastStatsRef.current.mv));
+        setDriftHistoryMv(prev => {
+          const next = [...prev, mvStats.rawDrift];
+          return next.length > 56 ? next.slice(-56) : next;
+        });
       }
       if (bgStats) {
-        lastDriftRef.current.bg.push(bgStats.rawDrift);
-        if (lastDriftRef.current.bg.length > GRAPH_WIDTH) lastDriftRef.current.bg.shift();
-        setDriftHistoryBg([...lastDriftRef.current.bg]);
-        lastStatsRef.current.bg.push(bgStats.rawDrift);
-        if (lastStatsRef.current.bg.length > STATS_WINDOW) lastStatsRef.current.bg.shift();
-        setDriftStatsBg(driftStats(lastStatsRef.current.bg));
+        setDriftHistoryBg(prev => {
+          const next = [...prev, bgStats.rawDrift];
+          return next.length > 56 ? next.slice(-56) : next;
+        });
       }
       setTick(t => t + 1);
     }, 100);
@@ -222,24 +284,36 @@ const SyncOverlay = memo(function SyncOverlay({ onClose }) {
   const audioMs = Math.round((_audioRef?.current?.currentTime ?? 0) * 1000);
   const mvMs = Math.round((_mvRef?.current?.getCurrentTime?.() ?? 0) * 1000);
   const bgMs = Math.round((_bgRef?.current?.currentTime ?? 0) * 1000);
-  // videoOffset is intentional (per-track offset from activeFile). The engine
-  // targets audio.currentTime + offset, so the real sync error is measured
-  // against that target — NOT the raw difference, which a large offset makes
-  // look like a 15s failure. The raw times are still shown above for reference.
   const offsetMs = Math.round((_videoOffsetRef?.current ?? 0) * 1000);
   const audioMvDrift = mvMs - (audioMs + offsetMs);
   const audioBgDrift = bgMs - (audioMs + offsetMs);
   const mvBgDrift = bgMs - mvMs;
-  // Determine if each engine is within the 10ms sync target (the scale the
-  // user wants kept under). Frame period is informational; the target is what
-  // counts, so "Sync OK" doesn't flip to NO merely because the decoder is
-  // paused or the frame rate is low.
-  const SYNC_TARGET_MS = 10;
-  const mvSynced = Math.abs(audioMvDrift) <= SYNC_TARGET_MS;
-  const bgSynced = Math.abs(audioBgDrift) <= SYNC_TARGET_MS;
+  const mvSynced = Math.abs(audioMvDrift) <= 10;
+  const bgSynced = Math.abs(audioBgDrift) <= 10;
+  const overallSynced = mvSynced && bgSynced;
+  const rafFps = rafFpsRef.current.fps;
   const mvFpsVal = mv?.stats?.fps?.current;
   const bgFpsVal = bg?.stats?.fps?.current;
-  const overallSynced = mvSynced && bgSynced;
+  const tickAvg = mv?.stats?.tickDelta?.avg;
+  const tickHz = tickAvg > 0 ? (1000 / tickAvg) : null;
+  const totalTick = (mv?.tickCount ?? 0) + (bg?.tickCount ?? 0);
+  const totalMiss = (mv?.tickMissCount ?? 0) + (bg?.tickMissCount ?? 0);
+  const missPct = totalTick > 0 ? Math.round(totalMiss / totalTick * 100) : 0;
+  const mvReStab = _coreRef.getReStabilitySummary?.('mv');
+  const bgReStab = _coreRef.getReStabilitySummary?.('bg');
+  const mvClockProv = _coreRef.getClockProvenance?.('mv');
+  const bgClockProv = _coreRef.getClockProvenance?.('bg');
+  const mvSpikes = (_coreRef.getSpikeRecorder?.('mv') || []).slice(-5).reverse();
+  const bgSpikes = (_coreRef.getSpikeRecorder?.('bg') || []).slice(-5).reverse();
+  const mvSeekPipeline = _coreRef.getSeekPipelineLatencies?.('mv') || [];
+  const bgSeekPipeline = _coreRef.getSeekPipelineLatencies?.('bg') || [];
+  const mvDecision = _decisionOutputRef.mv;
+  const bgDecision = _decisionOutputRef.bg;
+  const mvEvidences = _analyzerEvidenceRef.mv || [];
+  const bgEvidences = _analyzerEvidenceRef.bg || [];
+  const mvSeekTele = mv?.seekTelemetry;
+  const bgSeekTele = bg?.seekTelemetry;
+
   const triangleConsistency = (() => {
     const expectedMvBg = audioBgDrift - audioMvDrift;
     const error = Math.abs(mvBgDrift - expectedMvBg);
@@ -254,485 +328,430 @@ const SyncOverlay = memo(function SyncOverlay({ onClose }) {
     return { score: Math.round(score * 100), outlier, maxDrift: absDrifts[0].drift, maxDriftNode: absDrifts[0].node };
   })();
 
-  const rafFps = rafFpsRef.current.fps;
-  const mvRvfc = _rvfcStatusRef?.mv ?? '\u2014';
-  const bgRvfc = _rvfcStatusRef?.bg ?? '\u2014';
-  const tickAvg = mv?.stats?.tickDelta?.avg;
-  const tickHz = tickAvg > 0 ? (1000 / tickAvg) : null;
-  const schedAvg = mv?.stats?.tickDelta?.avg;
-  const schedWorst = mv?.stats?.schedulerLateness?.max;
-  const totalTick = (mv?.tickCount ?? 0) + (bg?.tickCount ?? 0);
-  const totalMiss = (mv?.tickMissCount ?? 0) + (bg?.tickMissCount ?? 0);
-  const missPct = totalTick > 0 ? Math.round(totalMiss / totalTick * 100) : 0;
-  const mvReStab = _coreRef.getReStabilitySummary?.('mv');
-  const bgReStab = _coreRef.getReStabilitySummary?.('bg');
-  const mvClockProv = _coreRef.getClockProvenance?.('mv');
-  const bgClockProv = _coreRef.getClockProvenance?.('bg');
-  const mvSpikes = (_coreRef.getSpikeRecorder?.('mv') || []).slice(-8).reverse();
-  const bgSpikes = (_coreRef.getSpikeRecorder?.('bg') || []).slice(-8).reverse();
-  const mvSeekPipeline = _coreRef.getSeekPipelineLatencies?.('mv') || [];
-  const bgSeekPipeline = _coreRef.getSeekPipelineLatencies?.('bg') || [];
-  const mvLifecycle = _coreRef.getVideoLifecycleSummary?.('mv');
-  const bgLifecycle = _coreRef.getVideoLifecycleSummary?.('bg');
-  const mvLifecycleDetail = _coreRef.getVideoLifecycle?.('mv');
-  const bgLifecycleDetail = _coreRef.getVideoLifecycle?.('bg');
-  const mvLifecycleEvents = mvLifecycleDetail?.tracker?.getEvents() || [];
-  const bgLifecycleEvents = bgLifecycleDetail?.tracker?.getEvents() || [];
-
   return (
-    <div style={S.container}>
-      <div style={S.header}>
-        <span>SYNC DEBUG</span>
-        <button onClick={handleClose} style={S.closeBtn} title="Close">&times;</button>
-      </div>
-
-      <div style={S.timeRow}>
-        <span style={{ color: '#aaa' }}>A {pad(audioMs)}ms</span>
-        <span style={{ color: driftColor(mv?.rawDrift) }}>MV {pad(mvMs)}ms</span>
-        <span style={{ color: driftColor(bg?.rawDrift) }}>BG {pad(bgMs)}ms</span>
-      </div>
-      <div style={{ ...S.timeRow, color: '#888', fontSize: 12, marginTop: -2, fontWeight: 500 }}>
-        <span style={{ color: '#666' }}>Offset</span>
-        <span style={{ color: '#4ade80' }}>+{pad(offsetMs)}ms</span>
-        <span style={{ color: '#4ade80' }}>+{pad(offsetMs)}ms</span>
-      </div>
-      <div style={{ ...S.timeRow, color: '#888', fontSize: 12, marginTop: 1, fontWeight: 500 }}>
-        <span style={{ color: '#666' }}>Δ Audio↔MV</span>
-        <span style={{ color: driftColor(audioMvDrift) }}>{pad(audioMvDrift)}ms</span>
-      </div>
-      <div style={{ ...S.timeRow, color: '#888', fontSize: 12, marginTop: -1, fontWeight: 500 }}>
-        <span style={{ color: '#666' }}>Δ Audio↔BG</span>
-        <span style={{ color: driftColor(audioBgDrift) }}>{pad(audioBgDrift)}ms</span>
-      </div>
-      <div style={{ ...S.timeRow, color: '#888', fontSize: 12, marginTop: -1, fontWeight: 500 }}>
-        <span style={{ color: '#666' }}>Δ MV↔BG</span>
-        <span style={{ color: driftColor(mvBgDrift) }}>{pad(mvBgDrift)}ms</span>
-      </div>
-      <div style={{ fontSize: 11, color: '#888', marginTop: 1, marginBottom: 2 }}>
-        Consistency <span style={{ color: triangleConsistency.score > 70 ? '#4ade80' : triangleConsistency.score > 40 ? '#facc15' : '#f87171' }}>{triangleConsistency.score}%</span>
-        {triangleConsistency.outlier && <span style={{ color: '#f87171', marginLeft: 6 }}>outlier: {triangleConsistency.outlier}</span>}
-      </div>
-      {(() => {
-        const mvS = driftStatsMv;
-        const bgS = driftStatsBg;
-        const row1 = (label, st) => st ? (
-          <div style={{ fontSize: 11, color: '#888', display: 'flex', gap: 7, marginTop: 1 }}>
-            <span style={{ color: '#666', width: 26, flexShrink: 0 }}>{label}</span>
-            <span>min <span style={{ color: driftColor(st.min) }}>{fmtMs(st.min)}</span>ms</span>
-            <span>avg <span style={{ color: driftColor(st.avg) }}>{fmtMs(st.avg)}</span>ms</span>
-            <span>&sigma; <span style={{ color: (st.stdDev ?? 99) > 12 ? '#f87171' : '#bbb' }}>{fmtVal(st.stdDev, 1)}</span>ms</span>
-          </div>
-        ) : null;
-        const row2 = (label, st) => st ? (
-          <div style={{ fontSize: 11, color: '#888', display: 'flex', gap: 7, marginTop: 1, paddingLeft: 26 }}>
-            <span style={{ color: '#666' }}>P95</span>
-            <span style={{ color: (st.p95 ?? 99) > 10 ? '#facc15' : '#4ade80', width: 44, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmtMs(st.p95)}ms</span>
-            <span style={{ color: '#666' }}>P99</span>
-            <span style={{ color: (st.p99 ?? 99) > 20 ? '#f87171' : '#facc15', width: 44, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmtMs(st.p99)}ms</span>
-            <span style={{ color: '#666' }}>worst</span>
-            <span style={{ color: driftColor(st.max), width: 56, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmtMs(st.max)}ms</span>
-          </div>
-        ) : null;
-        return mvS || bgS ? (
-          <div style={{ marginTop: 1, marginBottom: 3 }}>
-            {row1('MV', mvS)}
-            {row2('MV', mvS)}
-            {row1('BG', bgS)}
-            {row2('BG', bgS)}
-          </div>
-        ) : null;
-      })()}
-
-      <DualCard
-        title="SYNC STATUS"
-        sideBySide
-        mvContent={<>
-          <Row label="Drift" value={`${fmtMs(mv?.rawDrift)}ms`} valueColor={driftColor(mv?.rawDrift)} />
-          <Row label="Corrected" value={`${fmtMs(mv?.correctedDrift)}ms`} valueColor={driftColor(mv?.correctedDrift)} />
-          <Row label="Drift Δ" value={`${fmtMs(mvState?.prevDriftDeltaMs)}ms`} valueColor={(mvState?.prevDriftDeltaMs ?? 0) > 40 ? '#f87171' : '#bbb'} />
-          <Row label="Drift Δ²" value={`${fmtMs(mvState?.driftAccelerationMs)}ms`} valueColor={(mvState?.driftAccelerationMs ?? 0) > 15 ? '#f87171' : '#bbb'} />
-          <Row label="Bias" value={`${fmtMs(mv?.bias)}ms`} />
-        <Row label="BiasN" value={String(mv?.biasSamples ?? 0)} />
-        <Row label="SoftTh" value={`${fmtMs(mv?.thresholds?.soft * 1000)}ms`} />
-        <Row label="HardTh" value={`${fmtMs(mv?.thresholds?.hard * 1000)}ms`} />
-        <Row label="Thresh" value={`${fmtMs(mv?.thresholds?.soft * 1000)}/${fmtMs(mv?.thresholds?.hard * 1000)}`} />
-          <Row label="Mode" value={mvState?.mode ?? '\u2014'} />
-          <Row label="Rate" value={(_mvRef?.current?.getRate?.() ?? 1).toFixed(3)} valueColor={Math.abs((_mvRef?.current?.getRate?.() ?? 1) - 1) > 0.01 ? '#facc15' : '#bbb'} />
-          <Row label="Stable" value={mv?.stable ? '\u2705' : '\u274c'} valueColor={mv?.stable ? '#4ade80' : '#f87171'} />
-          <Row label="LockTicks" value={String(mvState?.lockedConsecutiveTicks ?? 0)} />
-          <Row label="Candidate" value={mvState?.stableCandidateSince ? `${fmtMs(performance.now() - mvState.stableCandidateSince)}ms` : '\u2014'} />
-          <Row label="Sigma" value={`${fmtMs(mv?.driftStdDev)}ms`} valueColor={(mv?.driftStdDev ?? 0) > 12 ? '#f87171' : '#bbb'} />
-          <Row label="SeekPend" value={mvState?.seekPending ? 'YES' : 'no'} valueColor={mvState?.seekPending ? '#facc15' : '#bbb'} />
-          <Row label="LastSeek" value={mvState?.lastHardSeekTime ? `${fmtMs(performance.now() - mvState.lastHardSeekTime)}ms` : '\u2014'} />
-          <Row label="HardArm" value={mvState?.hardSeekFutileArmed ? 'YES' : 'no'} valueColor={mvState?.hardSeekFutileArmed ? '#fb923c' : '#bbb'} />
-          <Row label="Grace" value={mvState?.graceUntil ? `${Math.max(0, fmtMs(mvState.graceUntil - performance.now()))}ms` : '\u2014'} />
-          <Row label="Hold" value={mvState?.holdUntil ? `${Math.max(0, fmtMs(mvState.holdUntil - performance.now()))}ms` : '\u2014'} valueColor={mvState?.holdUntil ? '#a78bfa' : '#555'} />
-        </>}
-        bgContent={<>
-          <Row label="Drift" value={`${fmtMs(bg?.rawDrift)}ms`} valueColor={driftColor(bg?.rawDrift)} />
-          <Row label="Corrected" value={`${fmtMs(bg?.correctedDrift)}ms`} valueColor={driftColor(bg?.correctedDrift)} />
-          <Row label="Drift Δ" value={`${fmtMs(bgState?.prevDriftDeltaMs)}ms`} valueColor={(bgState?.prevDriftDeltaMs ?? 0) > 40 ? '#f87171' : '#bbb'} />
-          <Row label="Drift Δ²" value={`${fmtMs(bgState?.driftAccelerationMs)}ms`} valueColor={(bgState?.driftAccelerationMs ?? 0) > 15 ? '#f87171' : '#bbb'} />
-          <Row label="Bias" value={`${fmtMs(bg?.bias)}ms`} />
-          <Row label="BiasN" value={String(bg?.biasSamples ?? 0)} />
-          <Row label="SoftTh" value={`${fmtMs(bg?.thresholds?.soft * 1000)}ms`} />
-          <Row label="HardTh" value={`${fmtMs(bg?.thresholds?.hard * 1000)}ms`} />
-          <Row label="Thresh" value={`${fmtMs(bg?.thresholds?.soft * 1000)}/${fmtMs(bg?.thresholds?.hard * 1000)}`} />
-          <Row label="Mode" value={bgState?.mode ?? '\u2014'} />
-          <Row label="Rate" value={(_bgRef?.current?.playbackRate ?? 1).toFixed(3)} valueColor={Math.abs((_bgRef?.current?.playbackRate ?? 1) - 1) > 0.01 ? '#facc15' : '#bbb'} />
-          <Row label="Stable" value={bg?.stable ? '\u2705' : '\u274c'} valueColor={bg?.stable ? '#4ade80' : '#f87171'} />
-          <Row label="LockTicks" value={String(bgState?.lockedConsecutiveTicks ?? 0)} />
-          <Row label="Candidate" value={bgState?.stableCandidateSince ? `${fmtMs(performance.now() - bgState.stableCandidateSince)}ms` : '\u2014'} />
-          <Row label="Sigma" value={`${fmtMs(bg?.driftStdDev)}ms`} valueColor={(bg?.driftStdDev ?? 0) > 12 ? '#f87171' : '#bbb'} />
-          <Row label="SeekPend" value={bgState?.seekPending ? 'YES' : 'no'} valueColor={bgState?.seekPending ? '#facc15' : '#bbb'} />
-          <Row label="LastSeek" value={bgState?.lastHardSeekTime ? `${fmtMs(performance.now() - bgState.lastHardSeekTime)}ms` : '\u2014'} />
-          <Row label="HardArm" value={bgState?.hardSeekFutileArmed ? 'YES' : 'no'} valueColor={bgState?.hardSeekFutileArmed ? '#fb923c' : '#bbb'} />
-          <Row label="Grace" value={bgState?.graceUntil ? `${Math.max(0, fmtMs(bgState.graceUntil - performance.now()))}ms` : '\u2014'} />
-          <Row label="Hold" value={bgState?.holdUntil ? `${Math.max(0, fmtMs(bgState.holdUntil - performance.now()))}ms` : '\u2014'} valueColor={bgState?.holdUntil ? '#a78bfa' : '#555'} />
-        </>}
-      />
-
-      <div style={S.section}>
-        <div style={S.sectionTitle}>PERFORMANCE</div>
-        <SectionLabel label="Display" />
-        <Row label="Sync OK" value={overallSynced ? 'YES' : 'NO'} valueColor={overallSynced ? '#4ade80' : '#f87171'} />
-        <Row label="RAF" value={`${rafFps} FPS`} valueColor={rafFps < 30 ? '#f87171' : '#bbb'} />
-        <SectionLabel label="Decoder" />
-        <Row label="MV" value={`${mvFpsVal != null ? fmtVal(mvFpsVal, 1) + ' FPS' : '\u2014 FPS'} (${mvRvfc})`} valueColor={mvRvfc === 'ACTIVE' ? '#4ade80' : mvRvfc === 'UNSUPPORTED' ? '#888' : '#facc15'} />
-        <Row label="BG" value={`${bgFpsVal != null ? fmtVal(bgFpsVal, 1) + ' FPS' : '\u2014 FPS'} (${bgRvfc})`} valueColor={bgRvfc === 'ACTIVE' ? '#4ade80' : bgRvfc === 'UNSUPPORTED' ? '#888' : '#facc15'} />
-        <SectionLabel label="Engine" />
-        <Row label="Tick" value={tickHz != null ? `${fmtVal(tickHz, 1)} Hz` : '\u2014'} />
-        <Row label="Dt" value={mv?.stats?.tickDelta?.current != null ? `${fmtMs(mv.stats.tickDelta.current)}ms` : '\u2014'} />
-        <SectionLabel label="Scheduler" />
-        <Row label="Avg" value={schedAvg != null ? `${fmtVal(schedAvg, 0)} ms` : '\u2014'} />
-        <Row label="Worst" value={schedWorst != null ? `${fmtVal(schedWorst, 0)} ms` : '\u2014'} valueColor={schedWorst > 50 ? '#f87171' : '#bbb'} />
-        <Row label="Miss" value={totalTick > 0 ? `${missPct}%` : '\u2014'} valueColor={healthColor(missPct)} />
-      </div>
-
-      <DualCard
-        title="DECISIONS"
-        mvContent={<div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1px 6px', fontFamily: 'monospace', fontSize: 12 }}>
-          <span style={{ color: '#4ade80' }}>LOCK:{pad(mv?.decisions?.lock ?? 0, 4)}</span>
-          <span style={{ color: '#60a5fa' }}>RATE:{pad(mv?.decisions?.rate ?? 0, 4)}</span>
-          <span style={{ color: '#f87171' }}>HARD:{pad(mv?.decisions?.hard ?? 0, 4)}</span>
-          <span style={{ color: '#888' }}>NOOP:{pad(mv?.decisions?.noop ?? 0, 4)}</span>
-          <span style={{ color: '#fb923c' }}>FUTL:{pad(mv?.decisions?.futile ?? 0, 4)}</span>
-          <span style={{ color: '#555', gridColumn: '1 / -1' }}>Lock%:{mv?.decisions?.lockPct ?? 0}%</span>
-        </div>}
-        bgContent={<div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1px 6px', fontFamily: 'monospace', fontSize: 12 }}>
-          <span style={{ color: '#4ade80' }}>LOCK:{pad(bg?.decisions?.lock ?? 0, 4)}</span>
-          <span style={{ color: '#60a5fa' }}>RATE:{pad(bg?.decisions?.rate ?? 0, 4)}</span>
-          <span style={{ color: '#f87171' }}>HARD:{pad(bg?.decisions?.hard ?? 0, 4)}</span>
-          <span style={{ color: '#888' }}>NOOP:{pad(bg?.decisions?.noop ?? 0, 4)}</span>
-          <span style={{ color: '#fb923c' }}>FUTL:{pad(bg?.decisions?.futile ?? 0, 4)}</span>
-          <span style={{ color: '#555', gridColumn: '1 / -1' }}>Lock%:{bg?.decisions?.lockPct ?? 0}%</span>
-        </div>}
-      />
-
-      <div style={S.section}>
-        <div style={S.sectionTitle}>EXECUTED SEEKS</div>
-        {['mv', 'bg'].map(eng => {
-          const st = eng === 'mv' ? mv?.seekTelemetry : bg?.seekTelemetry;
-          const hard = st?.hard;
-          const hardLabel = hard?.count > 0
-            ? `${hard.count}${hard.superseded > 0 ? ` (${hard.effective} eff, ${hard.superseded} sup)` : ''} ${hard.avgDrift}ms${hard.recovery ? ` ~${hard.recovery.p50Ms}ms` : ''}`
-            : '0';
-          return <Row key={eng} label={eng.toUpperCase()} value={`Hard: ${hardLabel}`} />;
-        })}
-      </div>
-
-      <div style={S.section}>
-        <div style={S.sectionTitle}>PIPELINE</div>
-        <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>
-          <span style={{ color: '#666' }}>Recording</span>
-          <span style={{ color: _recordingStateRef.enabled ? '#4ade80' : '#555', marginLeft: 8 }}>
-            {_recordingStateRef.enabled ? 'ON' : 'OFF'}
-          </span>
-          <span style={{ color: '#666', marginLeft: 12 }}>Buffer</span>
-          <span style={{ color: '#bbb', marginLeft: 4 }}>
-            {_recordingStateRef.bufferLength ?? 0} / {_recordingStateRef.maxBuffer ?? 0}
-          </span>
+    <>
+      <div className="so-panel so-panel-left">
+        <div className="so-panel-header">
+          <span>SYNC DEBUG</span>
+          <button className="so-close" onClick={handleClose} title="Close">&times;</button>
         </div>
-        {['mv', 'bg'].map(eng => {
-          const evidences = eng === 'mv' ? _analyzerEvidenceRef.mv : _analyzerEvidenceRef.bg;
-          const decision = eng === 'mv' ? _decisionOutputRef.mv : _decisionOutputRef.bg;
-          return <div key={eng} style={{ marginBottom: 4 }}>
-            <div style={{ fontSize: 11, color: '#a78bfa', letterSpacing: 1, marginBottom: 1 }}>{eng.toUpperCase()} ANALYZERS</div>
-            {evidences?.length ? evidences.map((ev, i) => (
-              <div key={i} style={{ fontSize: 10, color: '#bbb', display: 'flex', gap: 4, alignItems: 'center', marginBottom: 1 }}>
-                <span style={{ color: '#666', width: 80 }}>{ev.analyzerId}</span>
-                <span style={{ color: ev.confidence >= 0.7 ? '#4ade80' : ev.confidence >= 0.4 ? '#facc15' : '#f87171', width: 40, textAlign: 'right' }}>
-                  {Math.round(ev.confidence * 100)}%
-                </span>
-                <span style={{ color: '#888', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={ev.reason}>
-                  {ev.reasonCode ? `${ev.reasonCode}:` : ''} {ev.reason?.slice(0, 50)}
-                </span>
+
+        <div className="so-section">
+          <TriangleDiagram
+            audioMs={audioMs}
+            mvMs={mvMs}
+            bgMs={bgMs}
+            offsetMs={offsetMs}
+            audioMvDrift={audioMvDrift}
+            audioBgDrift={audioBgDrift}
+            mvBgDrift={mvBgDrift}
+            triangleConsistency={triangleConsistency}
+          />
+        </div>
+
+        <div className="so-section">
+          {sectionTitle('STATUS')}
+          <div className="so-status-grid">
+            <div className="so-status-card">
+              <div className="so-status-top">
+                {badge(mv?.stable ? 'LOCKED' : 'DRIFT', mv?.stable ? 'var(--so-green)' : 'var(--so-red)')}
+                <span className="so-status-mode">{mvState?.mode ?? '\u2014'}</span>
               </div>
-            )) : <div style={{ fontSize: 10, color: '#555' }}>no analyzer evidence</div>}
-            <div style={{ fontSize: 11, color: '#a78bfa', letterSpacing: 1, marginTop: 3, marginBottom: 1 }}>{eng.toUpperCase()} JUDGE</div>
-            {decision ? (
-              <div style={{ fontSize: 10, color: '#bbb', display: 'flex', gap: 4, alignItems: 'center', marginBottom: 1 }}>
-                <span style={{ color: '#666', width: 50 }}>Action</span>
-                <span style={{ color: decision.actionRequest?.type === 'hardSeek' ? '#f87171' : decision.actionRequest?.type === 'hold' ? '#888' : '#4ade80', width: 60 }}>
-                  {decision.actionRequest?.type?.toUpperCase() || '—'}
-                </span>
-                <span style={{ color: '#666', width: 40 }}>Conf</span>
-                <span style={{ color: '#bbb', width: 30, textAlign: 'right' }}>
-                  {Math.round((decision.decisionConfidence || 0) * 100)}%
-                </span>
+              <div className="so-compact-grid">
+                <span className="so-compact-label">Drift</span>
+                <span className="so-compact-value" style={{ color: driftColor(mv?.rawDrift) }}>{fmtMs(mv?.rawDrift)}ms</span>
+                <span className="so-compact-label">Corrected</span>
+                <span className="so-compact-value" style={{ color: driftColor(mv?.correctedDrift) }}>{fmtMs(mv?.correctedDrift)}ms</span>
+                <span className="so-compact-label">Soft</span>
+                <span className="so-compact-value">{fmtMs(mv?.thresholds?.soft * 1000)}ms</span>
+                <span className="so-compact-label">Hard</span>
+                <span className="so-compact-value">{fmtMs(mv?.thresholds?.hard * 1000)}ms</span>
               </div>
-            ) : <div style={{ fontSize: 10, color: '#555' }}>no decision yet</div>}
-          </div>;
-        })}
-      </div>
-
-      <div style={S.section}>
-        <div style={S.sectionTitle}>CONFIDENCE</div>
-        {['mv', 'bg'].map(eng => {
-          const st = eng === 'mv' ? mv : bg;
-          const blocked = st?.confidenceBlockedBy ?? 'decoder';
-          const opConf = (st?.compositeConfidence ?? 0) / 30 * 100;
-          const biasConf = (st?.biasConfidence ?? 0) / 10 * 100;
-          const blockedLabel = blocked ? blocked.charAt(0).toUpperCase() + blocked.slice(1) : '—';
-          const pct = (v) => Math.round(((v ?? 0) / 30) * 100);
-          const biasPct = (v) => Math.round(((v ?? 0) / 10) * 100);
-          const confColor = (v) => v >= 70 ? '#4ade80' : v >= 40 ? '#facc15' : '#f87171';
-          return <div key={eng} style={{ marginBottom: 2 }}>
-            <div style={{ fontSize: 11, color: '#a78bfa', letterSpacing: 1, marginBottom: 1 }}>{eng.toUpperCase()}</div>
-            <Row label="Op" value={`${Math.round(opConf)}% [${blockedLabel}]`} valueColor={confColor(opConf)} />
-            <Row label="Bias" value={`${biasPct(st?.biasConfidence)}%`} valueColor={biasConf >= 80 ? '#4ade80' : biasConf >= 40 ? '#facc15' : '#f87171'} />
-            <Row label="Decoder" value={`${pct(st?.decoderConfidence)}%`} valueColor={confColor(pct(st?.decoderConfidence))} />
-            <Row label="Render" value={`${pct(st?.renderConfidence)}%`} valueColor={confColor(pct(st?.renderConfidence))} />
-            <Row label="Scheduler" value={`${pct(st?.schedulerConfidence)}%`} valueColor={confColor(pct(st?.schedulerConfidence))} />
-            <Row label="Clock" value={`${pct(st?.clockConfidence)}%`} valueColor={confColor(pct(st?.clockConfidence))} />
-          </div>;
-        })}
-      </div>
-
-      <div style={S.section}>
-        <div style={S.sectionTitle}>HEALTH</div>
-        <Row label="Lock" value={`${mv?.decisions?.lock ?? 0}/${bg?.decisions?.lock ?? 0} (${mv?.decisions?.lockPct ?? 0}%)`} />
-        <Row label="Stall" value={String((mv?.schedulerStallCount ?? 0) + (bg?.schedulerStallCount ?? 0))} valueColor={((mv?.schedulerStallCount ?? 0) + (bg?.schedulerStallCount ?? 0)) > 0 ? '#f87171' : '#4ade80'} />
-        <Row label="CPU" value={`${(mvState?.cpuOverloaded || bgState?.cpuOverloaded) ? 'ON' : 'OFF'} (${(mv?.cpuOverloadCount ?? 0) + (bg?.cpuOverloadCount ?? 0)})`} valueColor={(mvState?.cpuOverloaded || bgState?.cpuOverloaded) ? '#f87171' : '#4ade80'} />
-        <Row label="Tick Miss" value={totalTick > 0 ? `${totalMiss} / ${totalTick} (${missPct}%)` : '0 / 0'} valueColor={healthColor(missPct)} />
-        <Row label="Futile" value={String((mv?.decisions?.futile ?? 0) + (bg?.decisions?.futile ?? 0))} valueColor={((mv?.decisions?.futile ?? 0) + (bg?.decisions?.futile ?? 0)) > 0 ? '#fb923c' : '#4ade80'} />
-      </div>
-
-      <div style={S.section}>
-        <div style={S.sectionTitle}>RE-STABILITY</div>
-        {['mv', 'bg'].map(eng => {
-          const s = eng === 'mv' ? mvReStab : bgReStab;
-          const cur = s?.current;
-          const last = s?.events?.slice(-1)[0];
-          return <div key={eng} style={{ marginBottom: 2 }}>
-            <div style={{ fontSize: 11, color: '#a78bfa', letterSpacing: 1, marginBottom: 1 }}>{eng.toUpperCase()}</div>
-            <Row label="Trigger" value={cur?.trigger ?? '—'} />
-            <Row label="Age" value={cur?.startTime ? `${fmtMs(performance.now() - cur.startTime)}ms` : '—'} valueColor={(cur?.disruptions?.length ?? 0) > 0 ? '#facc15' : '#bbb'} />
-            <Row label="Disrupts" value={String(cur?.disruptions?.length ?? 0)} valueColor={(cur?.disruptions?.length ?? 0) > 0 ? '#f87171' : '#4ade80'} />
-            <Row label="Total" value={String(s?.total ?? 0)} />
-            <Row label="Last" value={last ? `${last.trigger} ${fmtMs(last.windowDuration)}ms ${last.gateOpened ? 'OPEN' : 'FAIL'}${last.timeToGateOpen != null ? ` (${fmtMs(last.timeToGateOpen)}ms)` : ''}` : '—'} />
-          </div>;
-        })}
-      </div>
-
-      <div style={S.section}>
-        <div style={S.sectionTitle}>CLOCK PROVENANCE</div>
-        {['mv', 'bg'].map(eng => {
-          const ring = eng === 'mv' ? mvClockProv?.ring : bgClockProv?.ring;
-          const entries = ring?.length ? ring.slice(-6).reverse() : [];
-          return <div key={eng} style={{ marginBottom: 2 }}>
-            <div style={{ fontSize: 11, color: '#a78bfa', letterSpacing: 1, marginBottom: 1 }}>{eng.toUpperCase()} ({ring?.length ?? 0}/7)</div>
-            {entries.length ? entries.map((s, i) => {
-              const aD = s.audioDeltaMs != null ? `${s.audioDeltaMs >= 0 ? '+' : ''}${s.audioDeltaMs.toFixed(0)}` : '—';
-              const vD = s.videoDeltaMs != null ? `${s.videoDeltaMs >= 0 ? '+' : ''}${s.videoDeltaMs.toFixed(0)}` : '—';
-              const pD = s.perfDeltaMs != null ? `${s.perfDeltaMs.toFixed(0)}` : '—';
-              return <div key={i} style={{ fontSize: 11, color: '#bbb', display: 'flex', gap: 8, fontVariantNumeric: 'tabular-nums' }}>
-                <span style={{ color: '#666', width: 36 }}>{i === 0 ? 'now' : `-${i*30}ms`}</span>
-                <span style={{ width: 52, textAlign: 'right', color: s.audioDeltaMs != null && Math.abs(s.audioDeltaMs) > 30 ? '#f87171' : '#bbb' }} title="audioDeltaMs">{aD}ms</span>
-                <span style={{ width: 52, textAlign: 'right', color: s.videoDeltaMs != null && Math.abs(s.videoDeltaMs) > 30 ? '#facc15' : '#bbb' }} title="videoDeltaMs">{vD}ms</span>
-                <span style={{ width: 36, textAlign: 'right', color: s.perfDeltaMs != null && s.perfDeltaMs > 50 ? '#f87171' : '#bbb' }} title="perfDeltaMs">{pD}ms</span>
-              </div>;
-            }) : <div style={{ fontSize: 11, color: '#555' }}>waiting for ticks…</div>}
-          </div>;
-        })}
-      </div>
-
-      <div style={S.section}>
-        <div style={S.sectionTitle}>SPIKE RECORDER</div>
-        {['mv', 'bg'].map(eng => {
-          const spikes = eng === 'mv' ? mvSpikes : bgSpikes;
-          return <div key={eng} style={{ marginBottom: 2 }}>
-            <div style={{ fontSize: 11, color: '#a78bfa', letterSpacing: 1, marginBottom: 1 }}>{eng.toUpperCase()}</div>
-            {spikes.length ? spikes.map((sp) => {
-              const c = sp.attribution?.cause ?? 'UNKNOWN';
-              const badgeColor = c === 'SEEK_COMPLETE' ? '#4ade80' :
-                c === 'SEEK_LATENCY' ? '#f97316' :
-                c === 'SCHEDULER' ? '#f87171' :
-                c === 'DECODER' ? '#facc15' :
-                c === 'CLOCK_AUDIO' ? '#60a5fa' :
-                c === 'CLOCK_VIDEO' ? '#fbbf24' :
-                c === 'CLOCK_BOTH' ? '#c084fc' :
-                c === 'RVFC_LOST' ? '#fb923c' : '#888';
-              const relT = typeof performance !== 'undefined' && performance.timeOrigin
-                ? new Date(performance.timeOrigin + sp.t).toLocaleTimeString()
-                : `+${(sp.t/1000).toFixed(1)}s`;
-              return <div key={sp.id} style={{ fontSize: 11, color: '#bbb', display: 'flex', gap: 6, alignItems: 'center', marginBottom: 1 }}>
-                <span style={{ color: '#666', fontVariantNumeric: 'tabular-nums', width: 72 }}>{relT}</span>
-                <span style={{ color: driftColor(sp.rawDriftMs), fontVariantNumeric: 'tabular-nums', width: 60, textAlign: 'right' }}>{fmtMs(sp.rawDriftMs)}ms</span>
-                <span style={{ color: badgeColor, fontWeight: 600 }}>{c}</span>
-                <span style={{ color: '#666', fontSize: 10 }}>{sp.attribution?.confidence ?? 0}%</span>
-              </div>;
-            }) : <div style={{ fontSize: 11, color: '#555' }}>no spikes yet</div>}
-          </div>;
-        })}
-      </div>
-
-      <div style={S.section}>
-        <div style={S.sectionTitle}>SEEK PIPELINE</div>
-        {['mv', 'bg'].map(eng => {
-          const pipes = eng === 'mv' ? mvSeekPipeline : bgSeekPipeline;
-          const last = pipes?.slice(-1)[0];
-          return <div key={eng} style={{ marginBottom: 2 }}>
-            <div style={{ fontSize: 11, color: '#a78bfa', letterSpacing: 1, marginBottom: 1 }}>{eng.toUpperCase()}</div>
-            {last ? <>
-              <Row label="Seek→Seeked" value={`${fmtMs(last.seekStartToSeeked)}ms`} valueColor={last.seekStartToSeeked > 50 ? '#f87171' : '#4ade80'} />
-              <Row label="Seek→FirstFrame" value={`${fmtMs(last.seekToFirstFrameMs)}ms`} valueColor={last.seekToFirstFrameMs == null ? '#555' : (last.seekToFirstFrameMs > 100 ? '#f87171' : '#facc15')} />
-              <Row label="FirstFrame→DecodeStable" value={`${fmtMs(last.decodeStableMs)}ms`} valueColor={last.decodeStableMs == null ? '#555' : (last.decodeStableMs > 300 ? '#f87171' : '#facc15')} />
-              <Row label="Seeked→Stable" value={`${fmtMs(last.seekedToStable)}ms`} valueColor={last.seekedToStable > 50 ? '#f87171' : '#bbb'} />
-              <Row label="Total" value={`${fmtMs(last.totalToStable)}ms`} valueColor={last.totalToStable > 100 ? '#f87171' : '#bbb'} />
-              <Row label="Audio advance" value={`${fmtMs(last.audioAdvance)}ms`} valueColor={last.audioAdvance > 50 ? '#facc15' : '#bbb'} />
-              <Row label="Type" value={last.seekType} />
-            </> : <div style={{ fontSize: 11, color: '#555' }}>no seeks recorded</div>}
-          </div>;
-        })}
-      </div>
-
-       <div style={S.section}>
-         <div style={S.sectionTitle}>DECODE LIFECYCLE</div>
-         {['mv', 'bg'].map(eng => {
-           const summary = eng === 'mv' ? mvLifecycle : bgLifecycle;
-           const events = eng === 'mv' ? mvLifecycleEvents : bgLifecycleEvents;
-           const lastLoad = events.filter(e => e.type === 'loadstart').slice(-1)[0];
-           const lastCanPlay = events.filter(e => e.type === 'canplay').slice(-1)[0];
-           const lastPlaying = events.filter(e => e.type === 'playing').slice(-1)[0];
-           const lastWaiting = events.filter(e => e.type === 'waiting').slice(-1)[0];
-           const loadToCanPlay = lastLoad && lastCanPlay ? lastCanPlay.t - lastLoad.t : null;
-           const loadToPlaying = lastLoad && lastPlaying ? lastPlaying.t - lastLoad.t : null;
-           return <div key={eng} style={{ marginBottom: 2 }}>
-             <div style={{ fontSize: 11, color: '#a78bfa', letterSpacing: 1, marginBottom: 1 }}>{eng.toUpperCase()}</div>
-              <Row label="Src" value={summary?.currentSrc ? summary.currentSrc.slice(-30) : '—'} />
-              <Row label="SrcChanges" value={String(summary?.sourceSetCount ?? 0)} />
-              <Row label="Remounts" value={String(summary?.remountCount ?? 0)} valueColor={(_videoRemountCountRef ?? 0) > 0 ? '#facc15' : '#4ade80'} />
-              <Row label="Watchdog" value={String(_videoRemountCountRef ?? 0)} valueColor={(_videoRemountCountRef ?? 0) > 0 ? '#facc15' : '#555'} />
-              <Row label="Loads" value={String(summary?.loadCount ?? 0)} />
-             <Row label="Load→CanPlay" value={loadToCanPlay != null ? `${fmtMs(loadToCanPlay)}ms` : '—'} valueColor={loadToCanPlay != null && loadToCanPlay > 500 ? '#facc15' : '#bbb'} />
-             <Row label="Load→Playing" value={loadToPlaying != null ? `${fmtMs(loadToPlaying)}ms` : '—'} valueColor={loadToPlaying != null && loadToPlaying > 1000 ? '#facc15' : '#bbb'} />
-             <div style={{ fontSize: 10, color: '#555', marginTop: 1 }}>Events: {summary?.totalEvents ?? 0} total</div>
-             <div style={{ fontSize: 10, color: '#888', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-               {Object.entries(summary?.eventsByType ?? {}).map(([type, count]) => (
-                 <span key={type} style={{ color: count > 5 ? '#facc15' : '#888' }}>{type}:{count}</span>
-               ))}
-             </div>
-              {events.length > 0 && <div style={{ fontSize: 10, color: '#555', marginTop: 1 }}>
-                Last: {events.slice(-5).reverse().map(e => {
-                  const rel = typeof performance !== 'undefined' && performance.timeOrigin
-                    ? new Date(performance.timeOrigin + e.t).toLocaleTimeString()
-                    : `+${(e.t/1000).toFixed(1)}s`;
-                  return `${e.type}@${rel}`;
-                }).join(' ')}
-              </div>}
-            </div>;
-          })}
-        </div>
-
-      <div style={S.section}>
-        <div style={S.sectionTitle}>DISTRIBUTION</div>
-        <div style={{ display: 'flex', gap: 12 }}>
-          <div style={{ flex: 1 }}><HistogramDisplay histogram={mv?.histogram} /></div>
-          <div style={{ flex: 1 }}><HistogramDisplay histogram={bg?.histogram} /></div>
-        </div>
-        <div style={{ ...S.sectionTitle, marginTop: 6 }}>DRIFT GRAPH</div>
-        <div style={{ overflow: 'hidden' }}>
-          <div style={{ marginBottom: 2 }}>
-            <span style={{ color: '#888', fontSize: 12 }}>MV </span>
-            <DriftGraph history={driftHistoryMv} />
-          </div>
-          <div>
-            <span style={{ color: '#888', fontSize: 12 }}>BG </span>
-            <DriftGraph history={driftHistoryBg} />
-          </div>
-        </div>
-      </div>
-
-      {(function() {
-        const replay = _replayStateRef.current || _replayStateRef;
-        if (!replay || !replay.active) return null;
-        return (
-          <div style={S.section}>
-            <div style={{ ...S.sectionTitle, color: '#facc15' }}>REPLAY</div>
-            <Row label="Status" value={replay.complete ? 'COMPLETE' : 'RUNNING'} valueColor={replay.complete ? '#4ade80' : '#facc15'} />
-            <Row label="Frame" value={`${replay.frameIndex} / ${replay.totalFrames}`} />
-            {replay.lastFrame && (
-              <>
-                <Row label="Engine" value={replay.lastFrame.engine || '—'} />
-                <Row label="Decision" value={replay.lastFrame.decision?.actionRequest?.type || '—'} />
-                <Row label="Confidence" value={`${Math.round(replay.lastFrame.decision?.decisionConfidence || 0)}%`} />
-              </>
-            )}
-            <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>
-              Run: window.__SYNC_REPLAY_ASYNC__() &nbsp;|&nbsp; Stop: window.__SYNC_REPLAY_STOP__()
+            </div>
+            <div className="so-status-card">
+              <div className="so-status-top">
+                {badge(bg?.stable ? 'LOCKED' : 'DRIFT', bg?.stable ? 'var(--so-green)' : 'var(--so-red)')}
+                <span className="so-status-mode">{bgState?.mode ?? '\u2014'}</span>
+              </div>
+              <div className="so-compact-grid">
+                <span className="so-compact-label">Drift</span>
+                <span className="so-compact-value" style={{ color: driftColor(bg?.rawDrift) }}>{fmtMs(bg?.rawDrift)}ms</span>
+                <span className="so-compact-label">Corrected</span>
+                <span className="so-compact-value" style={{ color: driftColor(bg?.correctedDrift) }}>{fmtMs(bg?.correctedDrift)}ms</span>
+                <span className="so-compact-label">Soft</span>
+                <span className="so-compact-value">{fmtMs(bg?.thresholds?.soft * 1000)}ms</span>
+                <span className="so-compact-label">Hard</span>
+                <span className="so-compact-value">{fmtMs(bg?.thresholds?.hard * 1000)}ms</span>
+              </div>
             </div>
           </div>
-        );
-      })()}
-    </div>
+        </div>
+
+        <div className="so-section">
+          {sectionTitle('PERFORMANCE')}
+          <div className="so-perf-compact">
+            <div className="so-perf-item">
+              <span className="so-perf-label">Sync</span>
+              {badge(overallSynced ? 'SYNCED' : 'DESYNC', overallSynced ? 'var(--so-green)' : 'var(--so-red)')}
+            </div>
+            <div className="so-perf-item">
+              <span className="so-perf-label">RAF</span>
+              <span className="so-perf-value" style={{ color: rafFps < 30 ? 'var(--so-red)' : 'var(--so-text)' }}>{rafFps} FPS</span>
+            </div>
+            <div className="so-perf-item">
+              <span className="so-perf-label">Tick</span>
+              <span className="so-perf-value">{tickHz != null ? `${fmtVal(tickHz, 1)} Hz` : '\u2014'}</span>
+            </div>
+            <div className="so-perf-item">
+              <span className="so-perf-label">Dt</span>
+              <span className="so-perf-value">{mv?.stats?.tickDelta?.current != null ? `${fmtMs(mv.stats.tickDelta.current)}ms` : '\u2014'}</span>
+            </div>
+            <div className="so-perf-item">
+              <span className="so-perf-label">Sched</span>
+              <span className="so-perf-value">{mv?.stats?.tickDelta?.avg != null ? `${fmtVal(mv.stats.tickDelta.avg, 0)}ms` : '\u2014'}</span>
+            </div>
+            <div className="so-perf-item">
+              <span className="so-perf-label">Miss</span>
+              <span className="so-perf-value" style={{ color: healthColor(missPct) }}>{totalTick > 0 ? `${missPct}%` : '\u2014'}</span>
+            </div>
+          </div>
+          <div className="so-fps-compact">
+            <FpsMeter fps={mvFpsVal} label="MV" />
+            <FpsMeter fps={bgFpsVal} label="BG" />
+          </div>
+        </div>
+
+        <div className="so-section">
+          {sectionTitle('HEALTH')}
+          <div className="so-compact-grid">
+            <span className="so-compact-label">Lock</span>
+            <span className="so-compact-value">{mv?.decisions?.lock ?? 0}/{bg?.decisions?.lock ?? 0} ({mv?.decisions?.lockPct ?? 0}%)</span>
+            <span className="so-compact-label">Stall</span>
+            <span className="so-compact-value" style={{ color: ((mv?.schedulerStallCount ?? 0) + (bg?.schedulerStallCount ?? 0)) > 0 ? 'var(--so-red)' : 'var(--so-green)' }}>
+              {(mv?.schedulerStallCount ?? 0) + (bg?.schedulerStallCount ?? 0)}
+            </span>
+            <span className="so-compact-label">CPU</span>
+            <span className="so-compact-value" style={{ color: (mvState?.cpuOverloaded || bgState?.cpuOverloaded) ? 'var(--so-red)' : 'var(--so-green)' }}>
+              {(mvState?.cpuOverloaded || bgState?.cpuOverloaded) ? 'ON' : 'OFF'}
+            </span>
+            <span className="so-compact-label">Tick Miss</span>
+            <span className="so-compact-value" style={{ color: healthColor(missPct) }}>{totalMiss} / {totalTick}</span>
+            <span className="so-compact-label">Futile</span>
+            <span className="so-compact-value" style={{ color: ((mv?.decisions?.futile ?? 0) + (bg?.decisions?.futile ?? 0)) > 0 ? 'var(--so-orange)' : 'var(--so-green)' }}>
+              {(mv?.decisions?.futile ?? 0) + (bg?.decisions?.futile ?? 0)}
+            </span>
+          </div>
+        </div>
+
+        <div className="so-section">
+          {sectionTitle('RE-STABILITY')}
+          <div className="so-compact-grid">
+            {['mv', 'bg'].map(eng => {
+              const s = eng === 'mv' ? mvReStab : bgReStab;
+              const cur = s?.current;
+              return (
+                <div key={eng} className="so-restab-mini">
+                  <span className="so-restab-engine" style={{ color: eng === 'mv' ? 'var(--so-blue)' : 'var(--so-green)' }}>{eng.toUpperCase()}</span>
+                  <span className="so-restab-value">{cur?.trigger ?? '\u2014'}</span>
+                  <span className="so-restab-value" style={{ color: (cur?.disruptions?.length ?? 0) > 0 ? 'var(--so-yellow)' : 'var(--so-text)' }}>
+                    {cur?.startTime ? `${fmtMs(performance.now() - cur.startTime)}ms` : '\u2014'}
+                  </span>
+                  <span className="so-restab-value" style={{ color: (cur?.disruptions?.length ?? 0) > 0 ? 'var(--so-red)' : 'var(--so-green)' }}>
+                    {(cur?.disruptions?.length ?? 0)}
+                  </span>
+                  <span className="so-restab-value">{s?.total ?? 0}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="so-section">
+          {sectionTitle('CLOCK')}
+          <div className="so-clock-compact">
+            {['mv', 'bg'].map(eng => {
+              const ring = eng === 'mv' ? mvClockProv?.ring : bgClockProv?.ring;
+              const entries = ring?.slice(-3).reverse() || [];
+              return (
+                <div key={eng} className="so-clock-col">
+                  <div className="so-clock-header" style={{ color: eng === 'mv' ? 'var(--so-blue)' : 'var(--so-green)' }}>{eng.toUpperCase()}</div>
+                  {entries.map((s, i) => {
+                    const aD = s.audioDeltaMs != null ? `${s.audioDeltaMs >= 0 ? '+' : ''}${s.audioDeltaMs.toFixed(0)}` : '\u2014';
+                    const vD = s.videoDeltaMs != null ? `${s.videoDeltaMs >= 0 ? '+' : ''}${s.videoDeltaMs.toFixed(0)}` : '\u2014';
+                    const pD = s.perfDeltaMs != null ? `${s.perfDeltaMs.toFixed(0)}` : '\u2014';
+                    return (
+                      <div key={i} className="so-clock-row-compact">
+                        <span className="so-clock-time">{i === 0 ? 'now' : `-${i * 30}ms`}</span>
+                        <span className="so-clock-val" style={{ color: Math.abs(s.audioDeltaMs ?? 0) > 30 ? 'var(--so-red)' : 'var(--so-text)' }}>{aD}</span>
+                        <span className="so-clock-val" style={{ color: Math.abs(s.videoDeltaMs ?? 0) > 30 ? 'var(--so-yellow)' : 'var(--so-text)' }}>{vD}</span>
+                        <span className="so-clock-val" style={{ color: (s.perfDeltaMs ?? 0) > 50 ? 'var(--so-red)' : 'var(--so-text)' }}>{pD}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      <div className="so-panel so-panel-right">
+        <div className="so-panel-header">
+          <span>DECISIONS</span>
+        </div>
+
+        <div className="so-section">
+          <div className="so-compact-grid">
+            {['mv', 'bg'].map(eng => {
+              const decision = eng === 'mv' ? mvDecision : bgDecision;
+              const counts = (eng === 'mv' ? mv : bg)?.decisions || {};
+              const items = [
+                { label: 'LOCK', val: counts.lock ?? 0, color: 'var(--so-green)' },
+                { label: 'RATE', val: counts.rate ?? 0, color: 'var(--so-blue)' },
+                { label: 'HARD', val: counts.hard ?? 0, color: 'var(--so-red)' },
+                { label: 'NOOP', val: counts.noop ?? 0, color: 'var(--so-text-muted)' },
+                { label: 'FUTL', val: counts.futile ?? 0, color: 'var(--so-orange)' },
+              ];
+              return (
+                <div key={eng} className="so-decision-col">
+                  <div className="so-decision-col-header" style={{ color: eng === 'mv' ? 'var(--so-blue)' : 'var(--so-green)' }}>{eng.toUpperCase()}</div>
+                  <div className="so-decision-chips">
+                    {items.map(d => (
+                      <span key={d.label} className="so-decision-chip" style={{ color: d.color, borderColor: `${d.color}40` }}>
+                        <span className="so-decision-chip-label">{d.label}</span>
+                        <span className="so-decision-chip-value">{d.val}</span>
+                      </span>
+                    ))}
+                  </div>
+                  <div className="so-decision-meta">
+                    <span>Lock <b style={{ color: 'var(--so-text)' }}>{counts.lockPct ?? 0}%</b></span>
+                    <span>Eff <b style={{ color: 'var(--so-text)' }}>{counts.lock ?? 0}</b></span>
+                  </div>
+                  <div className="so-judge-row">
+                    <span className="so-judge-label">Judge</span>
+                    {badge(decision?.actionRequest?.type?.toUpperCase() || '\u2014', decision?.actionRequest?.type === 'hardSeek' ? 'var(--so-red)' : decision?.actionRequest?.type === 'hold' ? 'var(--so-text-muted)' : 'var(--so-green)')}
+                    <span className="so-judge-conf">{Math.round((decision?.decisionConfidence || 0) * 100)}%</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="so-section">
+          {sectionTitle('CONFIDENCE')}
+          <div className="so-compact-grid">
+            {['mv', 'bg'].map(eng => {
+              const st = eng === 'mv' ? mv : bg;
+              const blocked = st?.confidenceBlockedBy ?? 'decoder';
+              const metrics = [
+                { label: 'Op', val: st?.compositeConfidence ?? 0, max: 30 },
+                { label: 'Bias', val: st?.biasConfidence ?? 0, max: 10 },
+                { label: 'Dec', val: st?.decoderConfidence ?? 0, max: 30 },
+                { label: 'Rend', val: st?.renderConfidence ?? 0, max: 30 },
+                { label: 'Sched', val: st?.schedulerConfidence ?? 0, max: 30 },
+                { label: 'Clk', val: st?.clockConfidence ?? 0, max: 30 },
+              ];
+              return (
+                <div key={eng} className="so-conf-col">
+                  <div className="so-conf-col-header" style={{ color: eng === 'mv' ? 'var(--so-blue)' : 'var(--so-green)' }}>{eng.toUpperCase()}</div>
+                  <div className="so-conf-bars-compact">
+                    {metrics.map(m => {
+                      const pct = Math.min(100, Math.round((m.val / m.max) * 100));
+                      const color = pct >= 70 ? 'var(--so-green)' : pct >= 40 ? 'var(--so-yellow)' : 'var(--so-red)';
+                      return (
+                        <div key={m.label} className="so-conf-row-compact">
+                          <span className="so-conf-label">{m.label}</span>
+                          <div className="so-conf-track">
+                            <div className="so-conf-fill" style={{ width: `${pct}%`, background: color }} />
+                          </div>
+                          <span className="so-conf-pct">{pct}%</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="so-conf-blocked">Blocked: {blocked}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="so-section">
+          {sectionTitle('EXECUTED SEEKS')}
+          <div className="so-compact-grid">
+            {['mv', 'bg'].map(eng => {
+              const st = eng === 'mv' ? mvSeekTele : bgSeekTele;
+              const hard = st?.hard;
+              const soft = st?.soft;
+              const hasData = (hard?.count ?? 0) > 0 || (soft?.count ?? 0) > 0;
+              return (
+                <div key={eng} className="so-seek-mini">
+                  <div className="so-seek-mini-header" style={{ color: eng === 'mv' ? 'var(--so-blue)' : 'var(--so-green)' }}>{eng.toUpperCase()}</div>
+                  {hasData ? (
+                    <div className="so-seek-mini-rows">
+                      <div className="so-seek-mini-row">
+                        <span className="so-seek-mini-label">Hard</span>
+                        <span className="so-seek-mini-value" style={{ color: 'var(--so-red)' }}>
+                          {hard.count} <span style={{ color: 'var(--so-text-muted)', fontWeight: 400 }}>({hard.avgDrift}ms)</span>
+                        </span>
+                      </div>
+                      <div className="so-seek-mini-row">
+                        <span className="so-seek-mini-label">Soft</span>
+                        <span className="so-seek-mini-value" style={{ color: 'var(--so-yellow)' }}>
+                          {soft.count} <span style={{ color: 'var(--so-text-muted)', fontWeight: 400 }}>({soft.avgDrift}ms)</span>
+                        </span>
+                      </div>
+                    </div>
+                  ) : muted('No seeks')}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="so-section">
+          {sectionTitle('PIPELINE')}
+          <div className="so-pipeline-compact">
+            {['mv', 'bg'].map(eng => {
+              const evidences = eng === 'mv' ? mvEvidences : bgEvidences;
+              const decision = eng === 'mv' ? mvDecision : bgDecision;
+              return (
+                <div key={eng} className="so-pipe-compact">
+                  <div className="so-pipe-compact-header" style={{ color: eng === 'mv' ? 'var(--so-blue)' : 'var(--so-green)' }}>{eng.toUpperCase()}</div>
+                  <div className="so-pipe-evidence-compact">
+                    {evidences.length ? evidences.slice(-2).map((ev, i) => {
+                      const c = ev.confidence >= 0.7 ? 'var(--so-green)' : ev.confidence >= 0.4 ? 'var(--so-yellow)' : 'var(--so-red)';
+                      return (
+                        <div key={i} className="so-pipe-ev-compact">
+                          <span className="so-pipe-ev-name" title={ev.analyzerId}>{ev.analyzerId}</span>
+                          <span className="so-pipe-ev-conf" style={{ color: c }}>{Math.round(ev.confidence * 100)}%</span>
+                        </div>
+                      );
+                    }) : <div className="so-muted">no evidence</div>}
+                  </div>
+                  <div className="so-pipe-flow">
+                    <span>input</span>
+                    <span className="so-pipe-flow-arrow">→</span>
+                    <span>judge</span>
+                    <span className="so-pipe-flow-arrow">→</span>
+                    <span>action</span>
+                  </div>
+                  <div className="so-pipe-judge-compact">
+                    {decision ? (
+                      <>
+                        {badge(decision.actionRequest?.type?.toUpperCase() || '\u2014', decision.actionRequest?.type === 'hardSeek' ? 'var(--so-red)' : decision.actionRequest?.type === 'hold' ? 'var(--so-text-muted)' : 'var(--so-green)')}
+                        <span className="so-pipe-conf">{Math.round((decision.decisionConfidence || 0) * 100)}%</span>
+                      </>
+                    ) : muted('waiting')}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="so-section">
+          {sectionTitle('SEEK PIPELINE')}
+          <div className="so-compact-grid">
+            {['mv', 'bg'].map(eng => {
+              const pipes = eng === 'mv' ? mvSeekPipeline : bgSeekPipeline;
+              const last = pipes?.slice(-1)[0];
+              return (
+                <div key={eng} className="so-seekpipe-mini">
+                  <div className="so-seekpipe-mini-header" style={{ color: eng === 'mv' ? 'var(--so-blue)' : 'var(--so-green)' }}>{eng.toUpperCase()}</div>
+                  {last ? (
+                    <div className="so-seekpipe-mini-rows">
+                      <ComparisonRow label="Seeked" mvValue={`${fmtMs(last.seekStartToSeeked)}ms`} bgValue={null} mvColor={last.seekStartToSeeked > 50 ? 'var(--so-red)' : 'var(--so-green)'} />
+                      <ComparisonRow label="1st Frame" mvValue={last.seekToFirstFrameMs != null ? `${fmtMs(last.seekToFirstFrameMs)}ms` : '\u2014'} bgValue={null} mvColor={last.seekToFirstFrameMs > 100 ? 'var(--so-red)' : 'var(--so-yellow)'} />
+                      <ComparisonRow label="Stable" mvValue={last.decodeStableMs != null ? `${fmtMs(last.decodeStableMs)}ms` : '\u2014'} bgValue={null} mvColor={last.decodeStableMs > 300 ? 'var(--so-red)' : 'var(--so-yellow)'} />
+                      <ComparisonRow label="Total" mvValue={`${fmtMs(last.totalToStable)}ms`} bgValue={null} mvColor={last.totalToStable > 100 ? 'var(--so-red)' : 'var(--so-text)'} />
+                    </div>
+                  ) : muted('No seek data')}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="so-section">
+          {sectionTitle('SPIKES')}
+          <div className="so-spikes-compact">
+            {['mv', 'bg'].map(eng => {
+              const spikes = eng === 'mv' ? mvSpikes : bgSpikes;
+              return (
+                <div key={eng} className="so-spike-col">
+                  <div className="so-spike-col-header" style={{ color: eng === 'mv' ? 'var(--so-blue)' : 'var(--so-green)' }}>{eng.toUpperCase()}</div>
+                  <div className="so-spike-list-compact">
+                    {spikes.length ? spikes.slice(0, 4).map((sp, i) => {
+                      const c = sp.attribution?.cause ?? 'UNKNOWN';
+                      const badgeColor = c === 'SEEK_COMPLETE' ? 'var(--so-green)' :
+                        c === 'SEEK_LATENCY' ? 'var(--so-orange)' :
+                        c === 'SCHEDULER' ? 'var(--so-red)' :
+                        c === 'DECODER' ? 'var(--so-yellow)' :
+                        c === 'CLOCK_AUDIO' ? 'var(--so-blue)' :
+                        c === 'CLOCK_VIDEO' ? '#fbbf24' :
+                        c === 'CLOCK_BOTH' ? '#c084fc' :
+                        c === 'RVFC_LOST' ? 'var(--so-orange)' : 'var(--so-text-muted)';
+                      return (
+                        <div key={i} className="so-spike-item-compact">
+                          <span className="so-spike-drift" style={{ color: driftColor(sp.rawDriftMs) }}>{fmtMs(sp.rawDriftMs)}ms</span>
+                          {badge(c, badgeColor)}
+                          <span className="so-spike-conf">{sp.attribution?.confidence ?? 0}%</span>
+                        </div>
+                      );
+                    }) : <div className="so-muted">no spikes</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="so-section">
+          {sectionTitle('DISTRIBUTION')}
+          <div className="so-dist-compact">
+            <div className="so-dist-col">
+              <div className="so-dist-header" style={{ color: 'var(--so-blue)' }}>MV</div>
+              <HistogramDisplay histogram={mv?.histogram} />
+              <DriftGraph history={driftHistoryMv} colorFn={driftColor} label="MV" />
+            </div>
+            <div className="so-dist-col">
+              <div className="so-dist-header" style={{ color: 'var(--so-green)' }}>BG</div>
+              <HistogramDisplay histogram={bg?.histogram} />
+              <DriftGraph history={driftHistoryBg} colorFn={driftColor} label="BG" />
+            </div>
+          </div>
+        </div>
+
+        {(function() {
+          const replay = _replayStateRef.current || _replayStateRef;
+          if (!replay || !replay.active) return null;
+          return (
+            <div className="so-section">
+              {sectionTitle('REPLAY')}
+              <div className="so-compact-grid">
+                <span className="so-compact-label">Status</span>
+                <span className="so-compact-value" style={{ color: replay.complete ? 'var(--so-green)' : 'var(--so-yellow)' }}>{replay.complete ? 'COMPLETE' : 'RUNNING'}</span>
+                <span className="so-compact-label">Frame</span>
+                <span className="so-compact-value">{replay.frameIndex} / {replay.totalFrames}</span>
+                {replay.lastFrame && (
+                  <>
+                    <span className="so-compact-label">Engine</span>
+                    <span className="so-compact-value">{replay.lastFrame.engine || '\u2014'}</span>
+                    <span className="so-compact-label">Decision</span>
+                    <span className="so-compact-value">{replay.lastFrame.decision?.actionRequest?.type || '\u2014'}</span>
+                    <span className="so-compact-label">Confidence</span>
+                    <span className="so-compact-value">{Math.round((replay.lastFrame.decision?.decisionConfidence || 0) * 100)}%</span>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+      </div>
+    </>
   );
 });
-
-const S = {
-  container: {
-    position: 'fixed', top: 12, right: 12, zIndex: 99999,
-    background: 'rgba(0, 0, 0, 0.92)', border: '1px solid rgba(255,255,255,0.1)',
-    borderRadius: 10, padding: '10px 14px', fontFamily: 'monospace', fontSize: 13,
-    color: '#e5e5e5', width: 480, maxHeight: 'calc(100vh - 24px)',
-    overflowY: 'auto', pointerEvents: 'auto', userSelect: 'text',
-  },
-  header: {
-    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-    fontSize: 14, fontWeight: 700, letterSpacing: 2, color: '#a78bfa',
-    marginBottom: 6, borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: 5,
-  },
-  closeBtn: {
-    background: 'none', border: 'none', color: '#888', fontSize: 20, cursor: 'pointer',
-    padding: '0 6px', lineHeight: 1, borderRadius: 4,
-  },
-  timeRow: {
-    display: 'flex', gap: 12, fontFamily: 'monospace', fontSize: 13, fontWeight: 600,
-    padding: '4px 0', marginBottom: 4, letterSpacing: 0.5,
-  },
-  section: { marginBottom: 3, paddingTop: 3, borderTop: '1px solid rgba(255,255,255,0.06)' },
-  sectionTitle: {
-    fontSize: 11, fontWeight: 700, color: '#a78bfa', letterSpacing: 1,
-    marginBottom: 2, padding: '2px 6px', background: 'rgba(167,139,250,0.08)',
-    borderRadius: 3, textTransform: 'uppercase',
-  },
-  sectionLabel: {
-    fontSize: 10, fontWeight: 600, color: '#666', letterSpacing: 0.5,
-    marginTop: 2, marginBottom: 1, paddingLeft: 2,
-  },
-  card: {
-    background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)',
-    borderRadius: 5, padding: '3px 6px',
-  },
-  cardLabel: {
-    fontSize: 10, fontWeight: 700, color: '#666', letterSpacing: 1, marginBottom: 1,
-  },
-  row: {
-    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-    lineHeight: 1.3, gap: 6,
-  },
-  label: { color: '#888', fontSize: 13, flexShrink: 0 },
-  value: { fontVariantNumeric: 'tabular-nums', fontSize: 13, textAlign: 'right', whiteSpace: 'nowrap' },
-};
 
 export default SyncOverlay;

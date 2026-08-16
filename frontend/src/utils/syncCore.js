@@ -1406,7 +1406,136 @@ export class SharedSyncCore {
     return this.replayLog;
   }
 
-  // ── Reset ──────────────────────────────────────────────────────────────
+  // ── Per-Track Profile Methods ────────────────────────────────────────────
+
+  applyProfile(engine, profile) {
+    const stats = this[engine];
+    if (!stats || !profile) return;
+
+    const weight = profile.confidence || 0;
+
+    if (profile.biasMs) {
+      stats.biasEMA.mean = weight * profile.biasMs.mean + (1 - weight) * 0;
+      stats.biasEMA.variance = profile.biasMs.variance || 0;
+      stats.biasEMA.samples = profile.biasMs.samples || 0;
+      stats.lastBias = stats.biasEMA.mean;
+    }
+
+    if (profile.decodeLatMs) {
+      stats.decodeLatEMA.mean = weight * profile.decodeLatMs.mean + (1 - weight) * 0;
+      stats.decodeLatEMA.variance = profile.decodeLatMs.variance || 0;
+      stats.decodeLatEMA.samples = profile.decodeLatMs.samples || 0;
+      stats.lastDecodeLat = stats.decodeLatEMA.mean;
+    }
+
+    if (profile.seekLatMs) {
+      stats.seekLatEMA.mean = weight * profile.seekLatMs.mean + (1 - weight) * 15;
+      stats.seekLatEMA.variance = profile.seekLatMs.variance || 0;
+      stats.seekLatEMA.samples = profile.seekLatMs.samples || 0;
+      stats.lastSeekLat = stats.seekLatEMA.mean;
+    }
+
+    if (profile.presLatMs) {
+      stats.presLatEMA.mean = weight * profile.presLatMs.mean + (1 - weight) * 15;
+      stats.presLatEMA.variance = profile.presLatMs.variance || 0;
+      stats.presLatEMA.samples = profile.presLatMs.samples || 0;
+      stats.lastPresLat = stats.presLatEMA.mean;
+    }
+
+    stats.compositeConfidence = profile.confidence || 0;
+  }
+
+  captureProfile(engine) {
+    const stats = this[engine];
+    if (!stats) return null;
+
+    return {
+      biasMs: {
+        mean: stats.biasEMA.mean,
+        variance: stats.biasEMA.variance,
+        samples: stats.biasEMA.samples,
+      },
+      decodeLatMs: {
+        mean: stats.decodeLatEMA.mean,
+        variance: stats.decodeLatEMA.variance,
+        samples: stats.decodeLatEMA.samples,
+      },
+      seekLatMs: {
+        mean: stats.seekLatEMA.mean,
+        variance: stats.seekLatEMA.variance,
+        samples: stats.seekLatEMA.samples,
+      },
+      presLatMs: {
+        mean: stats.presLatEMA.mean,
+        variance: stats.presLatEMA.variance,
+        samples: stats.presLatEMA.samples,
+      },
+      confidence: stats.compositeConfidence,
+      sampleCount: stats.tickCount,
+      updatedAt: performance.now(),
+    };
+  }
+
+  updateProfileFromLive(engine, profile) {
+    const stats = this[engine];
+    if (!stats || !profile) return;
+
+    if (stats.biasEMA.samples > 0) {
+      profile.biasMs = {
+        mean: stats.biasEMA.mean,
+        variance: stats.biasEMA.variance,
+        samples: stats.biasEMA.samples,
+      };
+    }
+
+    if (stats.decodeLatEMA.samples > 0) {
+      profile.decodeLatMs = {
+        mean: stats.decodeLatEMA.mean,
+        variance: stats.decodeLatEMA.variance,
+        samples: stats.decodeLatEMA.samples,
+      };
+    }
+
+    if (stats.seekLatEMA.samples > 0) {
+      profile.seekLatMs = {
+        mean: stats.seekLatEMA.mean,
+        variance: stats.seekLatEMA.variance,
+        samples: stats.seekLatEMA.samples,
+      };
+    }
+
+    if (stats.presLatEMA.samples > 0) {
+      profile.presLatMs = {
+        mean: stats.presLatEMA.mean,
+        variance: stats.presLatEMA.variance,
+        samples: stats.presLatEMA.samples,
+      };
+    }
+
+    profile.confidence = stats.compositeConfidence;
+    profile.sampleCount = stats.tickCount;
+    profile.updatedAt = performance.now();
+  }
+
+  clearObservability() {
+    this.mv.spikeRecorder = [];
+    this.mv.clockProvenanceRing = [];
+    this.mv.seekPipelineLatencies = [];
+    this.mv.reStabilityEvents = [];
+    this.mv.currentReStabilityEvent = null;
+    this.mvDecisions.reset();
+    this.mvSeekTelemetry.reset();
+
+    this.bg.spikeRecorder = [];
+    this.bg.clockProvenanceRing = [];
+    this.bg.seekPipelineLatencies = [];
+    this.bg.reStabilityEvents = [];
+    this.bg.currentReStabilityEvent = null;
+    this.bgDecisions.reset();
+    this.bgSeekTelemetry.reset();
+
+    this.replayLog = [];
+  }
 
   reset() {
     this.mv = this._createEngineStats();
@@ -1425,6 +1554,7 @@ export class SharedSyncCore {
     }
   }
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SyncReplay — offline simulator for comparing configs
@@ -1529,7 +1659,7 @@ export class SyncReplay {
         max: resultB.maxMs - resultA.maxMs,
         hardSeeks: resultB.hardSeekCount - resultA.hardSeekCount,
         softSeeks: resultB.softSeekCount - resultA.softSeekCount,
-      },
+      }
     };
   }
 }
