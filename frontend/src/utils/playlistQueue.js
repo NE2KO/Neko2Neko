@@ -3,8 +3,21 @@
 
 export function buildPlayableQueue(displayTracks) {
   if (!Array.isArray(displayTracks)) return [];
+  const seen = new Set();
   return displayTracks
     .filter((t) => t && t.exists && (t.file_id || t.id))
+    // Deduplicate by file_id (fall back to id when file_id is absent). In the
+    // Loved playlist every track has id === file_id, so a backend that returns
+    // the same file twice would otherwise create duplicate queue entries and
+    // resolveClickedIndex (findIndex by id/file_id) would match the FIRST one
+    // instead of the clicked track. Keep the first occurrence to preserve the
+    // displayed order.
+    .filter((t) => {
+      const key = t.file_id != null ? t.file_id : t.id;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
     .map((t, i) => ({
       id: t.id != null ? t.id : undefined,
       file_id: t.file_id,

@@ -47,6 +47,33 @@ test('resolveClickedIndex matches on stable id even when file_id is absent', () 
   assert.equal(queue[idx].file_id, 'f3');
 });
 
+// Loved-playlist scenario: every track has id === file_id, and the backend can
+// return the same file twice (duplicate entries). buildPlayableQueue must drop
+// the duplicate so resolveClickedIndex targets the clicked track, not index 0.
+const makeLovedTracks = () => [
+  { id: 'f0', file_id: 'f0', display_name: 'A', exists: true, resolved_path: '/a.mp3' },
+  { id: 'f1', file_id: 'f1', display_name: 'B', exists: true, resolved_path: '/b.mp3' },
+  { id: 'f2', file_id: 'f2', display_name: 'C', exists: true, resolved_path: '/c.mp3' },
+  { id: 'f9', file_id: 'f9', display_name: 'J', exists: true, resolved_path: '/j.mp3' },
+  { id: 'f9', file_id: 'f9', display_name: 'J (dup)', exists: true, resolved_path: '/j.mp3' }, // duplicate of f9
+];
+
+test('Loved: buildPlayableQueue deduplicates by file_id (keeps first)', () => {
+  const queue = buildPlayableQueue(makeLovedTracks());
+  assert.equal(queue.length, 4); // duplicate f9 dropped
+  assert.deepEqual(queue.map((q) => q.file_id), ['f0', 'f1', 'f2', 'f9']);
+});
+
+test('Loved: clicking the last (duplicate) file still resolves to its real index', () => {
+  const displayTracks = makeLovedTracks();
+  const queue = buildPlayableQueue(displayTracks); // [f0, f1, f2, f9]
+  const clicked = displayTracks[3]; // the real f9 (4th display row)
+  const idx = resolveClickedIndex(clicked, queue);
+  assert.equal(idx, 3);
+  assert.equal(queue[idx].file_id, 'f9');
+  assert.notEqual(idx, 0); // would have been the old Bug #2 behavior
+});
+
 test('empty / non-array input is safe', () => {
   assert.equal(buildPlayableQueue([]).length, 0);
   assert.equal(buildPlayableQueue(null).length, 0);

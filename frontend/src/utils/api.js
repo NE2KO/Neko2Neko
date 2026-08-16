@@ -223,6 +223,32 @@ export async function getLock(fileId) {
   return res.json();
 }
 
+export async function deleteFile(id) {
+  const res = await fetch(`${API}/api/files/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Failed to delete file');
+  return res.json();
+}
+
+export async function bulkLock(ids, lock) {
+  const res = await fetch(`${API}/api/files/batch/lock`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids, lock }),
+  });
+  if (!res.ok) throw new Error('Failed to batch lock');
+  return res.json();
+}
+
+export async function bulkDelete(ids) {
+  const res = await fetch(`${API}/api/files/batch/delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  });
+  if (!res.ok) throw new Error('Failed to batch delete');
+  return res.json();
+}
+
 export async function sendToTelegram(fileId) {
   const res = await fetch(`${API}/api/send/telegram`, {
     method: 'POST',
@@ -404,6 +430,19 @@ export async function reorderQueueItem(id, direction) {
   return res.json();
 }
 
+// Enqueue a file as a PENDING queue item (no immediate send) so it can be
+// pinned to a date via rescheduleQueueItem. Returns { ok, qid }.
+export async function enqueueSendItem(fileId, target = 'status') {
+  const res = await fetch(`${API}/api/send/queue/enqueue`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fileId, target }),
+  });
+  const data = await res.json();
+  if (data && data.ok !== false) window.dispatchEvent(new Event('media-vault:send-changed'));
+  return data;
+}
+
 export async function rescheduleQueueItem(id, scheduledAt) {
   const res = await fetch(`${API}/api/send/queue/${id}/schedule`, {
     method: 'PUT',
@@ -411,6 +450,11 @@ export async function rescheduleQueueItem(id, scheduledAt) {
     body: JSON.stringify({ scheduledAt }),
   });
   return res.json();
+}
+
+// Unpin = clear the explicit date and return the item to auto-flow.
+export async function unpinQueueItem(id) {
+  return rescheduleQueueItem(id, null);
 }
 
 export async function resendQueueItem(id) {
@@ -433,84 +477,6 @@ export async function setSendSettings(settings) {
   return res.json();
 }
 
-// === AI API FUNCTIONS ===
-
-export async function fetchAiStatus(localId) {
-  const headers = localId ? { 'X-AI-Local-Id': localId } : undefined;
-  const res = await dedupFetch(`${API}/api/ai`, { headers });
-  return res.json();
-}
-
-export async function fetchAiConversations(localId) {
-  const res = await dedupFetch(`${API}/api/ai/conversations`, { headers: { 'X-AI-Local-Id': localId } });
-  return res.json();
-}
-
-export async function createAiConversation(localId, title) {
-  const res = await fetch(`${API}/api/ai/conversations`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-AI-Local-Id': localId },
-    body: JSON.stringify({ title }),
-  });
-  if (!res.ok) throw new Error('Failed to create conversation');
-  return res.json();
-}
-
-export async function fetchAiConversation(localId, id) {
-  const res = await dedupFetch(`${API}/api/ai/conversations/${id}`, { headers: { 'X-AI-Local-Id': localId } });
-  return res.json();
-}
-
-export async function updateAiConversation(localId, id, patch) {
-  const res = await fetch(`${API}/api/ai/conversations/${id}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', 'X-AI-Local-Id': localId },
-    body: JSON.stringify(patch),
-  });
-  return res.json();
-}
-
-export async function deleteAiConversation(localId, id) {
-  const res = await fetch(`${API}/api/ai/conversations/${id}`, {
-    method: 'DELETE',
-    headers: { 'X-AI-Local-Id': localId },
-  });
-  return res.json();
-}
-
-export async function searchAiConversationMessages(localId, id, q) {
-  const url = `${API}/api/ai/conversations/${id}/search?q=${encodeURIComponent(q)}`;
-  const res = await dedupFetch(url, { headers: { 'X-AI-Local-Id': localId } });
-  return res.json();
-}
-
-export async function fetchAiTools(localId) {
-  const res = await dedupFetch(`${API}/api/ai/tools`, { headers: { 'X-AI-Local-Id': localId } });
-  return res.json();
-}
-
-export async function fetchAiSettings() {
-  const res = await dedupFetch(`${API}/api/ai/settings`);
-  return res.json();
-}
-
-export async function updateAiSetting(key, value) {
-  const res = await fetch(`${API}/api/ai/settings/${key}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value }),
-  });
-  return res.json();
-}
-
-export async function exportAiConversation(localId, conversationId) {
-  const res = await fetch(`${API}/api/ai/conversations/${conversationId}/export`, {
-    headers: { 'X-AI-Local-Id': localId },
-  });
-  if (!res.ok) throw new Error('Export failed');
-  return res.blob();
-}
-
 export async function downloadAsFile(content, filename, mime = 'text/plain') {
   const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
@@ -519,210 +485,5 @@ export async function downloadAsFile(content, filename, mime = 'text/plain') {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
-}
-
-export async function sendAiMessage(localId, conversationId, message, onChunk, onDone, onError) {
-  const res = await fetch(`${API}/api/ai/conversations/${conversationId}/message`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-AI-Local-Id': localId },
-    body: JSON.stringify({ message }),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`HTTP ${res.status}: ${text}`);
-  }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      onDone?.();
-      break;
-    }
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith('data:')) continue;
-      const payload = trimmed.slice(5).trim();
-      if (payload === '[DONE]') { onDone?.(); return; }
-      try {
-        const data = JSON.parse(payload);
-        if (data.type === 'error') { onError?.(data.error); return; }
-        if (data.type === 'delta') onChunk({ type: 'text_delta', text: data.text });
-        else if (data.type === 'text') onChunk({ type: 'text_delta', text: data.text });
-        else if (data.type === 'tool_call_delta') onChunk({ type: 'tool_call_delta', ...data });
-        else if (data.type === 'tool_call_start') onChunk({ type: 'tool_call_start', id: data.id, name: data.name });
-        else if (data.type === 'tool_result') onChunk({ type: 'tool_result', id: data.id, name: data.name, result: data.result });
-        else if (data.type === 'done') { onDone?.(data.finishReason); return; }
-        else if (data.type === 'started') { /* noop */ }
-      } catch {}
-    }
-  }
-}
-
-// === AI PROVIDER STATUS & VERIFICATION ===
-
-export async function fetchProviderStatus() {
-  const res = await dedupFetch(`${API}/api/ai/providers/status`);
-  return res.json();
-}
-
-export async function verifyProvider(providerId) {
-  const res = await fetch(`${API}/api/ai/providers/${providerId}/verify`, { method: 'POST' });
-  return res.json();
-}
-
-export async function fetchProviderModels(providerId, refresh = false) {
-  const url = `${API}/api/ai/providers/${providerId}/models${refresh ? '?refresh=true' : ''}`;
-  const res = await dedupFetch(url);
-  return res.json();
-}
-
-export async function refreshProviderModels(providerId) {
-  const res = await fetch(`${API}/api/ai/providers/${providerId}/models/refresh`, { method: 'POST' });
-  return res.json();
-}
-
-// === AI MODELS ===
-
-export async function fetchAllModels(params = {}) {
-  const qs = new URLSearchParams(params).toString();
-  const url = `${API}/api/ai/models${qs ? '?' + qs : ''}`;
-  const res = await dedupFetch(url);
-  return res.json();
-}
-
-export async function updateModelPreference(providerId, modelId, pref) {
-  const res = await fetch(`${API}/api/ai/models/preferences`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ providerId, modelId, ...pref }),
-  });
-  return res.json();
-}
-
-export async function markModelUsed(providerId, modelId) {
-  const res = await fetch(`${API}/api/ai/models/mark-used`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ providerId, modelId }),
-  });
-  return res.json();
-}
-
-export async function fetchFavoriteModels() {
-  const res = await dedupFetch(`${API}/api/ai/models/favorites`);
-  return res.json();
-}
-
-export async function fetchProviderPresets() {
-  const res = await dedupFetch(`${API}/api/ai/providers/presets`);
-  return res.json();
-}
-
-// === AI MEMORIES ===
-
-export async function fetchMemories(params = {}) {
-  const qs = new URLSearchParams(params).toString();
-  const url = `${API}/api/ai/memories${qs ? '?' + qs : ''}`;
-  const res = await dedupFetch(url);
-  return res.json();
-}
-
-export async function fetchMemoryCount() {
-  const res = await dedupFetch(`${API}/api/ai/memories/count`);
-  return res.json();
-}
-
-export async function createMemory(content, options = {}) {
-  const res = await fetch(`${API}/api/ai/memories`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, ...options }),
-  });
-  return res.json();
-}
-
-export async function updateMemory(id, updates) {
-  const res = await fetch(`${API}/api/ai/memories/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(updates),
-  });
-  return res.json();
-}
-
-export async function deleteMemory(id) {
-  const res = await fetch(`${API}/api/ai/memories/${id}`, { method: 'DELETE' });
-  return res.json();
-}
-
-export async function toggleMemoryPin(id) {
-  const res = await fetch(`${API}/api/ai/memories/${id}/toggle-pin`, { method: 'POST' });
-  return res.json();
-}
-
-export async function toggleMemoryEnabled(id) {
-  const res = await fetch(`${API}/api/ai/memories/${id}/toggle-enabled`, { method: 'POST' });
-  return res.json();
-}
-
-export async function extractMemories(conversationId) {
-  const res = await fetch(`${API}/api/ai/memories/extract/${conversationId}`, { method: 'POST' });
-  return res.json();
-}
-
-export async function exportMemories() {
-  const res = await fetch(`${API}/api/ai/memories/export`);
-  if (!res.ok) throw new Error('Export failed');
-  return res.blob();
-}
-
-// === AI CONVERSATION SETTINGS ===
-
-export async function fetchConversationSettings(conversationId) {
-  const res = await dedupFetch(`${API}/api/ai/conversations/${conversationId}/settings`);
-  return res.json();
-}
-
-export async function updateConversationSettings(conversationId, settings) {
-  const res = await fetch(`${API}/api/ai/conversations/${conversationId}/settings`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(settings),
-  });
-  return res.json();
-}
-
-// === AI CONTEXT ===
-
-export async function fetchConversationContext(conversationId) {
-  const res = await dedupFetch(`${API}/api/ai/conversations/${conversationId}/context`);
-  return res.json();
-}
-
-export async function compactConversationContext(conversationId) {
-  const res = await fetch(`${API}/api/ai/conversations/${conversationId}/context/compact`, { method: 'POST' });
-  return res.json();
-}
-
-// === AI PINNED MESSAGES ===
-
-export async function pinMessage(conversationId, messageId) {
-  const res = await fetch(`${API}/api/ai/conversations/${conversationId}/pin/${messageId}`, { method: 'POST' });
-  return res.json();
-}
-
-export async function unpinMessage(conversationId, messageId) {
-  const res = await fetch(`${API}/api/ai/conversations/${conversationId}/pin/${messageId}`, { method: 'DELETE' });
-  return res.json();
-}
-
-export async function fetchPinnedMessages(conversationId) {
-  const res = await dedupFetch(`${API}/api/ai/conversations/${conversationId}/pinned`);
-  return res.json();
 }
 

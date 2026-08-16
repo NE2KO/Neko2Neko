@@ -53,11 +53,14 @@ function createVideoSyncEngine({
   seekStartTimeRef = null,
   trackChangeTimeRef,
   syncCore,
+  profileStore = null,
   engineName,
   analyzerEvidenceRef,
   decisionOutputRef,
 }) {
   const getNow = () => performance.now();
+
+  let profileStoreRef = profileStore || null;
 
   // Phase 1 — Memory Layer (parallel, no behavior change)
   const driftMemory = new DriftMemory(engineName);
@@ -199,7 +202,7 @@ function createVideoSyncEngine({
 state,
 
 reset() {
-  executionQueue.clear();
+  executionQueue.reset();
   driftMemory.reset();
   pipelineMemory.reset();
   schedulerMemory.reset();
@@ -247,11 +250,12 @@ reset() {
 },
 
   softReset() {
-  // Flight-control reset only: clears pending seeks, recoveries, and
-  // stability candidates. Bias, EMA, decision counters, and adaptive
-  // thresholds in syncCore are intentionally preserved so learning
-  // survives recoveries / remounts.
-  executionQueue.clear();
+  // Flight-control reset: clears pending seeks, recoveries, execution queue,
+  // driftEMA, schedulerLatenessEMA, and transient control state.
+  // Preserves: syncCore bias/latency EMAs, learningMemory adaptive thresholds,
+  // and TrackSyncProfile per-track priors. Caller must ensure track identity
+  // is unchanged or profile will be re-applied on next tick.
+  executionQueue.reset();
   driftMemory.reset();
   pipelineMemory.reset();
   schedulerMemory.reset();
@@ -276,6 +280,7 @@ reset() {
     stableCandidateSince: 0,
     lockedConsecutiveTicks: 0,
     stableGateLogged: false,
+    driftEMA: 0,
     lastRateAdjustAt: 0,
     schedulerLatenessEMA: 0,
     recentLateTickCount: 0,
@@ -621,6 +626,7 @@ log('scheduler_stall', looping ? 'bg' : 'mv', {
               log('bias_save', looping ? 'bg' : 'mv', { rawMs, biasMs, correctedMs });
             }
           }
+
           const biasMs = Math.round(bias * 1000);
 
           // Phase 1 — Memory Layer: feed new Memory objects from tick state
@@ -931,6 +937,16 @@ log('scheduler_stall', looping ? 'bg' : 'mv', {
                 }
               }
               } // end HOLD_TO_OBSERVE gate
+
+              // Update per-track profile from live engine state (cheap
+              // in-memory update; actual persistence happens on track end).
+              if (syncCore && profileStoreRef) {
+                const mediaId = profileStoreRef.getCurrentTrackId();
+                if (mediaId) {
+                  const profile = profileStoreRef.getOrCreate(mediaId);
+                  syncCore.updateProfileFromLive(engineName, profile);
+                }
+              }
           }
       },
 

@@ -90,6 +90,14 @@ export class ExecutionQueue {
     this._queue = [];
   }
 
+  reset() {
+    this._queue = [];
+    this._inFlight = false;
+    this._lastExecutedAt = 0;
+    this._lastExecutedType = null;
+    this._lastExecutedParams = null;
+  }
+
   _execute(request) {
     let result;
     switch (request.type) {

@@ -160,24 +160,34 @@ function cacheObject(obj) {
 
 // Hydrate a set of ids via the batch endpoint. Returns void; results land in
 // the LRU object cache. Missing ids (deleted server-side) are reported back.
-async function hydrateIds(ids, onMissing) {
+// `signal` (AbortSignal) cancels in-flight fetches — used to drop stale
+// prefetches when the carousel jumps to a new region.
+async function hydrateIds(ids, onMissing, signal) {
   const need = ids.filter((id) => !objectCache.has(id) && !inFlight.has(id));
   for (let i = 0; i < need.length; i += BATCH_LIMIT) {
     const chunk = need.slice(i, i + BATCH_LIMIT);
     chunk.forEach((id) => inFlight.add(id));
+    let aborted = false;
     try {
       const res = await fetch(`${API}/api/files/batch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: chunk }),
+        signal,
       });
       if (res.ok) {
         const data = await res.json();
         for (const obj of data.items || []) cacheObject(obj);
         if (data.missingIds && data.missingIds.length && onMissing) onMissing(data.missingIds);
       }
-    } catch {}
-    chunk.forEach((id) => inFlight.delete(id));
+    } catch (err) {
+      // A genuine network error also lands here; only AbortError should stop us.
+      if (err && err.name === 'AbortError') aborted = true;
+    } finally {
+      // Only clear the chunk THIS call owns — never another call's inFlight ids.
+      chunk.forEach((id) => inFlight.delete(id));
+    }
+    if (aborted) break;
   }
 }
 
@@ -385,7 +395,7 @@ export function createMediaRepository(callbacks = {}) {
 
   // Silently hydrate a window around `centerIndex` (±radius). Used by the
   // carousel so scrolling feels local.
-  function prefetchWindow(centerIndex, radius = HYD_RADIUS) {
+  function prefetchWindow(centerIndex, radius = HYD_RADIUS, signal) {
     const rec = current();
     if (!rec || rec.total === 0) return Promise.resolve();
     const ids = [];
@@ -394,7 +404,7 @@ export function createMediaRepository(callbacks = {}) {
       if (id && !objectCache.has(id)) ids.push(id);
     }
     if (ids.length === 0) return Promise.resolve();
-    return hydrateIds(ids, onMissing);
+    return hydrateIds(ids, onMissing, signal);
   }
 
   // Build a bounded, ordered array of objects for the Carousel around the
