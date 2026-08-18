@@ -45,7 +45,7 @@ export default function ServiceStoppedBanner({ service, overlay = false }) {
 
   if (overlay) {
     return (
-      <div data-debug-id="X.3" data-debug-name="ServiceStoppedBanner" data-debug-type="overlay" className="absolute inset-0 z-30 flex items-center justify-center bg-neutral-950/80 backdrop-blur-sm">
+      <div data-debug-id="X.3" data-debug-name="ServiceStoppedBanner" data-debug-type="overlay" className="absolute inset-0 z-30 flex items-center justify-center bg-black/80 backdrop-blur-sm">
         <div className={`text-center p-6 rounded-2xl border ${config.bg} ${config.border} max-w-sm mx-4`}>
           <div className="text-4xl mb-3">{config.icon}</div>
           <div className={`text-sm font-bold ${config.color} mb-1`}>{config.label} Stopped</div>

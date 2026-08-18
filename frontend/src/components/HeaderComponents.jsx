@@ -59,7 +59,7 @@ function PlaylistListHeader({
               <Check size={12} />
               <span className="hidden sm:inline">Select</span>
             </button>
-            <button onClick={onCreate} className="w-8 h-8 rounded-lg bg-sky-500 text-white hover:bg-sky-600 transition-colors flex items-center justify-center flex-shrink-0" title="Add">
+            <button onClick={onCreate} className="w-8 h-8 rounded-lg bg-neutral-800 text-white hover:bg-neutral-700 transition-colors flex items-center justify-center flex-shrink-0" title="Add">
               <Plus size={15} />
             </button>
             <button onClick={() => fileInputRef?.current?.click()} disabled={isImporting} className="h-8 px-2.5 rounded-lg text-[11px] font-medium border border-neutral-700/60 bg-neutral-800/80 text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100 transition-colors flex items-center gap-1 flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed">

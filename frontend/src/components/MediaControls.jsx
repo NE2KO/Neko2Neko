@@ -647,7 +647,7 @@ const onEnded = () => {
       onMouseDown={handleSeekStart}
       onTouchStart={handleSeekStart}
       >
-      <div ref={progressFillRef} className="absolute top-0 left-0 h-full bg-sky-500 rounded-lg" style={{ width: '0%' }} />
+      <div ref={progressFillRef} className="absolute top-0 left-0 h-full rounded-lg" style={{ width: '0%', background: 'var(--color-primary)' }} />
       <input
       ref={progressBarRef}
       type="range"
@@ -695,25 +695,26 @@ const onEnded = () => {
       </svg>
       </button>
 
-      <button
-      onClick={() => {
-        const media = mediaRef?.current;
-        if (media) {
-          if (media.paused) {
-            doPlay();
-            media.play().catch(() => {});
-          } else {
-            doPause();
-            media.pause();
-          }
-        } else {
-          togglePlay();
-        }
-      }}
-      className="w-14 h-14 bg-white text-black rounded-full flex items-center justify-center shadow-lg hover:scale-105 active:scale-90 transition-all duration-200 focus:outline-none focus:ring-0"
-      tabIndex={-1}
-      onMouseDown={(e) => e.preventDefault()}
-      >
+<button
+  onClick={() => {
+    const media = mediaRef?.current;
+    if (media) {
+      if (media.paused) {
+        doPlay();
+        media.play().catch(() => {});
+      } else {
+        doPause();
+        media.pause();
+      }
+    } else {
+      togglePlay();
+    }
+  }}
+  className="w-14 h-14 rounded-full flex items-center justify-center shadow-lg hover:scale-105 active:scale-90 transition-all duration-200 focus:outline-none focus:ring-0"
+  style={{ background: 'var(--color-primary)', color: 'var(--color-bg-dark)' }}
+  tabIndex={-1}
+  onMouseDown={(e) => e.preventDefault()}
+  >
       {isPlaying ? (
         <svg key="pause" className="w-7 h-7 fill-current" viewBox="0 0 24 24">
         <rect x="6" y="4" width="4" height="16" />

@@ -27,7 +27,7 @@ import AdbTransfer from './components/AdbTransfer';
 import WhatsAppView from './components/WhatsAppView';
 import UploadsMonitor from './components/UploadsMonitor';
 import useDebugStore from './debug/useDebugStore';
-import PlaylistView from './components/PlaylistView';
+import MusicLayout from './components/MusicLayout';
 import MusicPlayer from './components/Music';
 import VaultAudioPlayer from './components/VaultAudioPlayer';
 import MiniPlayer from './components/MiniPlayer';
@@ -48,6 +48,7 @@ import { applySink, getStoredDevice, isOutputRoutingSupported } from './utils/au
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { pageCacheSet, pageCacheGet, pageCacheEvict, pageCacheStats, pageCacheInit } from './utils/pageCache.js';
 import { getFrontendSnapshot, trackThumbnails, trackWorkerHeap } from './utils/resourceManager.js';
+import { listeningTracker } from './utils/listeningTracker.js';
 
 // === STABLE MERGE FUNCTION (APPEND NEW, UPDATE CHANGED) ===
 function safeParseTrackSort() {
@@ -141,6 +142,23 @@ function App() {
   });
 
 const [sidebarOpen, setSidebarOpen] = useState(false);
+const [menuSidebarOpen, setMenuSidebarOpen] = useState(false);
+    const [isLargeScreen, setIsLargeScreen] = useState(() => {
+      if (typeof window !== 'undefined') {
+        return window.matchMedia('(min-width: 1280px)').matches;
+      }
+      return false;
+    });
+
+    useEffect(() => {
+      const mq = window.matchMedia('(min-width: 1280px)');
+      const handler = (e) => {
+        setIsLargeScreen(e.matches);
+        if (e.matches) setSidebarOpen(true);
+      };
+      mq.addEventListener('change', handler);
+      return () => mq.removeEventListener('change', handler);
+    }, []);
    const initialRoute = parseHash(window.location.hash, sessionStorage);
     const initialView = initialRoute.type === 'playlists' ? 'playlists'
        : initialRoute.type === 'playlist-detail' ? 'playlists'
@@ -171,6 +189,8 @@ const [sidebarOpen, setSidebarOpen] = useState(false);
 
     const playerMode = usePlaybackStore(s => s.playerMode);
     const hasActivePlayback = usePlaybackStore(s => s.queue?.length > 0);
+    const queue = usePlaybackStore(s => s.queue || []);
+    const storeCurrentTrackIndex = usePlaybackStore(s => s.currentTrackIndex);
     const [showFilterPanel, setShowFilterPanel] = useState(false);
     const [showNotificationsPanel, setShowNotificationsPanel] = useState(false);
     const [panelFilterType, setPanelFilterType] = useState('all');
@@ -2349,7 +2369,7 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
         data-debug-id="1"
         data-debug-name="MediaVaultRoot"
         data-debug-type="container"
-        className="h-[100dvh] flex flex-col bg-neutral-950 overflow-hidden"
+        className="h-[100dvh] flex flex-col bg-black"
         onDragOver={handleDragOver}
         onDragEnter={handleDragEnter}
         onDragLeave={handleDragLeave}
@@ -2358,10 +2378,10 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
         {/* Header — hidden when playlists/scrcpy/sendqueue view (they have their own header) */}
         {view !== 'playlists' && view !== 'audio' && view !== 'scrcpy' && view !== 'vaultAudio' && view !== 'sendqueue' && (
         <>
-        <header className="flex-shrink-0 px-3 py-2 border-b border-neutral-800 bg-neutral-950 z-10">
+        <header className="flex-shrink-0 px-3 py-2 border-b border-neutral-800 bg-black z-10">
 
 
-{view === 'media' && (
+{view === 'media' && !isLargeScreen && (
             <div className="flex items-center gap-2 overflow-x-auto">
               {/* Breadcrumb with Home button */}
               <button
@@ -2418,16 +2438,18 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
 
             <div className="flex items-center gap-2 mt-2">
               <div className="flex items-center gap-2 flex-shrink-0">
-                <button
-                  onClick={() => setSidebarOpen(true)}
-                  className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 transition-colors"
-                >
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="3" y1="6" x2="21" y2="6" />
-                    <line x1="3" y1="12" x2="21" y2="12" />
-                    <line x1="3" y1="18" x2="21" y2="18" />
-                  </svg>
-                </button>
+                {!isLargeScreen && (
+                  <button
+                    onClick={() => setSidebarOpen(true)}
+                    className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 transition-colors"
+                  >
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="3" y1="6" x2="21" y2="6" />
+                      <line x1="3" y1="12" x2="21" y2="12" />
+                      <line x1="3" y1="18" x2="21" y2="18" />
+                    </svg>
+                  </button>
+                )}
                 <span className="text-sm font-semibold whitespace-nowrap text-neutral-200">
                   {view === 'media' ? 'Media Vault' : view === 'monitoring' ? 'Monitoring' : view === 'downloader' ? 'Downloader' : view === 'playlists' || view === 'audio' ? (view === 'audio' ? (playlistMetadata?.title || 'Audio Player') : 'Music') : view === 'scrcpy' ? 'Scrcpy Mirror' : view === 'adb' ? 'ADB Transfer' : view === 'whatsapp' ? 'Bot' : 'Media Vault'}
                 </span>
@@ -2492,154 +2514,376 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
                 )}
               </div>
             )}
-          </div>
-        </header>
+           </div>
+         </header>
+         </>
+         )}
         {selectionMode && view === 'media' && (
           <div className="flex-shrink-0 px-3 py-2 bg-neutral-900 border-b border-neutral-800 flex items-center justify-between z-10">
             <span className="text-xs text-neutral-400">Mode pilih — klik kartu untuk memilih</span>
             <button
               onClick={clearSelection}
               className="text-xs text-neutral-400 hover:text-white transition-colors"
-            >
-              Batal
-            </button>
-          </div>
-        )}
-        </>
-        )}
+             >
+               Batal
+             </button>
+            </div>
+          )}
 
-        {/* Sidebar Overlay */}
-        {sidebarOpen && (
-          <div
-            className="fixed inset-0 bg-black/60 z-40 transition-opacity duration-300"
-            onClick={() => setSidebarOpen(false)}
-          />
-        )}
-
-        {/* Slide-in Sidebar */}
-        <div className={`fixed top-0 left-0 h-full w-64 bg-neutral-900 border-r border-neutral-800 z-50 transform transition-transform duration-300 ease-out ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} flex flex-col overflow-hidden`}>
-          <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800 flex-shrink-0">
-            <span className="text-sm font-semibold text-neutral-200">Menu</span>
-            <button
-              onClick={() => setSidebarOpen(false)}
-              className="p-1 rounded-lg text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800 transition-colors"
-            >
-              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          </div>
-          <nav className="p-2 space-y-1 overflow-y-auto flex-1 min-h-0">
-            <button
-              data-debug-id="1.1.1.1" data-debug-name="NavMedia" data-debug-type="other"
-              onClick={() => { setView('media'); setSidebarOpen(false); sessionStorage.removeItem('view'); history.pushState({ view: 'media' }, '', '#/media'); navigateToRoot(); }}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'media' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
-            >
-              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
-              </svg>
-              Media Vault
-            </button>
-            <button
-              data-debug-id="1.1.1.2" data-debug-name="NavMonitoring" data-debug-type="other"
-              onClick={() => { setView('monitoring'); setSidebarOpen(false); history.pushState({ view: 'monitoring' }, '', '#/monitoring'); }}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'monitoring' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
-            >
-              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 20V10M18 20V4M6 20v-4" />
-              </svg>
-              Monitoring
-            </button>
-            <button
-              data-debug-id="1.1.1.3" data-debug-name="NavDownloader" data-debug-type="other"
-              onClick={() => { setView('downloader'); setSidebarOpen(false); history.pushState({ view: 'downloader' }, '', '#/downloader'); }}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'downloader' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
-            >
-              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 11l5 5 5-5M12 4v12" />
-              </svg>
-              Downloader
-            </button>
-<button
-              data-debug-id="1.1.1.4" data-debug-name="NavAdb" data-debug-type="other"
-              onClick={() => { setView('adb'); setSidebarOpen(false); history.pushState({ view: 'adb' }, '', '#/adb'); }}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'adb' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
-            >
-              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
-                <line x1="12" y1="18" x2="12" y2="18" />
-              </svg>
-              ADB Transfer
-            </button>
-            <button
-              data-debug-id="1.1.1.4b" data-debug-name="NavScrcpy" data-debug-type="other"
-              onClick={() => { setView('scrcpy'); setSidebarOpen(false); history.pushState({ view: 'scrcpy' }, '', '#/scrcpy'); }}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'scrcpy' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
-            >
-              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
-                <line x1="8" y1="21" x2="16" y2="21" />
-                <line x1="12" y1="17" x2="12" y2="21" />
-              </svg>
-              Scrcpy Mirror
-            </button>
-            <button
-              data-debug-id="1.1.1.5" data-debug-name="NavPlaylists" data-debug-type="other"
-              onClick={() => {
-                // Reset all playlist state when clicking menu (Issue #1)
-                sessionStorage.removeItem('selectedPlaylistId');
-                sessionStorage.removeItem('playlistQueue');
-                sessionStorage.removeItem('playlistMetadata');
-                sessionStorage.removeItem('currentTrackIndex');
-                setPlaylistQueue(null);
-                setPlaylistMetadata(null);
-                setCurrentTrackIndex(0);
-        cancelAutoPlayPending();
-        usePlaybackStore.getState().clearPlayback();
-                setView('playlists');
-                setSidebarOpen(false);
-                history.pushState({ view: 'playlists' }, '', '#/playlists');
-              }}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'playlists' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
-            >
+{/* 3-Panel Layout */}
+           <div className="flex-1 flex overflow-hidden relative gap-8">
+             {menuSidebarOpen && view !== 'playlists' && view !== 'audio' && (
+               <div className={`w-64 flex-shrink-0 bg-[#121212] rounded-2xl border border-neutral-800 overflow-hidden flex flex-col`}>
+                <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800 flex-shrink-0">
+                  <span className="text-sm font-semibold text-neutral-200">Menu</span>
+                  <button
+                    onClick={() => setMenuSidebarOpen(false)}
+                    className="p-1 rounded-lg text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800 transition-colors"
+                  >
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                 </div>
+               <div className="px-3 py-2 border-b border-neutral-800 flex-shrink-0">
+                 <div className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5">Path</div>
+                 <div className="flex flex-wrap items-center gap-1">
+                   <button
+                     onClick={() => { navigateToRoot(); }}
+                     className={`px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap transition-colors ${
+                       !state.currentPath 
+                         ? 'bg-sky-600/80 text-white' 
+                         : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700 hover:text-neutral-200'
+                     }`}
+                   >
+                     Home
+                   </button>
+                   {state.currentPath.split('/').map((part, i, parts) => {
+                     const path = parts.slice(0, i + 1).join('/');
+                     const folder = (state.allFolders || []).find(f => f.path === path);
+                     const isLast = i === parts.length - 1;
+                     return (
+                       <React.Fragment key={i}>
+                         <span className="text-neutral-600 text-[10px]">/</span>
+                         <button
+                           onClick={async () => {
+                             try {
+                               let folderIdToUse = folder?.id;
+                               let pathToUse = folder?.path || path;
+                               if (!folderIdToUse) {
+                                 const data = await fetchFolder(path);
+                                 const fi = data?.current_folder;
+                                 if (fi?.id) {
+                                   folderIdToUse = fi.id;
+                                   pathToUse = fi.path || path;
+                                 }
+                               }
+                               if (folderIdToUse) {
+                                 sessionStorage.removeItem(`scroll:${pathToUse || ''}`);
+                                 navigateToFolder(folderIdToUse, null, 'internal', pathToUse);
+                               }
+                             } catch (e) {
+                               console.error('[path-tree] failed to resolve folder:', path, e);
+                             }
+                           }}
+                           className={`px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap transition-colors ${
+                             isLast
+                               ? 'bg-sky-600/50 text-sky-300'
+                               : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700 hover:text-white'
+                           }`}
+                         >
+                           {part}
+                         </button>
+                       </React.Fragment>
+                     );
+                   })}
+                 </div>
+               </div>
+             
+               <nav className="p-2 space-y-1 overflow-y-auto flex-1 min-h-0">
+           <button
+             data-debug-id="1.1.1.1" data-debug-name="NavMedia" data-debug-type="other"
+             onClick={() => { setView('media'); sessionStorage.removeItem('view'); history.pushState({ view: 'media' }, '', '#/media'); navigateToRoot(); }}
+             className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'media' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+           >
+             <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+               <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
+             </svg>
+             Media Vault
+           </button>
+           <button
+             data-debug-id="1.1.1.2" data-debug-name="NavMonitoring" data-debug-type="other"
+             onClick={() => { setView('monitoring'); history.pushState({ view: 'monitoring' }, '', '#/monitoring'); }}
+             className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'monitoring' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+           >
+             <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+               <path d="M12 20V10M18 20V4M6 20v-4" />
+             </svg>
+             Monitoring
+           </button>
+           <button
+             data-debug-id="1.1.1.3" data-debug-name="NavDownloader" data-debug-type="other"
+             onClick={() => { setView('downloader'); history.pushState({ view: 'downloader' }, '', '#/downloader'); }}
+             className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'downloader' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+           >
+             <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+               <path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 11l5 5 5-5M12 4v12" />
+             </svg>
+             Downloader
+           </button>
+   <button
+             data-debug-id="1.1.1.4" data-debug-name="NavAdb" data-debug-type="other"
+             onClick={() => { setView('adb'); history.pushState({ view: 'adb' }, '', '#/adb'); }}
+             className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'adb' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+           >
+             <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+               <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
+               <line x1="12" y1="18" x2="12" y2="18" />
+             </svg>
+             ADB Transfer
+           </button>
+           <button
+             data-debug-id="1.1.1.4b" data-debug-name="NavScrcpy" data-debug-type="other"
+             onClick={() => { setView('scrcpy'); history.pushState({ view: 'scrcpy' }, '', '#/scrcpy'); }}
+             className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'scrcpy' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+           >
+             <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+               <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+               <line x1="8" y1="21" x2="16" y2="21" />
+               <line x1="12" y1="17" x2="12" y2="21" />
+             </svg>
+             Scrcpy Mirror
+           </button>
+           <button
+             data-debug-id="1.1.1.5" data-debug-name="NavPlaylists" data-debug-type="other"
+             onClick={() => {
+               // Reset all playlist state when clicking menu (Issue #1)
+               sessionStorage.removeItem('selectedPlaylistId');
+               sessionStorage.removeItem('playlistQueue');
+               sessionStorage.removeItem('playlistMetadata');
+               sessionStorage.removeItem('currentTrackIndex');
+               setPlaylistQueue(null);
+               setPlaylistMetadata(null);
+               setCurrentTrackIndex(0);
+       cancelAutoPlayPending();
+       usePlaybackStore.getState().clearPlayback();
+               setView('playlists');
+               history.pushState({ view: 'playlists' }, '', '#/playlists');
+             }}
+             className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'playlists' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+           >
               <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M9 18V5l12-2v13" />
                 <circle cx="6" cy="18" r="3" />
                 <circle cx="18" cy="16" r="3" />
               </svg>
               Music
-             </button>
-             <button
-               data-debug-id="1.1.1.6" data-debug-name="NavBot" data-debug-type="other"
-              onClick={() => { setView('whatsapp'); setSidebarOpen(false); history.pushState({ view: 'whatsapp' }, '', '#/whatsapp'); }}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'whatsapp' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
-            >
-              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z" />
-              </svg>
-              Bot
+            </button>
+           </nav>
+           </div>
+           )}
+
+           {/* Overlay menu sidebar for playlist/audio views */}
+           {(view === 'playlists' || view === 'audio' || view === 'vaultAudio') && menuSidebarOpen && (
+             <>
+               <div className="fixed inset-0 bg-black/60 z-40" onClick={() => setMenuSidebarOpen(false)} />
+              <div className="absolute inset-y-0 left-3 z-50 w-64 flex-shrink-0 bg-neutral-900 rounded-r-2xl border border-neutral-800 border-l-0 overflow-hidden flex flex-col shadow-2xl">
+                 <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800 flex-shrink-0">
+                   <span className="text-sm font-semibold text-neutral-200">Menu</span>
+                   <button
+                     onClick={() => setMenuSidebarOpen(false)}
+                     className="p-1 rounded-lg text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800 transition-colors"
+                   >
+                     <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                       <line x1="18" y1="6" x2="6" y2="18" />
+                       <line x1="6" y1="6" x2="18" y2="18" />
+                     </svg>
+                   </button>
+                   </div>
+                 <div className="px-3 py-2 border-b border-neutral-800 flex-shrink-0">
+                  <div className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5">Path</div>
+                  <div className="flex flex-wrap items-center gap-1">
+                    <button
+                      onClick={() => { navigateToRoot(); }}
+                      className={`px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap transition-colors ${
+                        !state.currentPath 
+                          ? 'bg-sky-600/80 text-white' 
+                          : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700 hover:text-neutral-200'
+                      }`}
+                    >
+                      Home
+                    </button>
+                    {state.currentPath.split('/').map((part, i, parts) => {
+                      const path = parts.slice(0, i + 1).join('/');
+                      const folder = (state.allFolders || []).find(f => f.path === path);
+                      const isLast = i === parts.length - 1;
+                      return (
+                        <React.Fragment key={i}>
+                          <span className="text-neutral-600 text-[10px]">/</span>
+                          <button
+                            onClick={async () => {
+                              try {
+                                let folderIdToUse = folder?.id;
+                                let pathToUse = folder?.path || path;
+                                if (!folderIdToUse) {
+                                  const data = await fetchFolder(path);
+                                  const fi = data?.current_folder;
+                                  if (fi?.id) {
+                                    folderIdToUse = fi.id;
+                                    pathToUse = fi.path || path;
+                                  }
+                                }
+                                if (folderIdToUse) {
+                                  sessionStorage.removeItem(`scroll:${pathToUse || ''}`);
+                                  navigateToFolder(folderIdToUse, null, 'internal', pathToUse);
+                                }
+                              } catch (e) {
+                                console.error('[path-tree] failed to resolve folder:', path, e);
+                              }
+                            }}
+                            className={`px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap transition-colors ${
+                              isLast
+                                ? 'bg-sky-600/50 text-sky-300'
+                                : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700 hover:text-white'
+                            }`}
+                          >
+                            {part}
+                          </button>
+                        </React.Fragment>
+                      );
+                    })}
+                  </div>
+                </div>
+              
+                <nav className="p-2 space-y-1 overflow-y-auto flex-1 min-h-0">
+           <button
+             data-debug-id="1.1.1.1" data-debug-name="NavMedia" data-debug-type="other"
+             onClick={() => { setView('media'); sessionStorage.removeItem('view'); history.pushState({ view: 'media' }, '', '#/media'); navigateToRoot(); }}
+             className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'media' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+           >
+             <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+               <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
+             </svg>
+             Media Vault
+           </button>
+           <button
+             data-debug-id="1.1.1.2" data-debug-name="NavMonitoring" data-debug-type="other"
+             onClick={() => { setView('monitoring'); history.pushState({ view: 'monitoring' }, '', '#/monitoring'); }}
+             className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'monitoring' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+           >
+             <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+               <path d="M12 20V10M18 20V4M6 20v-4" />
+             </svg>
+             Monitoring
+           </button>
+           <button
+             data-debug-id="1.1.1.3" data-debug-name="NavDownloader" data-debug-type="other"
+             onClick={() => { setView('downloader'); history.pushState({ view: 'downloader' }, '', '#/downloader'); }}
+             className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'downloader' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+           >
+             <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+               <path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 11l5 5 5-5M12 4v12" />
+             </svg>
+             Downloader
+           </button>
+   <button
+             data-debug-id="1.1.1.4" data-debug-name="NavAdb" data-debug-type="other"
+             onClick={() => { setView('adb'); history.pushState({ view: 'adb' }, '', '#/adb'); }}
+             className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'adb' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+           >
+             <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+               <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
+               <line x1="12" y1="18" x2="12" y2="18" />
+             </svg>
+             ADB Transfer
+           </button>
+           <button
+             data-debug-id="1.1.1.4b" data-debug-name="NavScrcpy" data-debug-type="other"
+             onClick={() => { setView('scrcpy'); history.pushState({ view: 'scrcpy' }, '', '#/scrcpy'); }}
+             className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'scrcpy' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+           >
+             <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+               <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+               <line x1="8" y1="21" x2="16" y2="21" />
+               <line x1="12" y1="17" x2="12" y2="21" />
+             </svg>
+             Scrcpy Mirror
+           </button>
+           <button
+             data-debug-id="1.1.1.5" data-debug-name="NavPlaylists" data-debug-type="other"
+             onClick={() => {
+               // Reset all playlist state when clicking menu (Issue #1)
+               sessionStorage.removeItem('selectedPlaylistId');
+               sessionStorage.removeItem('playlistQueue');
+               sessionStorage.removeItem('playlistMetadata');
+               sessionStorage.removeItem('currentTrackIndex');
+               setPlaylistQueue(null);
+               setPlaylistMetadata(null);
+               setCurrentTrackIndex(0);
+       cancelAutoPlayPending();
+       usePlaybackStore.getState().clearPlayback();
+               setView('playlists');
+               history.pushState({ view: 'playlists' }, '', '#/playlists');
+             }}
+             className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'playlists' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+           >
+             <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+               <path d="M9 18V5l12-2v13" />
+               <circle cx="6" cy="18" r="3" />
+               <circle cx="18" cy="16" r="3" />
+             </svg>
+             Music
             </button>
             <button
-               data-debug-id="1.1.1.7" data-debug-name="NavSendQueue" data-debug-type="other"
-               onClick={() => { setView('sendqueue'); setSidebarOpen(false); history.pushState({ view: 'sendqueue' }, '', '#/sendqueue'); }}
-               className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'sendqueue' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
-            >
-              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z" />
-              </svg>
-              Antrian Kirim
-             </button>
+              data-debug-id="1.1.1.6" data-debug-name="NavBot" data-debug-type="other"
+             onClick={() => { setView('whatsapp'); history.pushState({ view: 'whatsapp' }, '', '#/whatsapp'); }}
+             className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'whatsapp' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+           >
+             <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+               <path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z" />
+             </svg>
+             Bot
+           </button>
+           <button
+              data-debug-id="1.1.1.7" data-debug-name="NavSendQueue" data-debug-type="other"
+              onClick={() => { setView('sendqueue'); history.pushState({ view: 'sendqueue' }, '', '#/sendqueue'); }}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'sendqueue' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+           >
+             <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+               <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z" />
+             </svg>
+             Antrian Kirim
+            </button>
 
             {/* Debug Toggle */}
             <div className="mt-4 pt-4 border-t border-neutral-800">
               <DebugToggle />
             </div>
 
-          </nav>
-        </div>
+            </nav>
+                 </div>
+               </>
+             )}
 
-          {/* Main Content */}
+           {/* Menu sidebar toggle when closed */}
+           {!menuSidebarOpen && isLargeScreen && view !== 'playlists' && view !== 'audio' && (
+             <button
+               onClick={() => setMenuSidebarOpen(true)}
+               className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800 transition-colors flex-shrink-0"
+               title="Show menu"
+             >
+               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                 <line x1="3" y1="6" x2="21" y2="6" />
+                 <line x1="3" y1="12" x2="21" y2="12" />
+                 <line x1="3" y1="18" x2="21" y2="18" />
+               </svg>
+             </button>
+           )}
+
+           {/* Center Panel - Main Content */}
+          <div className={`flex-1 bg-black ${view === 'audio' ? '' : 'rounded-2xl'} overflow-hidden flex flex-col min-w-0`}>
+           {/* Main Content */}
           {view === 'monitoring' ? (
             <MonitoringView onBackToMedia={() => { setView('media'); history.replaceState({}, '', '#/media'); navigateToRoot(); }} />
           ) : view === 'downloader' ? (
@@ -2650,10 +2894,12 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
   <AdbTransfer />
 ) : (view === 'playlists' || view === 'audio' || view === 'vaultAudio') ? (
       <div className="flex-1 flex flex-col overflow-hidden relative">
-        <div className="flex-1 overflow-hidden" style={{ display: (view === 'audio' || view === 'vaultAudio') ? 'none' : 'flex', flexDirection: 'column' }}>
-   <PlaylistView key={view === 'audio' ? 'audio-hidden' : 'playlists-visible'}
-     onMenuOpen={() => setSidebarOpen(true)}
-       onPlayPlaylist={async (data) => {
+         <div className="flex-1 overflow-hidden" style={{ display: (view === 'audio' || view === 'vaultAudio') ? 'none' : 'flex', flexDirection: 'column' }}>
+      <MusicLayout key={view === 'audio' ? 'audio-hidden' : 'playlists-visible'}
+       onMenuOpen={() => setSidebarOpen(true)}
+       menuSidebarOpen={menuSidebarOpen}
+       setMenuSidebarOpen={setMenuSidebarOpen}
+        onPlayPlaylist={async (data) => {
          cancelAutoPlayPending();
          usePlaybackStore.getState().clearPlayback();
          sharedPrevFileIdRef.current = null;
@@ -2762,7 +3008,7 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
        ) : view === 'scrcpy' ? (
           <ScrcpyView onMenuOpen={() => setSidebarOpen(true)} />
       ) : (
-          <div className="flex-1 flex overflow-hidden relative pb-14">
+          <div className="flex-1 flex overflow-hidden relative">
             <ServiceStoppedBanner service="mediaVault" overlay />
             {/* File Grid - Full Width */}
             <main ref={scrollContainerRef} className="flex-1 overflow-y-auto min-w-0 overscroll-none" style={{ scrollbarGutter: 'stable' }}>
@@ -2855,102 +3101,200 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
            </>
          )}
 
-        {/* Bottom Search Bar + Action Controls */}
+           </div>
+         </div>
+         {/* Mobile Sidebar Overlay */}
         {view === 'media' && (
-        <div className="fixed bottom-0 left-0 right-0 h-14 bg-neutral-950/90 backdrop-blur-md border-t border-neutral-800/80 flex items-center px-3 z-40 gap-2">
-          <div
-            ref={searchBarRef}
-            data-debug-id="1.1.3" data-debug-name="SearchBar" data-debug-type="other"
-            className={`relative flex items-center rounded-full bg-neutral-800/80 border border-neutral-700/50 transition-all duration-400 ease-out cursor-pointer overflow-hidden ${
-              searchExpanded
-                ? 'gap-2 px-3.5 py-2 w-60 shadow-lg shadow-blue-500/5 border-blue-500/20'
-                : 'gap-0 w-10 h-10 justify-center hover:bg-neutral-700/80 hover:border-neutral-600'
-            }`}
-            onClick={() => {
-              if (!searchExpanded) {
-                setSearchExpanded(true);
-                requestAnimationFrame(() => searchInputRef.current?.focus());
-              }
-            }}
-          >
-            <svg className={`w-4 h-4 flex-shrink-0 transition-colors duration-300 ${searchExpanded ? 'text-blue-400' : 'text-neutral-400'}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35" />
-            </svg>
-            <div className={`overflow-hidden transition-all duration-400 ease-out ${
-              searchExpanded ? 'w-40 opacity-100 ml-0.5' : 'w-0 opacity-0'
-            }`}>
-              <input
-                ref={searchInputRef}
-                data-debug-id="1.1.3.1" data-debug-name="SearchInput" data-debug-type="other"
-                type="text"
-                value={searchQuery}
-                onChange={(e) => handleSearch(e.target.value)}
-                placeholder="Cari file atau folder..."
-                className="w-full bg-transparent text-xs text-neutral-200 placeholder-neutral-500 outline-none border-none whitespace-nowrap"
+          <>
+            {sidebarOpen && !isLargeScreen && (
+              <div
+                className="fixed inset-0 bg-black/60 z-40 transition-opacity duration-300"
+                onClick={() => setSidebarOpen(false)}
               />
-            </div>
-            {searchQuery && searchExpanded && (
-              <button
-                onClick={(e) => { e.stopPropagation(); clearSearch(); }}
-                className="p-0.5 text-neutral-500 hover:text-neutral-300 flex-shrink-0 ml-auto transition-opacity duration-300"
-              >
-                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <path d="M18 6L6 18M6 6l12 12" />
-                </svg>
-              </button>
             )}
-          </div>
-
-          {/* Action buttons (right side) */}
-          <div className="flex items-center gap-1.5 ml-auto flex-shrink-0">
-            {/* Favorite filter toggle */}
-            <button
-              onClick={() => setFavoriteOnly(v => !v)}
-              className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ${
-                favoriteOnly
-                  ? 'bg-red-500/20 text-red-400 border border-red-500/30'
-                  : 'bg-neutral-800/80 text-neutral-400 border border-neutral-700/50 hover:bg-neutral-700/80 hover:text-neutral-200'
-              }`}
-              title={favoriteOnly ? 'Show all files' : 'Show favorites only'}
-            >
-              <Heart size={16} className={favoriteOnly ? 'fill-red-400' : ''} />
-            </button>
-
-            {/* Notifications */}
-            <button
-              onClick={() => setShowNotificationsPanel(true)}
-              className="w-10 h-10 rounded-full bg-neutral-800/80 border border-neutral-700/50 text-neutral-400 flex items-center justify-center hover:bg-neutral-700/80 hover:text-neutral-200 relative transition-colors"
-              aria-label="Open notifications panel"
-            >
-              <Bell size={16} />
-              {activeUploadCount > 0 && (
-                <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-red-600 text-white text-[9px] leading-4 font-semibold text-center border-2 border-neutral-950">
-                  {activeUploadCount}
-                </span>
+            <div className={`fixed top-0 left-0 h-full w-64 bg-neutral-900 border-r border-neutral-800 z-50 transform transition-transform duration-300 ease-out ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} flex flex-col overflow-hidden md:hidden`}>
+              <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800 flex-shrink-0">
+                <span className="text-sm font-semibold text-neutral-200">Menu</span>
+                <button
+                  onClick={() => setSidebarOpen(false)}
+                  className="p-1 rounded-lg text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800 transition-colors"
+                >
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
+              </div>
+              
+              {/* Path Tree */}
+              {state.currentPath && (
+                <div className="px-3 py-2 border-b border-neutral-800 flex-shrink-0">
+                  <div className="text-[10px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5">Path</div>
+                  <div className="flex flex-wrap items-center gap-1">
+                    <button
+                      onClick={() => { navigateToRoot(); if (!isLargeScreen) setSidebarOpen(false); }}
+                      className={`px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap transition-colors ${
+                        !state.currentPath 
+                          ? 'bg-sky-600/80 text-white' 
+                          : 'bg-neutral-800 text-neutral-400 hover:bg-neutral-700 hover:text-neutral-200'
+                      }`}
+                    >
+                      Home
+                    </button>
+                    {state.currentPath.split('/').map((part, i, parts) => {
+                      const path = parts.slice(0, i + 1).join('/');
+                      const folder = (state.allFolders || []).find(f => f.path === path);
+                      const isLast = i === parts.length - 1;
+                      return (
+                        <React.Fragment key={i}>
+                          <span className="text-neutral-600 text-[10px]">/</span>
+                          <button
+                            onClick={async () => {
+                              try {
+                                let folderIdToUse = folder?.id;
+                                let pathToUse = folder?.path || path;
+                                if (!folderIdToUse) {
+                                  const data = await fetchFolder(path);
+                                  const fi = data?.current_folder;
+                                  if (fi?.id) {
+                                    folderIdToUse = fi.id;
+                                    pathToUse = fi.path || path;
+                                  }
+                                }
+                                if (folderIdToUse) {
+                                  sessionStorage.removeItem(`scroll:${pathToUse || ''}`);
+                                  navigateToFolder(folderIdToUse, null, 'internal', pathToUse);
+                                  if (!isLargeScreen) setSidebarOpen(false);
+                                }
+                              } catch (e) {
+                                console.error('[path-tree] failed to resolve folder:', path, e);
+                              }
+                            }}
+                            className={`px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap transition-colors ${
+                              isLast
+                                ? 'bg-sky-600/50 text-sky-300'
+                                : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700 hover:text-white'
+                            }`}
+                          >
+                            {part}
+                          </button>
+                        </React.Fragment>
+                      );
+                    })}
+                  </div>
+                </div>
               )}
-            </button>
-
-            {/* Send to Telegram (disabled) */}
+              
+              <nav className="p-2 space-y-1 overflow-y-auto flex-1 min-h-0">
             <button
-              disabled
-              className="w-10 h-10 rounded-full bg-neutral-800/80 border border-neutral-700/50 text-neutral-600 flex items-center justify-center cursor-not-allowed opacity-50"
-              title="Send to Telegram (coming soon)"
+              data-debug-id="1.1.1.1" data-debug-name="NavMedia" data-debug-type="other"
+              onClick={() => { setView('media'); setSidebarOpen(false); sessionStorage.removeItem('view'); history.pushState({ view: 'media' }, '', '#/media'); navigateToRoot(); }}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'media' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
             >
-              <Send size={16} />
+              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
+              </svg>
+              Media Vault
             </button>
-
-            {/* Upload */}
             <button
-              onClick={handleFilePicker}
-              className="w-10 h-10 rounded-full bg-[#3b82f6] text-white hover:bg-[#2563eb] transition-colors flex items-center justify-center shadow shadow-blue-500/20"
-              title="Upload"
+              data-debug-id="1.1.1.2" data-debug-name="NavMonitoring" data-debug-type="other"
+              onClick={() => { setView('monitoring'); setSidebarOpen(false); history.pushState({ view: 'monitoring' }, '', '#/monitoring'); }}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'monitoring' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
             >
-              <UploadIcon size={16} />
+              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 20V10M18 20V4M6 20v-4" />
+              </svg>
+              Monitoring
             </button>
-          </div>
-        </div>
-        )}
+            <button
+              data-debug-id="1.1.1.3" data-debug-name="NavDownloader" data-debug-type="other"
+              onClick={() => { setView('downloader'); setSidebarOpen(false); history.pushState({ view: 'downloader' }, '', '#/downloader'); }}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'downloader' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+            >
+              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 11l5 5 5-5M12 4v12" />
+              </svg>
+              Downloader
+            </button>
+  <button
+              data-debug-id="1.1.1.4" data-debug-name="NavAdb" data-debug-type="other"
+              onClick={() => { setView('adb'); setSidebarOpen(false); history.pushState({ view: 'adb' }, '', '#/adb'); }}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'adb' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+            >
+              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
+                <line x1="12" y1="18" x2="12" y2="18" />
+              </svg>
+              ADB Transfer
+            </button>
+            <button
+              data-debug-id="1.1.1.4b" data-debug-name="NavScrcpy" data-debug-type="other"
+              onClick={() => { setView('scrcpy'); setSidebarOpen(false); history.pushState({ view: 'scrcpy' }, '', '#/scrcpy'); }}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'scrcpy' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+            >
+              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+                <line x1="8" y1="21" x2="16" y2="21" />
+                <line x1="12" y1="17" x2="12" y2="21" />
+              </svg>
+              Scrcpy Mirror
+            </button>
+            <button
+              data-debug-id="1.1.1.5" data-debug-name="NavPlaylists" data-debug-type="other"
+              onClick={() => {
+                // Reset all playlist state when clicking menu (Issue #1)
+                sessionStorage.removeItem('selectedPlaylistId');
+                sessionStorage.removeItem('playlistQueue');
+                sessionStorage.removeItem('playlistMetadata');
+                sessionStorage.removeItem('currentTrackIndex');
+                setPlaylistQueue(null);
+                setPlaylistMetadata(null);
+                setCurrentTrackIndex(0);
+        cancelAutoPlayPending();
+        usePlaybackStore.getState().clearPlayback();
+                setView('playlists');
+                setSidebarOpen(false);
+                history.pushState({ view: 'playlists' }, '', '#/playlists');
+              }}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'playlists' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+            >
+              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 18V5l12-2v13" />
+                <circle cx="6" cy="18" r="3" />
+                <circle cx="18" cy="16" r="3" />
+              </svg>
+              Music
+             </button>
+             <button
+               data-debug-id="1.1.1.6" data-debug-name="NavBot" data-debug-type="other"
+              onClick={() => { setView('whatsapp'); setSidebarOpen(false); history.pushState({ view: 'whatsapp' }, '', '#/whatsapp'); }}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'whatsapp' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+            >
+              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z" />
+              </svg>
+              Bot
+            </button>
+            <button
+               data-debug-id="1.1.1.7" data-debug-name="NavSendQueue" data-debug-type="other"
+               onClick={() => { setView('sendqueue'); setSidebarOpen(false); history.pushState({ view: 'sendqueue' }, '', '#/sendqueue'); }}
+               className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${view === 'sendqueue' ? 'text-sky-400 bg-sky-500/10 font-medium' : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'}`}
+            >
+              <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z" />
+              </svg>
+              Antrian Kirim
+             </button>
 
+            {/* Debug Toggle */}
+            <div className="mt-4 pt-4 border-t border-neutral-800">
+              <DebugToggle />
+            </div>
+
+           </nav>
+         </div>
+         </>
+         )}
         {/* Upload: hidden file input */}
         <input ref={fileInputRef} type="file" multiple
           onChange={handleInputChange}
@@ -3029,7 +3373,7 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
         )}
 
         {/* Mini Audio Player */}
-        {view === 'playlists' && hasActivePlayback && <MiniPlayer view={view} onExpand={expandToAudio} sharedAudioRef={sharedAudioRef} sharedPrevFileIdRef={sharedPrevFileIdRef} audioReady={audioReady} onFavoriteToggle={handleToggleFavorite} onClose={() => {
+         {hasActivePlayback && view !== 'audio' && view !== 'vaultAudio' && view !== 'media' && <MiniPlayer view={view} onExpand={expandToAudio} sharedAudioRef={sharedAudioRef} sharedPrevFileIdRef={sharedPrevFileIdRef} audioReady={audioReady} onFavoriteToggle={handleToggleFavorite} onClose={() => {
           cancelAutoPlayPending();
           usePlaybackStore.getState().clearPlayback();
         }} />}
@@ -3098,4 +3442,5 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
         </div>
         </ErrorBoundary>
         );
-        }export default App;
+         }
+export default App;

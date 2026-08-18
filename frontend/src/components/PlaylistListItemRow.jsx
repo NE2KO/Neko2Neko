@@ -68,7 +68,7 @@ const PlaylistListItemRow = memo(({ index, style, data }) => {
     <div style={style} className={rowClass} onClick={() => onSelect?.(playlist)}>
       <div style={{
         width: 40, height: 40, borderRadius: 8,
-        background: `linear-gradient(135deg, ${COLORS.accent}40, ${COLORS.accent}20)`,
+        background: '#262626',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         flexShrink: 0, border: `1px solid ${COLORS.border.primary}`,
       }}>

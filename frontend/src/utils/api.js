@@ -5,10 +5,11 @@ export const API = import.meta.env.VITE_API_URL || '';
 const inFlight = new Map();
 
 function dedupFetch(url) {
-  if (inFlight.has(url)) return inFlight.get(url);
-  const promise = fetch(url).finally(() => inFlight.delete(url));
-  inFlight.set(url, promise);
-  return promise;
+  // Simple fetch without response sharing. This avoids the "body stream already read" error
+  // that occurs when the same Response object is reused across multiple callers.
+  // If in‑flight deduplication is still desired, one could keep the inFlight map and
+  // return a fresh clone for each waiter, but the simplest safe approach is to just fetch.
+  return fetch(url);
 }
 
 // === RESPONSE CACHE ===

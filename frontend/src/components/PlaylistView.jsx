@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { VariableSizeList as List, FixedSizeList } from 'react-window';
 import AutoSizer from 'react-virtualized-auto-sizer';
-import { Music, Trash2, Plus, Upload, X, Check, ChevronDown, Shuffle, Heart, Image as ImageIcon, ListMusic, Play, Search, SlidersHorizontal, Grid, ArrowLeft, ChevronLeft } from 'lucide-react';
+import { Music, Trash2, Plus, Upload, X, Check, ChevronDown, Shuffle, Heart, Image as ImageIcon, ListMusic, Play, Search, SlidersHorizontal, Grid, ArrowLeft, ChevronLeft, ChevronRight, Menu } from 'lucide-react';
 import usePlaylistStore from '../store/playlistStore';
 import usePlaybackStore from '../store/playbackStore';
 import { loadPlaylists, loadPlaylist, getPlaylistQueue, refreshPlaylists, importXSPFPlaylist, createEmptyPlaylist, removeTrackFromPlaylist, bulkRemoveTracksFromPlaylist, loadFavorites, uploadPlaylistCover, playlistImageUrl } from '../utils/playlistApi';
@@ -10,7 +10,6 @@ import { buildPlayableQueue, resolveClickedIndex } from '../utils/playlistQueue'
 import { LOVED_PLAYLIST_ID } from '../utils/routeParser';
 import { useToast } from './Toast';
 import NetworkImage from './NetworkImage';
-import PlaylistGrid from './PlaylistGrid';
 import PlaylistRow from './PlaylistRow';
 import ServiceStoppedBanner from './ServiceStoppedBanner';
 import PlaylistListRow, { injectPlaylistListRowStyles } from './PlaylistListRow';
@@ -19,6 +18,9 @@ import AddMusicPanel from './AddMusicPanel';
 import FilterPanel from './FilterPanel';
 import { PlaylistListHeader, PlaylistDetailHeader } from './HeaderComponents';
 import { listeningTracker, formatDuration as formatListeningDuration } from '../utils/listeningTracker.js';
+import PlaylistLeftModule from './PlaylistLeftModule';
+import PlaylistMiddleModule from './PlaylistMiddleModule';
+import PlaylistRightModule from './PlaylistRightModule';
 
 
 import './PlaylistView.css';
@@ -120,291 +122,6 @@ function shuffleArray(arr) {
   return a;
 }
 
-const ThumbImg = React.memo(function ThumbImg({ fileId, colorClass, size = 48 }) {
-  const [src, setSrc] = useState(fileId ? `${API_BASE}/thumbnails/${fileId}.jpg` : null);
-  const [loaded, setLoaded] = useState(false);
-  const [err, setErr] = useState(!fileId);
-  const prevFileIdRef = useRef(fileId);
-
-  useEffect(() => {
-    if (fileId === prevFileIdRef.current) return;
-    prevFileIdRef.current = fileId;
-    if (fileId) {
-      setSrc(`${API_BASE}/thumbnails/${fileId}.jpg`);
-      setLoaded(false);
-      setErr(false);
-    } else {
-      setSrc(null);
-      setErr(true);
-    }
-  }, [fileId]);
-
-  if (err || !src) {
-    return (
-      <div style={{
-        width: size,
-        height: size,
-        borderRadius: '8px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        flexShrink: 0,
-        background: colorClass,
-      }}>
-        <Music style={{ width: 24, height: 24 }} />
-      </div>
-    );
-  }
-
-  return (
-    <div style={{
-      width: size,
-      height: size,
-      borderRadius: '8px',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      flexShrink: 0,
-      overflow: 'hidden',
-      position: 'relative',
-      background: '#262626',
-    }}>
-      {!loaded && <Music style={{ width: 24, height: 24, color: '#737373', position: 'absolute' }} />}
-      <img src={src} alt="" style={{
-        width: '100%',
-        height: '100%',
-        objectFit: 'cover',
-        opacity: loaded ? 1 : 0,
-      }}
-        onLoad={() => setLoaded(true)} onError={() => setErr(true)} />
-    </div>
-  );
-});
-
-// ========== DROPDOWN MENU COMPONENT ==========
-function DropdownMenu({ trigger, items, position = 'right' }) {
-  const [isOpen, setIsOpen] = useState(false);
-  const dropdownRef = useRef(null);
-
-  useEffect(() => {
-    function handleClickOutside(event) {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
-        setIsOpen(false);
-      }
-    }
-
-    if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
-    }
-  }, [isOpen]);
-
-  return (
-    <div style={{ position: 'relative' }} ref={dropdownRef}>
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
-          padding: '8px 12px',
-          borderRadius: '8px',
-          border: `1px solid ${COLORS.border.primary}`,
-          background: COLORS.bg.secondary,
-          color: COLORS.text.primary,
-          cursor: 'pointer',
-          fontSize: '14px',
-          fontWeight: 500,
-          transition: 'all 0.2s ease',
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.borderColor = COLORS.border.secondary;
-          e.currentTarget.style.background = COLORS.bg.primary;
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.borderColor = COLORS.border.primary;
-          e.currentTarget.style.background = COLORS.bg.secondary;
-        }}
-      >
-        {trigger}
-        <ChevronDown size={16} />
-      </button>
-
-      {isOpen && (
-        <div style={{
-          position: 'absolute',
-          [position]: 0,
-          top: '100%',
-          marginTop: '4px',
-          background: COLORS.bg.primary,
-          border: `1px solid ${COLORS.border.primary}`,
-          borderRadius: '8px',
-          minWidth: '160px',
-          zIndex: 50,
-          boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-        }}>
-          {items.map((item, idx) => (
-            <button
-              key={idx}
-              onClick={() => {
-                item.onClick?.();
-                setIsOpen(false);
-              }}
-              disabled={item.disabled}
-              style={{
-                display: 'block',
-                width: '100%',
-                padding: '12px 16px',
-                textAlign: 'left',
-                border: 'none',
-                background: 'transparent',
-                color: item.disabled ? COLORS.text.tertiary : (item.danger ? '#ef4444' : COLORS.text.primary),
-                cursor: item.disabled ? 'not-allowed' : 'pointer',
-                fontSize: '14px',
-                fontWeight: 500,
-                transition: 'all 0.2s ease',
-                borderBottom: idx < items.length - 1 ? `1px solid ${COLORS.border.primary}` : 'none',
-              }}
-              onMouseEnter={(e) => {
-                if (!item.disabled) {
-                  e.currentTarget.style.background = COLORS.bg.secondary;
-                }
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'transparent';
-              }}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ========== SIDEBAR (playlists + Loved) ==========
-function PlaylistSidebar({ playlists, favoritesCount, activeId, lovedActive, onSelect, onSelectLoved, onOpenLeaderboard }) {
-  return (
-    <div style={{
-      width: 260,
-      flexShrink: 0,
-      borderRight: `1px solid ${COLORS.border.primary}`,
-      background: COLORS.bg.secondary,
-      display: 'flex',
-      flexDirection: 'column',
-      minHeight: 0,
-    }}>
-      <div style={{
-        padding: '16px 16px 8px',
-        fontSize: 11,
-        fontWeight: 700,
-        letterSpacing: '0.06em',
-        textTransform: 'uppercase',
-        color: COLORS.text.tertiary,
-      }}>
-        Playlist
-      </div>
-      <div style={{ flex: 1, overflowY: 'auto', padding: '0 8px 8px' }}>
-        {playlists.map((p) => {
-          const active = String(p.id) === String(activeId) && !lovedActive;
-          const rawCover = playlistImageUrl(p);
-          const cover = rawCover
-            ? (rawCover.startsWith('/') && !rawCover.startsWith('//') ? `${API_BASE}${rawCover}` : rawCover)
-            : null;
-          return (
-            <button
-              key={p.id}
-              onClick={() => onSelect(p)}
-              onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = COLORS.bg.primary; }}
-              onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent'; }}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                width: '100%',
-                padding: '8px',
-                borderRadius: 8,
-                border: 'none',
-                cursor: 'pointer',
-                textAlign: 'left',
-                marginBottom: 2,
-                background: active ? COLORS.bg.primary : 'transparent',
-              }}
-            >
-              <div style={{
-                width: 40, height: 40, borderRadius: 6, overflow: 'hidden', flexShrink: 0,
-                background: '#262626', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}>
-                {cover
-                  ? <img src={cover} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                  : <Music size={18} color="#737373" />}
-              </div>
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{
-                  fontSize: 13, fontWeight: active ? 600 : 500,
-                  color: active ? COLORS.text.primary : COLORS.text.secondary,
-                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                }}>{p.title}</div>
-                <div style={{ fontSize: 11, color: COLORS.text.tertiary }}>{p.track_count ?? 0} lagu</div>
-              </div>
-            </button>
-          );
-        })}
-      </div>
-      <div style={{ padding: '8px', borderTop: `1px solid ${COLORS.border.primary}`, display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <button
-          onClick={onOpenLeaderboard}
-          onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.bg.primary; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px',
-            borderRadius: 8, border: 'none', cursor: 'pointer', textAlign: 'left',
-            background: 'transparent', color: COLORS.text.secondary,
-          }}
-        >
-          <div style={{
-            width: 40, height: 40, borderRadius: 6, flexShrink: 0,
-            background: 'linear-gradient(135deg,#0ea5e9,#8b5cf6)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <Music size={18} color="#fff" />
-          </div>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 500, color: COLORS.text.secondary }}>Leaderboard</div>
-            <div style={{ fontSize: 11, color: COLORS.text.tertiary }}>Your top tracks</div>
-          </div>
-        </button>
-        <button
-          onClick={onSelectLoved}
-          onMouseEnter={(e) => { if (!lovedActive) e.currentTarget.style.background = COLORS.bg.primary; }}
-          onMouseLeave={(e) => { if (!lovedActive) e.currentTarget.style.background = 'transparent'; }}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px',
-            borderRadius: 8, border: 'none', cursor: 'pointer', textAlign: 'left',
-            background: lovedActive ? COLORS.bg.primary : 'transparent',
-          }}
-        >
-          <div style={{
-            width: 40, height: 40, borderRadius: 6, flexShrink: 0,
-            background: 'linear-gradient(135deg,#4f46e5,#db2777)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <Heart size={18} color="#fff" fill="#fff" />
-          </div>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{
-              fontSize: 13, fontWeight: lovedActive ? 600 : 500,
-              color: lovedActive ? COLORS.text.primary : COLORS.text.secondary,
-            }}>Loved</div>
-            <div style={{ fontSize: 11, color: COLORS.text.tertiary }}>{favoritesCount} lagu</div>
-          </div>
-        </button>
-      </div>
-    </div>
-  );
-}
-
 // ========== SPOTIFY-STYLE HERO HEADER ==========
 const ctrlBtn = {
   height: 40, padding: '0 12px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.14)',
@@ -469,7 +186,7 @@ function PlaylistHeroHeader({
           </div>
         </div>
       </div>
-
+      {/* Action buttons */}
       {!selectionMode && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 18, flexWrap: 'wrap' }}>
           <button
@@ -535,399 +252,7 @@ function PlaylistHeroHeader({
     </div>
   );
 }
-
-// ========== VIRTUALIZED TRACK GRID (memoized) ==========
-// Isolated + memoized so it does NOT re-render (and does NOT rebuild the row
-// layout / itemData object) on every PlaylistView render. `rows`, `gridData`
-// and `itemSize` are memoized so react-window's `PlaylistRow` memo actually
-// holds across scrolls (previously a fresh gridData object every render forced
-// every visible row+card to re-render → the "grid berat" jank).
-const PlaylistTrackGridInner = React.memo(function PlaylistTrackGridInner({
-  height, width, gridItems, onSelect, selectedForDelete, deletingTrackIds, selectMode, playingFileId, isPlayingActive, onProbeVisibleItems,
-}) {
-  const listRef = useRef(null);
-
-  const { cols, IW, CH } = useMemo(() => {
-    const effectiveWidth = Math.min(width || 0, CONTAINER_MAX);
-    const iw = Math.min(MAX_CARD, Math.max(MIN_CARD, Math.round(effectiveWidth * 0.10)));
-    const ch = iw + 44;
-    const c = Math.max(1, Math.min(MAX_COLUMNS, Math.floor((effectiveWidth - GUTTER) / (iw + GUTTER))));
-    return { cols: c, IW: iw, CH: ch };
-  }, [width]);
-
-  const rows = useMemo(() => {
-    const r = [];
-    let currentRow = { items: [] };
-    for (let i = 0; i < gridItems.length; i++) {
-      currentRow.items.push(gridItems[i]);
-      if (currentRow.items.length === cols) { r.push(currentRow); currentRow = { items: [] }; }
-    }
-    if (currentRow.items.length > 0) r.push(currentRow);
-    return r;
-  }, [gridItems, cols]);
-
-  // FLIP slide: during the exit phase (some items marked _leaving) compute where
-  // each remaining card will land after reflow, as a CSS transform delta. The
-  // cards slide into place while the leaving ones fade, so the swap after 200ms
-  // has no visible jump. Uses width/cols for exact horizontal (centered) offsets.
-  const slideMap = useMemo(() => {
-    if (!gridItems.some(it => it._leaving)) return null;
-    const rowWidth = width || 0;
-    const centerOffset = (c) => c <= 0 ? 0 : (rowWidth - (c * IW + (c - 1) * GUTTER)) / 2;
-    const fullRowsOld = Math.floor(gridItems.length / cols);
-    const lastCountOld = gridItems.length % cols === 0 ? cols : gridItems.length % cols;
-    const leavingBefore = [];
-    let removed = 0;
-    for (let i = 0; i < gridItems.length; i++) {
-      leavingBefore[i] = removed;
-      if (gridItems[i]._leaving) removed++;
-    }
-    const remaining = gridItems.length - removed;
-    const fullRowsNew = Math.floor(remaining / cols);
-    const lastCountNew = remaining % cols === 0 ? cols : remaining % cols;
-    const map = {};
-    for (let i = 0; i < gridItems.length; i++) {
-      const it = gridItems[i];
-      if (it._leaving) continue;
-      const oldRow = Math.floor(i / cols);
-      const oldCol = i % cols;
-      const oldCount = oldRow < fullRowsOld ? cols : lastCountOld;
-      const newIndex = i - leavingBefore[i];
-      const newRow = Math.floor(newIndex / cols);
-      const newCol = newIndex % cols;
-      const newCount = newRow < fullRowsNew ? cols : lastCountNew;
-      const oldLeft = centerOffset(oldCount) + oldCol * (IW + GUTTER);
-      const newLeft = centerOffset(newCount) + newCol * (IW + GUTTER);
-      map[it._trackId] = {
-        dx: Math.round(newLeft - oldLeft),
-        dy: (newRow - oldRow) * (CH + GUTTER),
-      };
-    }
-    return map;
-  }, [gridItems, cols, IW, CH, width]);
-
-  const gridData = useMemo(() => ({
-    rows, onSelect, itemWidth: IW, cardHeight: CH, columnCount: cols, selectedForDelete, deletingTrackIds, selectMode, slideMap, playingFileId, isPlayingActive,
-  }), [rows, onSelect, IW, CH, cols, selectedForDelete, deletingTrackIds, selectMode, slideMap, playingFileId, isPlayingActive]);
-
-  const itemSize = useCallback(() => CH + GUTTER, [CH]);
-
-  // Recompute cached row offsets when card height / column count changes (resize).
-  useEffect(() => {
-    listRef.current?.resetAfterIndex(0);
-  }, [CH, cols]);
-
-  if (!height || !width || height <= 0 || width <= 0) return null;
-  const gridHeight = Math.max(0, height - GUTTER);
-  return (
-    <List
-      ref={listRef}
-      key="track-grid"
-      height={gridHeight}
-      width={width}
-      itemCount={rows.length}
-      itemSize={itemSize}
-      overscanCount={3}
-      itemData={gridData}
-      onItemsRendered={({ overscanStartIndex, overscanStopIndex }) => {
-        if (!onProbeVisibleItems) return;
-        const ids = [];
-        for (let r = overscanStartIndex; r <= overscanStopIndex && r < rows.length; r++) {
-          for (const it of rows[r].items) {
-            const id = it._file_id || it._track?.file_id || it._trackId;
-            if (id) ids.push(id);
-          }
-        }
-        onProbeVisibleItems(ids);
-      }}
-    >
-      {PlaylistRow}
-    </List>
-  );
-});
-
-// ========== MAIN COMPONENT ==========
-// ========== MAIN COMPONENT ==========
-// ========== LEADERBOARD PANEL ==========
-function LeaderboardPanel({ listeningLeaderboardMetric, onMetricChange, leaderboardDisplayMode, onDisplayModeChange, formatListeningDuration }) {
-  const globalStats = listeningTracker.getGlobalStats();
-  const activeSessionSeconds = listeningTracker.getActiveSessionSeconds();
-  const currentTrackId = listeningTracker.getCurrentTrackId();
-  const leaderboard = listeningTracker.getLeaderboard(listeningLeaderboardMetric, 10).map(entry => {
-    if (entry.trackId === currentTrackId && activeSessionSeconds > 0) {
-      return { ...entry, listenedSeconds: (entry.listenedSeconds || 0) + activeSessionSeconds };
-    }
-    return entry;
-  });
-  const displayTotalListened = globalStats.totalListenedSeconds + activeSessionSeconds;
-  const isGrid = leaderboardDisplayMode === 'grid';
-  return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div style={{ display: 'flex', gap: 4, marginBottom: 12, background: 'rgba(255,255,255,0.05)', borderRadius: 8, padding: 2 }}>
-        <button
-          onClick={() => onMetricChange('plays')}
-          style={{
-            flex: 1, padding: '4px 0', borderRadius: 6, border: 'none', cursor: 'pointer',
-            fontSize: 10, fontWeight: 600, textAlign: 'center',
-            background: listeningLeaderboardMetric === 'plays' ? 'rgba(255,255,255,0.12)' : 'transparent',
-            color: listeningLeaderboardMetric === 'plays' ? '#fff' : COLORS.text.tertiary,
-          }}
-        >
-          MOST PLAYED
-        </button>
-        <button
-          onClick={() => onMetricChange('listened')}
-          style={{
-            flex: 1, padding: '4px 0', borderRadius: 6, border: 'none', cursor: 'pointer',
-            fontSize: 10, fontWeight: 600, textAlign: 'center',
-            background: listeningLeaderboardMetric === 'listened' ? 'rgba(255,255,255,0.12)' : 'transparent',
-            color: listeningLeaderboardMetric === 'listened' ? '#fff' : COLORS.text.tertiary,
-          }}
-        >
-          MOST LISTENED
-        </button>
-      </div>
-      <div style={{ display: 'flex', gap: 6, marginBottom: 12, padding: '0 2px' }}>
-        <div style={{ flex: 1, background: 'rgba(255,255,255,0.04)', borderRadius: 8, padding: '8px 10px' }}>
-          <div style={{ fontSize: 10, color: COLORS.text.tertiary, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Plays</div>
-          <div style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>{globalStats.totalPlayCount}</div>
-        </div>
-        <div style={{ flex: 1, background: 'rgba(255,255,255,0.04)', borderRadius: 8, padding: '8px 10px' }}>
-          <div style={{ fontSize: 10, color: COLORS.text.tertiary, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Time</div>
-          <div style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>{formatListeningDuration(displayTotalListened)}</div>
-        </div>
-        <div style={{ flex: 1, background: 'rgba(255,255,255,0.04)', borderRadius: 8, padding: '8px 10px' }}>
-          <div style={{ fontSize: 10, color: COLORS.text.tertiary, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Tracks</div>
-          <div style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>{globalStats.uniqueTracks}</div>
-        </div>
-      </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, padding: '0 2px' }}>
-        <span style={{ fontSize: 11, fontWeight: 700, color: COLORS.text.tertiary, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Top 10</span>
-        <div style={{ display: 'flex', gap: 4, background: 'rgba(255,255,255,0.05)', borderRadius: 6, padding: 2 }}>
-          <button
-            onClick={() => onDisplayModeChange('list')}
-            style={{
-              padding: '2px 6px', borderRadius: 4, border: 'none', cursor: 'pointer',
-              fontSize: 10, fontWeight: 600, textAlign: 'center',
-              background: leaderboardDisplayMode === 'list' ? 'rgba(255,255,255,0.12)' : 'transparent',
-              color: leaderboardDisplayMode === 'list' ? '#fff' : COLORS.text.tertiary,
-            }}
-          >
-            <ListMusic size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 2 }} />
-            List
-          </button>
-          <button
-            onClick={() => onDisplayModeChange('grid')}
-            style={{
-              padding: '2px 6px', borderRadius: 4, border: 'none', cursor: 'pointer',
-              fontSize: 10, fontWeight: 600, textAlign: 'center',
-              background: leaderboardDisplayMode === 'grid' ? 'rgba(255,255,255,0.12)' : 'transparent',
-              color: leaderboardDisplayMode === 'grid' ? '#fff' : COLORS.text.tertiary,
-            }}
-          >
-            <Grid size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 2 }} />
-            Grid
-          </button>
-        </div>
-      </div>
-      {leaderboard.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '24px 0', color: COLORS.text.tertiary, fontSize: 12 }}>
-          No listening history yet.
-        </div>
-      ) : isGrid ? (
-        <div style={{ flex: 1, overflowY: 'auto', padding: '0 2px' }} className="sidebar-scroll">
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(1, 1fr)', gap: 8 }}>
-            {leaderboard.map((entry) => {
-              const isActive = entry.trackId === currentTrackId;
-              return (
-                <div
-                  key={entry.trackId}
-                  style={{
-                    borderRadius: 12,
-                    background: '#171717',
-                    border: `1px solid ${isActive ? 'rgba(52,211,153,0.25)' : 'rgba(255,255,255,0.08)'}`,
-                    overflow: 'hidden',
-                    cursor: 'pointer',
-                    transition: 'background 200ms ease, border-color 200ms ease, transform 200ms ease',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = isActive ? 'rgba(52,211,153,0.14)' : 'rgba(255,255,255,0.05)';
-                    e.currentTarget.style.borderColor = isActive ? 'rgba(52,211,153,0.4)' : 'rgba(255,255,255,0.14)';
-                    e.currentTarget.style.transform = 'translateY(-1px)';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = '#171717';
-                    e.currentTarget.style.borderColor = isActive ? 'rgba(52,211,153,0.25)' : 'rgba(255,255,255,0.08)';
-                    e.currentTarget.style.transform = 'translateY(0)';
-                  }}
-                >
-                  <div style={{ width: '100%', aspectRatio: '1/1', background: '#0a0a0a', overflow: 'hidden' }}>
-                    {entry.trackId ? (
-                      <NetworkImage src={`/thumbnails/${entry.trackId}.jpg`} alt="" className="w-full h-full object-cover" />
-                    ) : (
-                      <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <Music size={20} color="#525252" />
-                      </div>
-                    )}
-                  </div>
-                  <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <div style={{ fontSize: 12, color: COLORS.text.primary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1.3 }}>{entry.displayName || entry.trackId}</div>
-                    <div style={{ fontSize: 10, color: COLORS.text.tertiary }}>{formatListeningDuration(entry.listenedSeconds)}</div>
-                    <div style={{ fontSize: 10, fontWeight: 600, color: '#34d399' }}>{entry.playCount} plays</div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ) : (
-        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
-          {leaderboard.map((entry, idx) => {
-            const isActive = entry.trackId === currentTrackId;
-            return (
-              <div
-                key={entry.trackId}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  padding: '8px 10px',
-                  borderRadius: 12,
-                  background: isActive ? 'rgba(52,211,153,0.08)' : 'transparent',
-                  border: `1px solid ${isActive ? 'rgba(52,211,153,0.18)' : 'transparent'}`,
-                  cursor: 'pointer',
-                  transition: 'background 200ms ease, border-color 200ms ease',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = isActive ? 'rgba(52,211,153,0.14)' : 'rgba(255,255,255,0.06)';
-                  e.currentTarget.style.borderColor = isActive ? 'rgba(52,211,153,0.3)' : 'rgba(255,255,255,0.08)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = isActive ? 'rgba(52,211,153,0.08)' : 'transparent';
-                  e.currentTarget.style.borderColor = isActive ? 'rgba(52,211,153,0.18)' : 'transparent';
-                }}
-              >
-                <div style={{ width: 22, textAlign: 'center', fontSize: 12, fontWeight: 700, color: COLORS.text.tertiary, flexShrink: 0 }}>#{idx + 1}</div>
-                <div style={{ width: 38, height: 38, borderRadius: 8, background: '#171717', border: '1px solid rgba(255,255,255,0.08)', flexShrink: 0, overflow: 'hidden' }}>
-                  {entry.trackId ? (
-                    <NetworkImage src={`/thumbnails/${entry.trackId}.jpg`} alt="" className="w-full h-full object-cover" />
-                  ) : (
-                    <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <Music size={14} color="#525252" />
-                    </div>
-                  )}
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 12, color: COLORS.text.primary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1.3 }}>{entry.displayName || entry.trackId}</div>
-                  <div style={{ fontSize: 10, color: COLORS.text.tertiary, marginTop: 1 }}>{formatListeningDuration(entry.listenedSeconds)}</div>
-                </div>
-                <div style={{ fontSize: 10, fontWeight: 600, color: '#34d399', whiteSpace: 'nowrap' }}>{entry.playCount} plays</div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ========== NOW PLAYING PANEL ==========
-const QueueRow = React.memo(function QueueRow({ index, style, data }) {
-  const t = data[index];
-  const tFid = t.file_id || t.id;
-  const tName = t.display_name || t.name || 'Unknown';
-  const tArtist = t.artist || 'Unknown Artist';
-  return (
-    <div style={style}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.04)', height: '100%' }}>
-        <div style={{ width: 32, height: 32, borderRadius: 6, background: '#262626', flexShrink: 0, overflow: 'hidden' }}>
-          {tFid ? (
-            <NetworkImage src={`/thumbnails/${tFid}.jpg`} alt="" className="w-full h-full object-cover" />
-          ) : (
-            <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Music size={14} color="#525252" />
-            </div>
-          )}
-        </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 13, color: '#e5e5e5', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.3 }}>{tName}</div>
-          <div style={{ fontSize: 12, color: '#737373', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.3 }}>{tArtist}</div>
-        </div>
-      </div>
-    </div>
-  );
-});
-
-const NowPlayingPanel = React.memo(function NowPlayingPanel({ queue, currentTrackIndex }) {
-  const currentTrack = queue && queue.length > 0 ? queue[currentTrackIndex] : null;
-  const fid = currentTrack?.file_id || currentTrack?.id;
-  const displayName = currentTrack?.display_name || currentTrack?.name || 'Memutar Audio...';
-  const artist = currentTrack?.artist || 'Unknown Artist';
-  const album = currentTrack?.album || '';
-  const upcoming = useMemo(() => queue ? queue.slice(currentTrackIndex + 1) : [], [queue, currentTrackIndex]);
-  const scrollRef = useRef(null);
-  const [scrollH, setScrollH] = useState(0);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const update = () => setScrollH(el.clientHeight);
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [upcoming.length]);
-
-  if (!currentTrack) return null;
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 }}>
-      <div style={{ width: '100%', aspectRatio: '1', borderRadius: 12, overflow: 'hidden', background: '#262626', marginBottom: 20, boxShadow: '0 10px 25px rgba(0,0,0,0.45)', flexShrink: 0 }}>
-        {fid ? (
-          <NetworkImage
-            src={`/thumbnails/${fid}.jpg`}
-            alt="Cover"
-            className="w-full h-full object-cover"
-          />
-        ) : (
-          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Music size={64} color="#525252" />
-          </div>
-        )}
-      </div>
-      <div style={{ marginBottom: 16, flexShrink: 0 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 700, color: '#fff', margin: 0, lineHeight: 1.3, wordBreak: 'break-word' }}>{displayName}</h2>
-        <p style={{ fontSize: 14, color: '#a3a3a3', margin: '6px 0 0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{artist}</p>
-        {album && (
-          <p style={{ fontSize: 13, color: '#737373', margin: '2px 0 0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{album}</p>
-        )}
-      </div>
-      {upcoming.length > 0 && (
-        <>
-          <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 12, flexShrink: 0 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: '#a3a3a3', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>Next in queue ({upcoming.length})</div>
-          </div>
-          <div ref={scrollRef} style={{ flex: 1, minHeight: 0 }} className="sidebar-scroll">
-            {scrollH > 0 && (
-              <FixedSizeList
-                height={scrollH}
-                width={scrollRef.current?.clientWidth || 300}
-                itemSize={QUEUE_ITEM_HEIGHT}
-                itemCount={upcoming.length}
-                overscanCount={5}
-                itemData={upcoming}
-              >
-                {QueueRow}
-              </FixedSizeList>
-            )}
-          </div>
-        </>
-      )}
-    </div>
-  );
-});
-
-export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, onBackToPlaylistList, playerOpen = false }) {
+export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, onBackToPlaylistList, playerOpen = false, menuSidebarOpen, setMenuSidebarOpen, trackSearchQuery, setTrackSearchQuery }) {
   const { playlists, setPlaylists, setLoading, setError, loading,
     currentPlaylist, currentPlaylistTracks,
     setCurrentPlaylist, setCurrentPlaylistTracks, clearCurrentPlaylist, clearPlaylistDetail,
@@ -994,12 +319,7 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
   const [trackFilterType, setTrackFilterType] = useState(() => {
     try { return localStorage.getItem('trackFilterType') || 'all'; } catch { return 'all'; }
   });
-   const [trackSearchQuery, setTrackSearchQuery] = useState(() => {
-     try { return localStorage.getItem('trackSearchQuery') || ''; } catch { return ''; }
-   });
-   useEffect(() => {
-     try { localStorage.setItem('trackSearchQuery', trackSearchQuery); } catch {}
-   }, [trackSearchQuery]);
+
    const [showFilterPanel, setShowFilterPanel] = useState(false);
   const [filterPanelType, setFilterPanelType] = useState('playlist');
 
@@ -1027,6 +347,9 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
   const [containerWidth, setContainerWidth] = useState(
     typeof window !== 'undefined' ? window.innerWidth : 1280
   );
+  const [leftSidebarOpen, setLeftSidebarOpen] = useState(() => {
+    return typeof window !== 'undefined' ? window.innerWidth >= 760 : true;
+  });
   const [showLoved, setShowLoved] = useState(false);
   const [favorites, setFavorites] = useState([]);
   const [lovedLoading, setLovedLoading] = useState(false);
@@ -1034,6 +357,9 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
   const [rightSidebarMode, setRightSidebarMode] = useState('nowplaying');
   const [leaderboardDisplayMode, setLeaderboardDisplayMode] = useState('list');
   const [leaderboardTick, setLeaderboardTick] = useState(0);
+  const [leftHovered, setLeftHovered] = useState(false);
+  const [rightHovered, setRightHovered] = useState(false);
+  const userClosedSidebarRef = useRef(false);
   const showSidebar = containerWidth >= 760;
 
   // Force leaderboard re-render every second while open so stats update live.
@@ -1224,12 +550,18 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
   useEffect(() => {
     const el = mainRowRef.current;
     if (!el) return;
-    const update = () => setContainerWidth(el.getBoundingClientRect().width);
+    const update = () => {
+      const width = el.getBoundingClientRect().width;
+      setContainerWidth(width);
+      if (width >= 760 && !leftSidebarOpen) {
+        setLeftSidebarOpen(true);
+      }
+    };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [leftSidebarOpen]);
 
   // Load loved tracks once for the sidebar count (and reuse when Loved is opened).
   const refreshFavorites = useCallback(() => {
@@ -1251,6 +583,7 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
   }, [setLoading, setPlaylists, setError]);
 
   const handleSelectPlaylist = useCallback((playlist) => {
+    setShowLoved(false);
     cachedPlaylistRef.current = playlist;
     sessionStorage.setItem('selectedPlaylistId', playlist.id);
     setSelectedPlaylist(playlist);
@@ -1680,11 +1013,11 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
      return queue && queue.length > 0 && currentTrackIndex < queue.length;
    }, [queue, currentTrackIndex]);
 
-   useEffect(() => {
-     if (hasActivePlayback && !rightSidebarOpen) {
-       setRightSidebarOpen(true);
-     }
-   }, [hasActivePlayback, rightSidebarOpen]);
+    useEffect(() => {
+      if (hasActivePlayback && !rightSidebarOpen && !userClosedSidebarRef.current) {
+        setRightSidebarOpen(true);
+      }
+    }, [hasActivePlayback, rightSidebarOpen]);
 
    const [toggleHovered, setToggleHovered] = useState(false);
 
@@ -2115,9 +1448,6 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
       ref={mainRowRef}
       className="pv-no-focus"
       onClickCapture={(e) => {
-        // After a pointer click on a button, drop focus so the focus ring
-        // disappears and pressing Space afterwards doesn't re-trigger the
-        // click. Keyboard (Tab) focus is unaffected and still activates.
         const t = e.target;
         if (t && t.tagName === 'BUTTON') {
           requestAnimationFrame(() => t.blur());
@@ -2126,417 +1456,179 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
       style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
     >
       <ServiceStoppedBanner service="playlists" />
-      <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden', position: 'relative' }}>
-        {showSidebar && (
-          <PlaylistSidebar
-            playlists={sortedPlaylists}
-            favoritesCount={favorites.length}
-            activeId={selectedPlaylist?.id}
-            lovedActive={showLoved}
-            onSelect={handleSelectPlaylist}
-            onSelectLoved={selectLoved}
+
+      <div style={{ flex: 1, margin: 4, borderRadius: 12, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ flex: 1, display: 'flex', gap: 8, minHeight: 0, overflow: 'hidden', position: 'relative', background: '#000' }}>
+        <div style={{ flex: '0 0 260px', background: '#121212', borderRadius: 12, overflow: 'hidden', position: 'relative' }}>
+           <PlaylistLeftModule
+           showSidebar={leftSidebarOpen}
+           leftHovered={leftHovered}
+           setLeftHovered={setLeftHovered}
+           onToggleSidebar={() => setLeftSidebarOpen(prev => !prev)}
+           sortedPlaylists={sortedPlaylists}
+           favoritesCount={favorites.length}
+           selectedPlaylist={selectedPlaylist}
+           showLoved={showLoved}
+           handleSelectPlaylist={handleSelectPlaylist}
+           selectLoved={selectLoved}
             onOpenLeaderboard={() => { setRightSidebarMode('leaderboard'); setRightSidebarOpen(true); }}
           />
-        )}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
-          {/* List View */}
-          {!selectedPlaylist && (
-        <>
-        <PlaylistListHeader
-          playlistCount={sortedPlaylists.length}
-          selectionMode={playlistDeleteMode}
-          selectedCount={selectedPlaylistIds.size}
-          onMenuOpen={onMenuOpen}
-          onToggleSelect={() => {
-            setPlaylistDeleteMode(true);
-            setSelectedPlaylistIds(new Set());
-          }}
-          onSelectAll={() => {
-            if ((Array.isArray(playlists) ? playlists : []).length === selectedPlaylistIds.size) {
-              setSelectedPlaylistIds(new Set());
-            } else {
-              setSelectedPlaylistIds(new Set((Array.isArray(playlists) ? playlists : []).map(p => p.id)));
-            }
-          }}
-          onDeleteSelected={async () => {
-            if (selectedPlaylistIds.size === 0) return;
-            for (const id of selectedPlaylistIds) {
-              try { await deletePlaylist(id); } catch {}
-            }
-            setPlaylists(prev => prev.filter(p => !selectedPlaylistIds.has(p.id)));
-            showToast(`${selectedPlaylistIds.size} playlist(s) deleted`, 'success');
-            setSelectedPlaylistIds(new Set());
-            setPlaylistDeleteMode(false);
-          }}
-          onCancelSelect={() => {
-            setPlaylistDeleteMode(false);
-            setSelectedPlaylistIds(new Set());
-          }}
-          onImport={() => fileInputRef.current?.click()}
-          onRefresh={() => { setLoading(true); handleRefresh(); }}
-          onToggleView={() => setDisplayMode(d => d === 'grid' ? 'list' : 'grid')}
-          displayMode={displayMode}
-          isImporting={isImporting}
-          fileInputRef={fileInputRef}
-          onImportFile={handleImportXSPF}
-          onCreate={() => setShowCreateModal(true)}
-          sortBy={playlistSort.by}
-          sortOrder={playlistSort.order}
-          onOpenFilters={handleOpenPlaylistFilters}
-          onToggleOrder={handlePlaylistOrderToggle}
+        </div>
+         <div style={{ flex: 1, background: '#121212', borderRadius: 12, overflow: 'hidden', position: 'relative', minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+            <PlaylistMiddleModule
+              selectedPlaylist={selectedPlaylist}
+              loadingTracks={loadingTracks}
+              displayMode={displayMode}
+              setDisplayMode={setDisplayMode}
+              playerOpen={playerOpen}
+              handlePlay={handlePlay}
+              handlePlayShuffle={handlePlayShuffle}
+              handlePlayTrack={handlePlayTrack}
+              handleBulkDelete={handleBulkDelete}
+              handleCancelDeleteMode={handleCancelDeleteMode}
+              handleOpenPlaylistFilters={handleOpenPlaylistFilters}
+              handleOpenTrackFilters={handleOpenTrackFilters}
+              handleImportXSPF={handleImportXSPF}
+              handleRefresh={handleRefresh}
+              handleCreateManualPlaylist={handleCreateManualPlaylist}
+              fileInputRef={fileInputRef}
+              coverInputRef={coverInputRef}
+              playlistSort={playlistSort}
+              trackSort={trackSort}
+              trackFilterType={trackFilterType}
+              playlistSortOptions={PLAYLIST_SORT_OPTIONS}
+              trackSortOptions={TRACK_SORT_OPTIONS}
+              trackFilterOptions={TRACK_FILTER_OPTIONS}
+              onPlaylistSortChange={setPlaylistSort}
+              onTrackSortChange={setTrackSort}
+              onTrackFilterTypeChange={setTrackFilterType}
+              onFilterApply={handleFilterApply}
+              showFilterPanel={showFilterPanel}
+              setShowFilterPanel={setShowFilterPanel}
+              filterPanelType={filterPanelType}
+              setFilterPanelType={setFilterPanelType}
+              deleteMode={deleteMode}
+              selectedForDelete={selectedForDelete}
+              selectAllForDelete={selectAllForDelete}
+              deletingTrackIds={deletingTrackIds}
+              playlistDeleteMode={playlistDeleteMode}
+              selectedPlaylistIds={selectedPlaylistIds}
+              isImporting={isImporting}
+              loading={loading}
+              playlists={playlists}
+              sortedPlaylists={sortedPlaylists}
+              displayTracks={displayTracks}
+              sortedTracks={sortedTracks}
+              totalDurationSeconds={totalDurationSeconds}
+              listItemSize={listItemSize}
+              gridItems={gridItems}
+              leavingTrackIds={leavingTrackIds}
+              enteringTrackIds={enteringTrackIds}
+              shiftAbove={shiftAbove}
+              playingFileId={playingFileId}
+              isPlayingActive={isPlayingActive}
+              detailScrollRef={detailScrollRef}
+              trackCount={sortedTracks.length}
+              isLoved={!!selectedPlaylist?.isLoved}
+              showAddMusicPanel={showAddMusicPanel}
+              setShowAddMusicPanel={setShowAddMusicPanel}
+              showCreateModal={showCreateModal}
+              setShowCreateModal={setShowCreateModal}
+              createTitle={createTitle}
+              setCreateTitle={setCreateTitle}
+              isCreating={isCreating}
+              onMenuOpen={onMenuOpen}
+              onToggleOrder={handlePlaylistOrderToggle}
+              toggleSelectForDelete={toggleSelectForDelete}
+              handleRemoveTrack={handleRemoveTrack}
+              handleListItemsRendered={handleListItemsRendered}
+              handleGridItemsRendered={handleGridItemsRendered}
+              handleTrackGridSelect={handleTrackGridSelect}
+              PlaylistHeroHeader={PlaylistHeroHeader}
+            />
+        </div>
+        <div style={{ flex: '0 0 360px', background: '#121212', borderRadius: 12, overflow: 'hidden', position: 'relative' }}>
+          <PlaylistRightModule
+          open={rightSidebarOpen}
+          mode={rightSidebarMode}
+          onModeChange={setRightSidebarMode}
+          onClose={() => { userClosedSidebarRef.current = true; setRightSidebarOpen(false); }}
+          onOpen={() => { userClosedSidebarRef.current = false; setRightSidebarMode(hasActivePlayback ? 'nowplaying' : 'leaderboard'); setRightSidebarOpen(true); }}
+          hasActivePlayback={hasActivePlayback}
+          queue={queue}
+          currentTrackIndex={currentTrackIndex}
+          listeningLeaderboardMetric={listeningLeaderboardMetric}
+          onMetricChange={setListeningLeaderboardMetric}
+          leaderboardDisplayMode={leaderboardDisplayMode}
+          onDisplayModeChange={setLeaderboardDisplayMode}
+          formatListeningDuration={formatListeningDuration}
+          rightHovered={rightHovered}
+          setRightHovered={setRightHovered}
         />
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: COLORS.text.secondary, padding: 24, overflow: 'hidden' }}>
-          <Music size={64} style={{ opacity: 0.22, marginBottom: 8 }} />
-          <p style={{ margin: 0, fontSize: 17, fontWeight: 600, color: COLORS.text.primary }}>Pilih playlist</p>
-          <p style={{ margin: 0, fontSize: 14, textAlign: 'center' }}>Pilih salah satu daftar di samping untuk melihat lagunya.</p>
-          <button
-            onClick={() => setShowCreateModal(true)}
-            style={{ marginTop: 12, height: 40, padding: '0 18px', borderRadius: 999, border: 'none', background: '#1db954', color: '#000', cursor: 'pointer', fontSize: 14, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}
-          >
-            <Plus size={16} /> Buat Playlist
-          </button>
-        </div>
-      </>
-    )}
-
-      {/* Detail View */}
-      {selectedPlaylist && (
-    <div ref={detailScrollRef} data-debug-id="5.1" data-debug-name="PlaylistView" data-debug-type="panel" style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'linear-gradient(180deg, #2e2e2e 0%, #1c1c1c 300px, #121212 560px)' }}>
-          {/* Sticky top bar — search centered, larger & refined.
-              Hidden while the audio player is open so its back/search chrome
-              doesn't bleed through behind the (opaque) player header. */}
-          {!playerOpen && (
-          <div style={{ position: 'sticky', top: 0, zIndex: 5, display: 'flex', alignItems: 'center', gap: 12, padding: '12px 24px', background: 'rgba(18,18,18,0.82)', backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-            <button onClick={handleBackToList} title="Kembali" style={{ flexShrink: 0, width: 34, height: 34, borderRadius: 999, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.05)', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <ArrowLeft size={18} />
-            </button>
-            <div style={{ flex: 1, display: 'flex', justifyContent: 'center', minWidth: 0 }}>
-              <div style={{ position: 'relative', width: 'min(520px, 100%)' }}>
-                <Search size={18} style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: COLORS.text.secondary, pointerEvents: 'none' }} />
-                <input
-                  value={trackSearchQuery}
-                  onChange={(e) => setTrackSearchQuery(e.target.value)}
-                  placeholder="Cari di playlist…"
-                  style={{
-                    width: '100%', height: 44, padding: '0 18px 0 44px', borderRadius: 999,
-                    border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.06)',
-                    color: '#fff', fontSize: 15, outline: 'none',
-                    boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
-                  }}
-                  onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(29,185,84,0.7)'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(29,185,84,0.18)'; }}
-                  onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)'; e.currentTarget.style.boxShadow = '0 1px 2px rgba(0,0,0,0.3)'; }}
-                />
-              </div>
-            </div>
-            <div style={{ flexShrink: 0, width: 34 }} />
-          </div>
-          )}
-          <PlaylistDetailHeader
-            selectionMode={deleteMode}
-            selectedCount={bulkSelectedCount}
-            trackCount={sortedTracks.length}
-            onSelectAll={() => {
-              setSelectAllForDelete(true);
-              setSelectedForDelete(new Set());
-            }}
-            onDeleteSelected={handleBulkDelete}
-            onCancelSelect={handleCancelDeleteMode}
-          />
-          <PlaylistHeroHeader
-            playlist={selectedPlaylist}
-            isLoved={!!selectedPlaylist.isLoved}
-            trackCount={sortedTracks.length}
-            totalDurationSeconds={
-              selectedPlaylist?.isLoved
-                ? favorites.reduce((sum, t) => sum + (Number(t.duration) || 0), 0)
-                : (Number(selectedPlaylist?.total_duration) || totalDurationSeconds)
-            }
-            onPlay={handlePlay}
-            onShuffle={handlePlayShuffle}
-            onCoverChange={() => coverInputRef.current?.click()}
-            selectionMode={deleteMode}
-            selectedCount={bulkSelectedCount}
-            onEnterSelectMode={() => setDeleteMode(true)}
-            onSelectAll={() => {
-              setSelectAllForDelete(true);
-              setSelectedForDelete(new Set());
-            }}
-            onDeleteSelected={handleBulkDelete}
-            onCancelSelect={handleCancelDeleteMode}
-            onFilter={handleOpenTrackFilters}
-            filterType={trackFilterType}
-            onToggleView={() => setDisplayMode(d => d === 'grid' ? 'list' : 'grid')}
-            displayMode={displayMode}
-            onAdd={() => setShowAddMusicPanel(true)}
-          />
-
-          {/* Content — track area virtualizes against the visible viewport so
-               switching to grid doesn't mount every card at once (was freezing
-               the tab on large playlists). Hero + toolbar stay fixed above.
-               The `key` is tied to the playlist id + loading state so the
-               content re-mounts (and thus re-runs the fade-in) both on a fresh
-               open and after the loading spinner finishes — matching the Loved
-               section's fade-in behaviour. */}
-          <div
-            key={`pv-content-${selectedPlaylist?.id}-${loadingTracks ? 'loading' : 'ready'}`}
-            className="animate-in fade-in duration-300"
-            style={{ flex: 1, minHeight: 0, padding: '0 24px 24px', display: 'flex', flexDirection: 'column' }}
-          >
-            {loadingTracks ? (
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flex: 1,
-              }}>
-                <div style={{
-                  width: '32px',
-                  height: '32px',
-                  border: `2px solid ${COLORS.border.primary}`,
-                  borderTop: `2px solid ${COLORS.accent}`,
-                  borderRadius: '50%',
-                  animation: 'spin 1s linear infinite',
-                }} />
-              </div>
-            ) : displayTracks.length === 0 ? (
-              <div style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flex: 1,
-                color: COLORS.text.secondary,
-              }}>
-                <Music size={48} style={{ marginBottom: '12px', opacity: 0.3 }} />
-                <p style={{ margin: 0, fontSize: '14px' }}>No tracks in this playlist</p>
-              </div>
-            ) : displayMode === 'list' ? (
-              <div data-debug-id="5.2.2" data-debug-name="TrackListView" data-debug-type="list" style={{ flex: 1, minHeight: 0 }}>
-                <AutoSizer>
-                  {({ height, width }) => (
-                    <div style={{ height, width, display: 'flex', justifyContent: 'center' }}>
-                      <List
-                        key={`track-list-${displayMode}`}
-                        height={height}
-                        width={Math.min(width || 0, 1100)}
-                        itemCount={displayTracks.length}
-                        itemSize={listItemSize}
-                        overscanCount={5}
-                        itemData={listRowData}
-                        onItemsRendered={handleListItemsRendered}
-                      >
-                        {PlaylistListRow}
-                      </List>
-                    </div>
-                  )}
-                </AutoSizer>
-              </div>
-            ) : (
-              <div data-debug-id="5.2.3" data-debug-name="TrackGridView" data-debug-type="grid" style={{ flex: 1, minHeight: 0 }}>
-                <AutoSizer>
-                  {({ height, width }) => {
-                    const effW = Math.min(width || 0, CONTAINER_MAX);
-                    const iw = Math.min(MAX_CARD, Math.max(MIN_CARD, Math.round(effW * 0.10)));
-                    const ch = iw + 44;
-                    const cols = Math.max(1, Math.min(MAX_COLUMNS, Math.floor((effW - GUTTER) / (iw + GUTTER))));
-                    return (
-                      <PlaylistTrackGridInner
-                        height={height}
-                        width={width}
-                        gridItems={gridItems}
-                        onSelect={handleTrackGridSelect}
-                        selectedForDelete={selectedForDelete}
-                        deletingTrackIds={deletingTrackIds}
-                        selectMode={deleteMode}
-                        playingFileId={playingFileId}
-                        isPlayingActive={isPlayingActive}
-                        onProbeVisibleItems={handleGridItemsRendered}
-                      />
-                    );
-                  }}
-                </AutoSizer>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
        </div>
+     </div>
+     </div>
 
-          {/* Now Playing Sidebar */}
-           <div
-             data-debug-id="5.3"
-             data-debug-name="NowPlayingSidebar"
-             data-debug-type="panel"
-             style={{
-               position: 'absolute',
-               right: 0,
-               top: 0,
-               bottom: 0,
-               width: 360,
-               background: 'linear-gradient(180deg, #1a1a1a 0%, #121212 100%)',
-               borderLeft: '1px solid rgba(255,255,255,0.06)',
-               display: 'flex',
-               flexDirection: 'column',
-               overflow: 'hidden',
-               transform: rightSidebarOpen ? 'translateX(0)' : 'translateX(100%)',
-               opacity: rightSidebarOpen ? 1 : 0,
-               transition: 'transform 300ms ease, opacity 300ms ease',
-               pointerEvents: rightSidebarOpen ? 'auto' : 'none',
-               zIndex: 20,
-             }}
-           >
-             <>
-               <div style={{ padding: '24px 24px 0', flexShrink: 0 }}>
-                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                   <div style={{ display: 'flex', gap: 4, background: 'rgba(255,255,255,0.05)', borderRadius: 8, padding: 2 }}>
-                     <button
-                       onClick={() => setRightSidebarMode('nowplaying')}
-                       style={{
-                         padding: '4px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
-                         fontSize: 11, fontWeight: 600, textAlign: 'center',
-                         background: rightSidebarMode === 'nowplaying' ? 'rgba(255,255,255,0.12)' : 'transparent',
-                         color: rightSidebarMode === 'nowplaying' ? '#fff' : COLORS.text.tertiary,
-                       }}
-                     >
-                       Now Playing
-                     </button>
-                     <button
-                       onClick={() => setRightSidebarMode('leaderboard')}
-                       style={{
-                         padding: '4px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
-                         fontSize: 11, fontWeight: 600, textAlign: 'center',
-                         background: rightSidebarMode === 'leaderboard' ? 'rgba(255,255,255,0.12)' : 'transparent',
-                         color: rightSidebarMode === 'leaderboard' ? '#fff' : COLORS.text.tertiary,
-                       }}
-                     >
-                       Leaderboard
-                     </button>
-                   </div>
-                   <button
-                     onClick={() => setRightSidebarOpen(false)}
-                     style={{ width: 28, height: 28, borderRadius: 999, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.05)', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                     title="Close sidebar"
-                   >
-                     <X size={14} />
-                   </button>
-                 </div>
-               </div>
-                <div style={{ flex: 1, overflow: 'hidden', padding: '0 24px 24px', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                  {rightSidebarMode === 'nowplaying' && hasActivePlayback && (
-                    <NowPlayingPanel queue={queue} currentTrackIndex={currentTrackIndex} />
-                  )}
-                 {rightSidebarMode === 'nowplaying' && !hasActivePlayback && (
-                   <div style={{ textAlign: 'center', padding: '40px 0', color: COLORS.text.tertiary, fontSize: 13, flexShrink: 0 }}>
-                     No track is playing
-                   </div>
-                 )}
-                  {rightSidebarMode === 'leaderboard' && (
-                    <LeaderboardPanel
-                      listeningLeaderboardMetric={listeningLeaderboardMetric}
-                      onMetricChange={setListeningLeaderboardMetric}
-                      leaderboardDisplayMode={leaderboardDisplayMode}
-                      onDisplayModeChange={setLeaderboardDisplayMode}
-                      formatListeningDuration={formatListeningDuration}
-                    />
-                  )}
-               </div>
-             </>
-          </div>
-         {!rightSidebarOpen && (hasActivePlayback || true) && (
-           <button
-             onClick={() => { setRightSidebarMode(hasActivePlayback ? 'nowplaying' : 'leaderboard'); setRightSidebarOpen(true); }}
-             onMouseEnter={() => setToggleHovered(true)}
-             onMouseLeave={() => setToggleHovered(false)}
-             style={{
-               position: 'absolute',
-               right: 0,
-               top: 0,
-               bottom: 0,
-               width: 40,
-               cursor: 'pointer',
-               zIndex: 10,
-               background: 'transparent',
-               border: 'none',
-               display: 'flex',
-               alignItems: 'center',
-               justifyContent: 'center',
-             }}
-             title={hasActivePlayback ? "Open Now Playing" : "Open Leaderboard"}
-           >
-             <ChevronLeft size={16} style={{ opacity: toggleHovered ? 1 : 0, transition: 'opacity 0.2s', color: '#a3a3a3' }} />
-           </button>
-          )}
- 
-       </div>
+      <FilterPanel
+        open={showFilterPanel}
+        onClose={() => setShowFilterPanel(false)}
+        title="Filters"
+        filterTypeOptions={filterPanelType === 'track' ? TRACK_FILTER_OPTIONS : null}
+        filterType={trackFilterType}
+        onFilterTypeChange={handleTrackFilterTypeChange}
+        sortOptions={filterPanelType === 'playlist' ? PLAYLIST_SORT_OPTIONS : TRACK_SORT_OPTIONS}
+        sortBy={filterPanelType === 'playlist' ? playlistSort.by : trackSort.by}
+        sortOrder={filterPanelType === 'playlist' ? playlistSort.order : trackSort.order}
+        onApply={handleFilterApply}
+      />
 
+      <AddMusicPanel
+        isOpen={showAddMusicPanel}
+        onClose={() => setShowAddMusicPanel(false)}
+        playlistId={selectedPlaylist?.id}
+        playlistTitle={selectedPlaylist?.title}
+        existingTrackIds={sortedTracks.map(t => t.file_id).filter(Boolean)}
+        onTracksAdded={(allTracks) => {
+          if (!selectedPlaylist) return;
+          if (Array.isArray(allTracks) && allTracks.length > 0) {
+            cachedTracksRef.current = allTracks;
+            setPlaylistTracks(allTracks);
+            setCurrentPlaylistTracks(allTracks);
+            resolveMissingDurations(allTracks);
+            setPlaylists(prev => prev.map(p => p.id === selectedPlaylist.id ? { ...p, track_count: allTracks.length } : p));
+          } else {
+            loadPlaylist(selectedPlaylist.id).then((data) => {
+              const tracks = data.tracks || [];
+              cachedTracksRef.current = tracks;
+              setPlaylistTracks(tracks);
+              setCurrentPlaylistTracks(tracks);
+              resolveMissingDurations(tracks);
+              setPlaylists(prev => prev.map(p => p.id === selectedPlaylist.id ? { ...p, track_count: data.track_count, total_duration: data.total_duration, available_tracks: data.available_tracks } : p));
+            }).catch(() => {});
+          }
+        }}
+      />
 
-     {/* Filter Panel */}
-    <FilterPanel
-      open={showFilterPanel}
-      onClose={() => setShowFilterPanel(false)}
-      title="Filters"
-      filterTypeOptions={filterPanelType === 'track' ? TRACK_FILTER_OPTIONS : null}
-      filterType={trackFilterType}
-      onFilterTypeChange={handleTrackFilterTypeChange}
-      sortOptions={filterPanelType === 'playlist' ? PLAYLIST_SORT_OPTIONS : TRACK_SORT_OPTIONS}
-      sortBy={filterPanelType === 'playlist' ? playlistSort.by : trackSort.by}
-      sortOrder={filterPanelType === 'playlist' ? playlistSort.order : trackSort.order}
-      onApply={handleFilterApply}
-    />
+      {createModal}
+      {deleteConfirmModal}
 
-    {/* Side panel - Add Music (slide from right) */}
-    <AddMusicPanel
-      isOpen={showAddMusicPanel}
-      onClose={() => setShowAddMusicPanel(false)}
-      playlistId={selectedPlaylist?.id}
-      playlistTitle={selectedPlaylist?.title}
-      existingTrackIds={sortedTracks.map(t => t.file_id).filter(Boolean)}
-      onTracksAdded={(allTracks) => {
-        if (!selectedPlaylist) return;
-        if (Array.isArray(allTracks) && allTracks.length > 0) {
-          cachedTracksRef.current = allTracks;
-          setPlaylistTracks(allTracks);
-          setCurrentPlaylistTracks(allTracks);
-          resolveMissingDurations(allTracks);
-          setPlaylists(prev => prev.map(p => p.id === selectedPlaylist.id ? { ...p, track_count: allTracks.length } : p));
-        } else {
-          loadPlaylist(selectedPlaylist.id).then((data) => {
-            const tracks = data.tracks || [];
-            cachedTracksRef.current = tracks;
-            setPlaylistTracks(tracks);
-            setCurrentPlaylistTracks(tracks);
-            resolveMissingDurations(tracks);
-            setPlaylists(prev => prev.map(p => p.id === selectedPlaylist.id ? { ...p, track_count: data.track_count, total_duration: data.total_duration, available_tracks: data.available_tracks } : p));
-          }).catch(() => {});
+      <input
+        ref={coverInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        style={{ display: 'none' }}
+        onChange={handleCoverFileChange}
+      />
+
+      <style>{`
+        @keyframes spin {
+          to { transform: rotate(360deg); }
         }
-      }}
-    />
-
-    {/* Modals */}
-    {createModal}
-    {deleteConfirmModal}
-
-    <input
-      ref={coverInputRef}
-      type="file"
-      accept="image/png,image/jpeg,image/webp"
-      style={{ display: 'none' }}
-      onChange={handleCoverFileChange}
-    />
-
-    <style>{`
-      @keyframes spin {
-        to { transform: rotate(360deg); }
-      }
-      /* Hide the focus ring left behind after a mouse click on a button
-         inside the playlist view (keyboard focus is preserved). The ring is
-         also cleared programmatically on pointer click so Space won't
-         re-trigger the last-clicked button. */
-      .pv-no-focus button:focus:not(:focus-visible) {
-        outline: none;
-        box-shadow: none;
-      }
-    `}</style>
+        .pv-no-focus button:focus:not(:focus-visible) {
+          outline: none;
+          box-shadow: none;
+        }
+      `}</style>
     </div>
   );
 }

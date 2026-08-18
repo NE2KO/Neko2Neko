@@ -15,7 +15,7 @@ const TYPE_COLORS = {
 const COLORS = {
   bg: { primary: '#0a0a0a', secondary: '#171717' },
   border: { primary: '#262626', secondary: '#404040' },
-  text: { primary: '#e5e5e5', secondary: '#a3a3a3', tertiary: '#737373' },
+  text: { primary: '#e5e5e5', secondary: '#e5e5e5', tertiary: '#e5e5e5' },
   accent: '#0ea5e9',
 };
 
@@ -25,7 +25,6 @@ const LIST_ROW_STYLE = `
     align-items: center;
     gap: 12px;
     padding: 8px 16px;
-    border-bottom: 1px solid ${COLORS.border.primary};
     cursor: pointer;
     transition: background 0.15s ease, opacity 0.18s ease;
   }
@@ -181,7 +180,7 @@ const PlaylistListRow = memo(({ index, style, data }) => {
             onError={(e) => { e.target.style.display = 'none'; }}
           />
         ) : (
-          <svg style={{ width: 24, height: 24, color: '#737373' }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+          <svg style={{ width: 24, height: 24, color: '#e5e5e5' }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
         )}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>

@@ -377,149 +377,148 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
         data-debug-id="1.2"
         data-debug-name="MiniPlayer"
         data-debug-type="floating"
-        className="fixed bottom-0 left-0 right-0 bg-neutral-900/95 backdrop-blur-md border-t border-neutral-700/50 shadow-2xl z-40 overflow-hidden"
+        className="w-full flex-shrink-0 bg-black relative overflow-hidden"
       >
-        <div className="absolute inset-0 pointer-events-none">
-          <NetworkImage
-            src={coverUrl || `/thumbnails/${fileId}.jpg`}
-            alt=""
-            className="absolute inset-0 w-full h-full object-cover"
-            style={{ filter: 'blur(18px) brightness(0.5) saturate(1.2)', transform: 'scale(1.12)' }}
-            showRetry={false}
-          />
-          {mvId && !mvError && (
-            <video
-              key={mvId}
-              ref={bgVideoRef}
-              src={`/api/video-cache/stream/${mvId}`}
-              className="absolute inset-0 w-full h-full object-cover"
-              style={{
-                opacity: mvReady ? 1 : 0,
-                transition: 'opacity 300ms ease',
-                filter: 'blur(12px) brightness(0.55) saturate(1.1)',
-                transform: 'scale(1.08)',
-              }}
-              muted
-              playsInline
-              onLoadedData={() => setMvReady(true)}
-              onError={() => { setMvError(true); setMvReady(false); }}
-            />
-          )}
-          <div className="absolute inset-0 bg-black/40" />
-          <div className="absolute inset-0" style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.75), rgba(0,0,0,0.15))' }} />
-        </div>
-
-        <div className="relative z-10 flex items-center gap-4 px-4 py-2.5">
-          <div className="flex items-center gap-3 flex-1 min-w-0">
-            <div className="w-11 h-11 flex-shrink-0 rounded-lg overflow-hidden bg-neutral-800">
+        <div className="relative z-10 flex items-center gap-4 p-3">
+          {/* KIRI - Cover + Track Info */}
+          <div className="w-72 flex-shrink-0 flex items-center gap-3">
+            <div className="w-14 h-14 flex-shrink-0 rounded-xl overflow-hidden bg-neutral-800 shadow-lg">
               <NetworkImage
                 src={coverUrl || `/thumbnails/${fileId}.jpg`}
                 alt=""
                 className="w-full h-full object-cover"
               />
             </div>
-            <div className="min-w-0 flex flex-col gap-1">
-              <div className="text-[12px] font-medium text-white truncate">
+            <div className="min-w-0 flex flex-col gap-0.5">
+              <div className="text-[13px] font-medium text-white truncate">
                 {currentTrack?.display_name || currentTrack?.name || 'Unknown Track'}
               </div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] text-neutral-500 w-8">{formatTime(currentTime)}</span>
-                <div
-                  onClick={handleSeek}
-                  className="flex-1 h-1.5 bg-neutral-700/60 rounded-full cursor-pointer group relative"
-                >
-                  <div
-                    className="h-full bg-indigo-500 rounded-full transition-all"
-                    style={{ width: `${progress}%` }}
-                  />
-                  <div
-                    className="absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full shadow-md opacity-0 group-hover:opacity-100 transition-all pointer-events-none"
-                    style={{ left: `calc(${progress}% - 5px)` }}
-                  />
-                </div>
-                <span className="text-[10px] text-neutral-500 w-8 text-right">{formatTime(duration)}</span>
+              <div className="text-[11px] text-neutral-400 truncate">
+                {currentTrack?.artist || currentTrack?.album || ''}
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-1 flex-shrink-0">
-            <button
-              onClick={handleShuffle}
-              className={`transition-colors p-2 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0 ${shuffle ? 'text-indigo-400' : 'text-neutral-400 hover:text-white'}`}
-              title={shuffle ? 'Shuffle on' : 'Shuffle off'}
-            >
-              <Shuffle size={16} />
-            </button>
-            <button
-              onClick={previous}
-              className="text-neutral-400 hover:text-white transition-colors p-2 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0"
-              tabIndex={-1}
-              onMouseDown={(e) => e.preventDefault()}
-            >
-              <SkipBack size={18} />
-            </button>
-            <button
-              onClick={handlePlayPause}
-              className="w-10 h-10 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 transition-all flex-shrink-0 focus:outline-none focus:ring-0"
-              tabIndex={-1}
-              onMouseDown={(e) => e.preventDefault()}
-            >
-              {audioPlaying ? (
-                <Pause size={18} fill="currentColor" />
-              ) : (
-                <Play size={18} fill="currentColor" className="ml-0.5" />
-              )}
-            </button>
-            <button
-              onClick={next}
-              className="text-neutral-400 hover:text-white transition-colors p-2 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0"
-              tabIndex={-1}
-              onMouseDown={(e) => e.preventDefault()}
-            >
-              <SkipForward size={18} />
-            </button>
-            <button
-              onClick={handleLoop}
-              className={`transition-colors p-2 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0 ${loopMode !== 'off' ? 'text-indigo-400' : 'text-neutral-400 hover:text-white'}`}
-              title={`Loop: ${loopMode}`}
-            >
-              <Repeat size={16} />
-              {loopMode === 'one' && <span className="text-[9px] font-bold ml-0.5">1</span>}
-            </button>
+          {/* TENGAH - Seek Bar + Controls */}
+          <div className="flex-1 min-w-0 flex flex-col items-center gap-1.5">
+            <div className="flex items-center gap-2 w-full max-w-xl">
+              <span className="text-[10px] text-neutral-500 w-8 text-right tabular-nums">{formatTime(currentTime)}</span>
+              <div
+                onClick={handleSeek}
+                className="flex-1 h-1.5 bg-neutral-700/60 rounded-full cursor-pointer group relative"
+              >
+                <div
+                  className="h-full bg-indigo-500 rounded-full transition-all"
+                  style={{ width: `${progress}%` }}
+                />
+                <div
+                  className="absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full shadow-md opacity-0 group-hover:opacity-100 transition-all pointer-events-none"
+                  style={{ left: `calc(${progress}% - 5px)` }}
+                />
+              </div>
+              <span className="text-[10px] text-neutral-500 w-8 tabular-nums">{formatTime(duration)}</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={handleShuffle}
+                className={`transition-colors p-1.5 rounded-lg hover:bg-neutral-700 focus:outline-none focus:ring-0 ${shuffle ? 'text-indigo-400' : 'text-neutral-400 hover:text-white'}`}
+                title={shuffle ? 'Shuffle on' : 'Shuffle off'}
+              >
+                <Shuffle size={14} />
+              </button>
+              <button
+                onClick={previous}
+                className="text-neutral-400 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-neutral-700 focus:outline-none focus:ring-0"
+                tabIndex={-1}
+                onMouseDown={(e) => e.preventDefault()}
+              >
+                <SkipBack size={16} />
+              </button>
+              <button
+                onClick={handlePlayPause}
+                className="w-8 h-8 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 transition-all flex-shrink-0 focus:outline-none focus:ring-0"
+                tabIndex={-1}
+                onMouseDown={(e) => e.preventDefault()}
+              >
+                {audioPlaying ? (
+                  <Pause size={14} fill="currentColor" />
+                ) : (
+                  <Play size={14} fill="currentColor" className="ml-0.5" />
+                )}
+              </button>
+              <button
+                onClick={next}
+                className="text-neutral-400 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-neutral-700 focus:outline-none focus:ring-0"
+                tabIndex={-1}
+                onMouseDown={(e) => e.preventDefault()}
+              >
+                <SkipForward size={16} />
+              </button>
+              <button
+                onClick={handleLoop}
+                className={`relative transition-colors p-1.5 rounded-lg hover:bg-neutral-700 focus:outline-none focus:ring-0 ${loopMode !== 'off' ? 'text-indigo-400' : 'text-neutral-400 hover:text-white'}`}
+                title={`Loop: ${loopMode}`}
+              >
+                <Repeat size={14} />
+                {loopMode === 'one' && (
+                  <span className="absolute -top-1 -right-1 text-[8px] font-bold bg-indigo-500 text-white rounded-full w-3 h-3 flex items-center justify-center leading-none">1</span>
+                )}
+              </button>
+            </div>
           </div>
 
-          <div className="flex items-center gap-1.5 flex-shrink-0">
-            <button
-              onClick={handleToggleFavorite}
-              className={`transition-colors p-1.5 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0 ${isFav ? 'text-red-400' : 'text-neutral-400 hover:text-red-400'}`}
-              title={isFav ? 'Remove from favorites' : 'Add to favorites'}
-            >
-              <Heart size={16} className={isFav ? 'fill-red-400' : ''} />
-            </button>
-            <button
-              onClick={toggleMute}
-              className="text-neutral-400 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0"
-              title={volume === 0 ? 'Unmute' : 'Mute'}
-            >
-              {volume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
-            </button>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              value={volume}
-              onChange={handleVolumeChange}
-              className="w-20 h-1 bg-neutral-700 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-md"
-            />
-            <button
-              onClick={handleExpand}
-              className="text-neutral-400 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-neutral-800 focus:outline-none focus:ring-0"
-              title="Full player"
-            >
-              <Maximize2 size={16} />
-            </button>
-          </div>
+           {/* KANAN - Volume + Actions */}
+           <div className="flex items-center gap-2">
+             <button
+               onClick={handleToggleFavorite}
+               className={`transition-colors p-1.5 rounded-lg hover:bg-neutral-700 focus:outline-none focus:ring-0 flex-shrink-0 ${isFav ? 'text-red-400' : 'text-neutral-400 hover:text-red-400'}`}
+               title={isFav ? 'Remove from favorites' : 'Add to favorites'}
+             >
+               <Heart size={14} className={isFav ? 'fill-red-400' : ''} />
+             </button>
+             <button
+               onClick={toggleMute}
+               className="text-neutral-400 hover:text-white transition-colors p-1.5 rounded-lg hover:bg-neutral-700 focus:outline-none focus:ring-0 flex-shrink-0"
+               title={volume === 0 ? 'Unmute' : 'Mute'}
+             >
+               {volume === 0 ? <VolumeX size={14} /> : <Volume2 size={14} />}
+             </button>
+<div className="flex-1 min-w-0 flex items-center" style={{ minWidth: 80, maxWidth: 160 }}>
+                 <div className="relative w-full" style={{ height: 24 }}>
+                   <div className="absolute inset-0 flex items-center">
+                     <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--color-secondary)' }}>
+                       <div className="h-full bg-sky-500 rounded-full transition-all" style={{ width: `${volume * 100}%` }} />
+                     </div>
+                   </div>
+                   <input
+                     type="range"
+                     min="0"
+                     max="100"
+                     value={Math.round(volume * 100)}
+                     onChange={(e) => {
+                       const newVol = parseInt(e.target.value) / 100;
+                       setVolume(newVol);
+                       if (audioRef?.current) {
+                         audioRef.current.volume = newVol;
+                       }
+                       try {
+                         localStorage.setItem('audio.volume', String(Math.round(newVol * 100)));
+                       } catch {}
+                     }}
+                     className="absolute inset-0 w-full h-full cursor-pointer opacity-0"
+                     title={`Volume: ${Math.round(volume * 100)}%`}
+                   />
+                 </div>
+               </div>
+<button
+  onClick={handleExpand}
+  className="p-1.5 rounded-lg hover:bg-neutral-700 focus:outline-none focus:ring-0 flex-shrink-0 transition-colors"
+  style={{ color: 'var(--color-primary)' }}
+  title="Full player"
+>
+  <Maximize2 size={14} />
+</button>
+           </div>
         </div>
       </div>
     </>

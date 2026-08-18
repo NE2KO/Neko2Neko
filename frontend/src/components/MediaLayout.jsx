@@ -180,7 +180,7 @@ export default function MediaLayout({
        </button>
     ) : null;
 
-    const rootClass = "w-full h-full flex flex-col bg-neutral-950 text-slate-100 select-none relative";
+    const rootClass = "w-full h-full flex flex-col bg-black text-slate-100 select-none relative";
 
     // ---- Embedded layout: header + media only ----
     // The bottom cluster (controls + carousel + send bar) is rendered once by the
