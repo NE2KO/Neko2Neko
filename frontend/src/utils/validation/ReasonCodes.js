@@ -9,6 +9,8 @@ export const ValidationReasonCode = {
   TICK_DELTA_INVALID: 'V005',
   DRIFT_INVALID: 'V006',
   PERFORMANCE_API_EMPTY: 'V007',
+  TRIANGLE_DATA_MISSING: 'V008',
+  TRIANGLE_INCONSISTENT: 'V009',
 };
 
 export const AnalyzerReasonCode = {
@@ -43,6 +45,7 @@ export const DecisionReasonCode = {
   RECOVERY_GRACE: 'C011',
   HOLD_TO_OBSERVE: 'C012',
   PAIRWISE_OFFSET: 'C013',
+  NOOP_SAFETY: 'C014',
 };
 
 export const ExecutionReasonCode = {

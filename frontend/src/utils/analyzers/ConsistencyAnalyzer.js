@@ -2,22 +2,26 @@
 // Pure function: context -> evidence. No side effects. No action knowledge.
 
 import { AnalyzerReasonCode } from '../validation/ReasonCodes.js';
+import { DEFAULT_TRIANGLE_TOLERANCE_MS, computeTriangleErrorMs } from '../TriangleCalculator.js';
+
+const TRIANGLE_TOLERANCE_MS = DEFAULT_TRIANGLE_TOLERANCE_MS;
 
 export function evaluateConsistencyAnalyzer(ctx) {
   const { sensor, memorySnapshot } = ctx;
   const d = sensor?.data || {};
 
-  const audioMvMs = Number(d.audioMvMs || 0);
-  const audioBgMs = Number(d.audioBgMs ?? d.audioBgMs);
-  const mvBgMs = Number(d.mvBgMs ?? d.mvBgMs);
+  const audioMvMs = d.audioMvMs !== null && Number.isFinite(Number(d.audioMvMs)) ? Number(d.audioMvMs) : null;
+  const audioBgMs = d.audioBgMs !== null && Number.isFinite(Number(d.audioBgMs)) ? Number(d.audioBgMs) : null;
+  const mvBgMs = d.mvBgMs !== null && Number.isFinite(Number(d.mvBgMs)) ? Number(d.mvBgMs) : null;
 
-  const hasTriangle = Number.isFinite(audioMvMs) && Number.isFinite(audioBgMs) && Number.isFinite(mvBgMs);
+  const hasTriangle = audioMvMs !== null && audioBgMs !== null && mvBgMs !== null;
 
   const evidence = {
     audioMvMs,
     audioBgMs,
     mvBgMs,
     hasTriangle,
+    triangleValid: hasTriangle,
   };
 
   let quality = 1;
@@ -42,20 +46,17 @@ export function evaluateConsistencyAnalyzer(ctx) {
     };
   }
 
+  const triangleErrorMs = computeTriangleErrorMs(audioMvMs, audioBgMs, mvBgMs);
+  const triangleConsistent = triangleErrorMs !== null && triangleErrorMs <= TRIANGLE_TOLERANCE_MS;
+
   const absAudioMv = Math.abs(audioMvMs);
   const absAudioBg = Math.abs(audioBgMs);
   const absMvBg = Math.abs(mvBgMs);
 
-  // Consistency: three relationships should be mutually consistent.
-  // Audio↔MV + Audio↔BG ≈ MV↔BG (within tolerance).
-  const expectedMvBg = audioBgMs - audioMvMs;
-  const consistencyError = Math.abs(mvBgMs - expectedMvBg);
-  const consistencyTolerance = 40; // ms
-
-  if (consistencyError > consistencyTolerance) {
+  if (!triangleConsistent) {
     reasonCode = AnalyzerReasonCode.TRIANGLE_INCONSISTENT;
-    reason = `triangle inconsistent (expected MV↔BG ${expectedMvBg.toFixed(1)}ms, got ${mvBgMs.toFixed(1)}ms, error ${consistencyError.toFixed(1)}ms)`;
-    confidence = Math.max(0.2, 1 - consistencyError / 200);
+    reason = `triangle inconsistent (error ${triangleErrorMs?.toFixed(1)}ms > tolerance ${TRIANGLE_TOLERANCE_MS}ms)`;
+    confidence = Math.max(0.2, 1 - triangleErrorMs / 200);
     quality = 0.3;
   } else if (absAudioMv > 100 || absAudioBg > 100 || absMvBg > 100) {
     reasonCode = AnalyzerReasonCode.TRIANGLE_HIGH_DRIFT;
@@ -68,13 +69,12 @@ export function evaluateConsistencyAnalyzer(ctx) {
     quality = 0.9;
   }
 
-  // Identify outlier node
   const absDrifts = [
     { node: 'mv', drift: absAudioMv, raw: audioMvMs },
     { node: 'bg', drift: absAudioBg, raw: audioBgMs },
   ];
   absDrifts.sort((a, b) => b.drift - a.drift);
-  const outlier = absDrifts[0].drift > consistencyTolerance ? absDrifts[0].node : null;
+  const outlier = absDrifts[0].drift > 50 ? absDrifts[0].node : null;
 
   return {
     analyzerId: 'ConsistencyAnalyzer',
@@ -82,8 +82,8 @@ export function evaluateConsistencyAnalyzer(ctx) {
     timestamp: sensor?.ts || performance.now(),
     evidence: {
       ...evidence,
-      consistencyError,
-      consistencyTolerance,
+      triangleErrorMs,
+      triangleConsistent,
       outlier,
       maxDrift: absDrifts[0].drift,
       maxDriftNode: absDrifts[0].node,

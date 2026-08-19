@@ -2,11 +2,13 @@
 // Stateless. Never mutates Memory. Produces measurementConfidence + reason codes.
 
 import { ValidationReasonCode } from '../validation/ReasonCodes.js';
+import { DEFAULT_TRIANGLE_TOLERANCE_MS } from '../TriangleCalculator.js';
 
 const RVFC_UNSUPPORTED_THRESHOLD_MS = 30000;
 const PERFORMANCE_EMPTY_THRESHOLD_MS = 10000;
 const TICK_DELTA_MAX_MS = 5000;
 const DRIFT_MAX_MS = 5000;
+const TRIANGLE_TOLERANCE_MS = DEFAULT_TRIANGLE_TOLERANCE_MS;
 
 export function validateSensorSnapshot(snapshot) {
   if (!snapshot || !snapshot.data) {
@@ -68,6 +70,20 @@ export function validateSensorSnapshot(snapshot) {
     result.measurementConfidence = Math.min(result.measurementConfidence, 0.7);
     result.reasonCodes.push(ValidationReasonCode.PERFORMANCE_API_EMPTY);
     result.reasons.push('Performance API unavailable');
+  }
+
+  // Triangle validation
+  const triangleValid = Boolean(d.triangleValid);
+  const triangleConsistent = Boolean(d.triangleConsistent);
+  if (!triangleValid) {
+    result.measurementConfidence = Math.min(result.measurementConfidence, 0.5);
+    result.reasonCodes.push(ValidationReasonCode.TRIANGLE_DATA_MISSING);
+    result.reasons.push('Triangle data missing');
+  } else if (!triangleConsistent) {
+    result.measurementConfidence = Math.min(result.measurementConfidence, 0.3);
+    result.valid = false;
+    result.reasonCodes.push(ValidationReasonCode.TRIANGLE_INCONSISTENT);
+    result.reasons.push(`Triangle inconsistent: error=${d.triangleErrorMs ?? 'unknown'}ms`);
   }
 
   return result;

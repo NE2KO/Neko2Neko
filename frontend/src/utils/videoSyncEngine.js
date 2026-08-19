@@ -4,6 +4,7 @@ import { decide, ExecutionQueue, getConstraints, createActionRequest } from './d
 import { evaluateDriftAnalyzer, evaluatePipelineAnalyzer, evaluateSchedulerAnalyzer, evaluateDecoderAnalyzer, evaluateConsistencyAnalyzer } from './analyzers';
 import { buildSensorSnapshot, validateAndAttach, logSensorSnapshot } from './sensor';
 import { circularDiff, isValidTelemetrySample } from './syncHelpers';
+import { captureRawState, captureProcessedState, syncCapture } from './syncCapture/index.js';
 
 function createVideoSyncEngine({
   getCurrentTime,
@@ -936,17 +937,58 @@ log('scheduler_stall', looping ? 'bg' : 'mv', {
                   log('execution_queue', looping ? 'bg' : 'mv', { action: executed.request.type, reasonCode: executed.reasonCode });
                 }
               }
-              } // end HOLD_TO_OBSERVE gate
+            } // end HOLD_TO_OBSERVE gate
 
-              // Update per-track profile from live engine state (cheap
-              // in-memory update; actual persistence happens on track end).
-              if (syncCore && profileStoreRef) {
-                const mediaId = profileStoreRef.getCurrentTrackId();
-                if (mediaId) {
-                  const profile = profileStoreRef.getOrCreate(mediaId);
-                  syncCore.updateProfileFromLive(engineName, profile);
-                }
+            // Update per-track profile from live engine state (cheap
+            // in-memory update; actual persistence happens on track end).
+            if (syncCore && profileStoreRef) {
+              const mediaId = profileStoreRef.getCurrentTrackId();
+              if (mediaId) {
+                const profile = profileStoreRef.getOrCreate(mediaId);
+                syncCore.updateProfileFromLive(engineName, profile);
               }
+            }
+
+            if (window.__SYNC_CAPTURE__) {
+              const rawState = {
+                audioMvMs: triangle?.audioMvMs,
+                audioBgMs: triangle?.audioBgMs,
+                mvBgMs: triangle?.mvBgMs,
+                triangleValid: triangle?.triangleValid,
+                triangleConsistent: triangle?.triangleConsistent,
+                triangleErrorMs: triangle?.triangleErrorMs,
+                biasMs: driftMemory?.biasMs || 0,
+                frameAge: syncCore?.[engineName]?.frameAge,
+                tickDelta,
+                schedulerLateness,
+                isPostSeek: lastHardSeekTime > 0 && Date.now() - lastHardSeekTime < 1500,
+                timeSinceSeekMs: lastHardSeekTime ? Date.now() - lastHardSeekTime : 0,
+                seekPending: state.seekPending,
+                mode: state.mode,
+                seekingMV: getSeeking(),
+                seekingBG: false,
+                decision: decision?.actionRequest?.type || 'HOLD',
+                decisionReason: decision?.reasonCode,
+                audioMs: getAudioCurrentTime(),
+                mvMs: getMvCurrentTime(),
+                bgMs: getBgCurrentTime(),
+                videoOffset: getVideoOffset(),
+              };
+              const processedState = {
+                rawDriftMs: rawDriftMs,
+                drift: Math.abs(rawDriftMs),
+                correctedDriftMs: correctedDrift,
+                biasMs: driftMemory?.biasMs || 0,
+                emaDriftMs: driftMemory?.driftEMA?.mean,
+                sigmaMs: driftMemory?.driftEMA?.stdDev,
+                confidence: confidenceStats?.compositeConfidence,
+                classification: triangle && !triangle.triangleConsistent ? 'SPIKE' : 'NORMAL',
+                isSpike: !triangle?.triangleConsistent,
+                decision,
+                mode: state.mode,
+              };
+              window.__SYNC_CAPTURE__.push({ raw: rawState, processed: processedState, t: now });
+            }
           }
       },
 
