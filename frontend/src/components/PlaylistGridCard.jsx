@@ -115,11 +115,11 @@ const PlaylistGridCard = memo(({ item, onSelect, onDelete, onToggleFavorite, typ
         } ${isDeleting ? 'opacity-0 scale-90' : ''} ${isLeaving ? 'opacity-0' : ''} ${isEntering ? 'playlist-card-in' : ''} ${selectMode ? (isSelected ? 'opacity-100 scale-100' : 'opacity-40 scale-90') : ''}`}
         style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
       >
-        <div className="w-full flex-1 min-h-0 bg-black/40 flex items-center justify-center overflow-hidden relative">
+        <div className="w-full flex-1 min-h-0 flex items-center justify-center overflow-hidden relative" style={{ background: thumbnailUrl ? undefined : 'linear-gradient(135deg,#989FF8,#76B2E7)' }}>
           {thumbnailUrl ? (
             <ThumbnailImage src={thumbnailUrl} alt={title} />
           ) : (
-            <div className="text-neutral-600 flex flex-col items-center justify-center">
+            <div className="text-white flex flex-col items-center justify-center" style={{ opacity: 0.85 }}>
               <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
             </div>
           )}
@@ -143,7 +143,7 @@ const PlaylistGridCard = memo(({ item, onSelect, onDelete, onToggleFavorite, typ
 
           {/* Now-playing badge */}
           {isPlaying && (
-            <div className="absolute bottom-1 left-1 flex items-end gap-[2px] h-3.5 px-1 py-0.5 rounded bg-green-500/90 z-10" title="Now playing">
+            <div className="absolute bottom-1 left-1 flex items-end gap-[2px] h-3.5 px-1 py-0.5 rounded z-10" title="Now playing" style={{ background: 'linear-gradient(90deg,#0EA5E9,#8892E6)' }}>
               <span className="grid-card-eq" />
               <span className="grid-card-eq" style={{ animationDelay: '0.15s' }} />
               <span className="grid-card-eq" style={{ animationDelay: '0.3s' }} />

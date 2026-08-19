@@ -92,7 +92,7 @@ export default function MusicLayout(props) {
               fontSize: 14,
               outline: 'none',
             }}
-            onFocus={e => { e.currentTarget.style.borderColor = 'rgba(29,185,84,0.7)'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(29,185,84,0.15)'; }}
+            onFocus={e => { e.currentTarget.style.borderColor = '#8892E6'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(136,146,230,0.15)'; }}
             onBlur={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.boxShadow = 'none'; }}
           />
         </div>

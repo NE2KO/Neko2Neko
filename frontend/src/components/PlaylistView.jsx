@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { VariableSizeList as List, FixedSizeList } from 'react-window';
 import AutoSizer from 'react-virtualized-auto-sizer';
-import { Music, Trash2, Plus, Upload, X, Check, ChevronDown, Shuffle, Heart, Image as ImageIcon, ListMusic, Play, Search, SlidersHorizontal, Grid, ArrowLeft, ChevronLeft, ChevronRight, Menu } from 'lucide-react';
+import { Music, Trash2, Plus, Upload, X, Check, ChevronDown, Shuffle, Heart, Image as ImageIcon, ListMusic, Play, Pause, Search, SlidersHorizontal, Grid, ArrowLeft, ChevronLeft, ChevronRight, Menu } from 'lucide-react';
 import usePlaylistStore from '../store/playlistStore';
 import usePlaybackStore from '../store/playbackStore';
 import { loadPlaylists, loadPlaylist, getPlaylistQueue, refreshPlaylists, importXSPFPlaylist, createEmptyPlaylist, removeTrackFromPlaylist, bulkRemoveTracksFromPlaylist, loadFavorites, uploadPlaylistCover, playlistImageUrl } from '../utils/playlistApi';
@@ -131,9 +131,7 @@ const ctrlBtn = {
 };
 
 function PlaylistHeroHeader({
-  playlist, trackCount, totalDurationSeconds, onPlay, onShuffle, onCoverChange, isLoved,
-  selectionMode, selectedCount, onEnterSelectMode, onSelectAll, onDeleteSelected, onCancelSelect,
-  onFilter, filterType, onToggleView, displayMode, onAdd,
+  playlist, trackCount, totalDurationSeconds, onCoverChange, isLoved,
 }) {
   const rawCover = isLoved ? null : playlistImageUrl(playlist);
   const cover = rawCover
@@ -141,24 +139,24 @@ function PlaylistHeroHeader({
     : null;
   const durationLabel = formatTotalDuration(totalDurationSeconds);
   return (
-    <div style={{ position: 'relative', padding: '24px 24px 16px', background: 'transparent' }}>
+    <div style={{ position: 'relative' }}>
       <div style={{ display: 'flex', gap: 24, alignItems: 'flex-end', flexWrap: 'wrap' }}>
         <div style={{
-          position: 'relative', width: 200, height: 200, flexShrink: 0, borderRadius: 8,
-          overflow: 'hidden', background: '#262626', boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+          position: 'relative', width: 192, height: 192, flexShrink: 0, borderRadius: 8,
+          overflow: 'hidden', background: 'linear-gradient(135deg,#989FF8,#76B2E7)', boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
         }}>
           {cover ? (
-            <img src={cover} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', objectPosition: 'center' }} />
+            <img src={cover} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center' }} />
           ) : isLoved ? (
             <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg,#4f46e5,#db2777)' }}>
-              <Heart size={72} color="#fff" fill="#fff" />
+              <Heart size={70} color="#fff" fill="#fff" />
             </div>
           ) : (
             <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Music size={64} color="#737373" />
+              <Music size={62} color="rgba(255,255,255,0.85)" />
             </div>
           )}
-          {!isLoved && !selectionMode && (
+          {!isLoved && (
             <button
               onClick={onCoverChange}
               title="Ubah cover"
@@ -186,69 +184,91 @@ function PlaylistHeroHeader({
           </div>
         </div>
       </div>
-      {/* Action buttons */}
-      {!selectionMode && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 18, flexWrap: 'wrap' }}>
-          <button
-            onClick={onPlay}
-            title="Putar"
-            style={{
-              width: 56, height: 56, borderRadius: '50%', background: '#1db954', border: 'none',
-              color: '#000', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              boxShadow: '0 8px 16px rgba(29,185,84,0.4)',
-            }}
-          >
-            <Play size={26} fill="#000" style={{ marginLeft: 3 }} />
-          </button>
-          <button
-            onClick={onShuffle}
-            title="Acak"
-            style={{
-              width: 48, height: 48, borderRadius: '50%', background: 'transparent',
-              border: '1px solid rgba(255,255,255,0.3)', color: '#fff', cursor: 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}
-          >
-            <Shuffle size={20} />
-          </button>
-          <div style={{ flex: 1 }} />
-          <button
-            onClick={onFilter}
-            title="Filter"
-            style={{
-              ...ctrlBtn,
-              ...(filterType !== 'all' ? { borderColor: 'rgba(56,189,248,0.5)', color: '#38bdf8' } : {}),
-            }}
-          >
-            <SlidersHorizontal size={16} />
-            <span className="hidden md:inline">Filter</span>
-          </button>
-          <button
-            onClick={onToggleView}
-            title="Ubah tampilan"
-            style={ctrlBtn}
-          >
-            {displayMode === 'grid' ? <Grid size={16} /> : <ListMusic size={16} />}
-            <span className="hidden md:inline">{displayMode === 'grid' ? 'Grid' : 'List'}</span>
-          </button>
-          <button
-            onClick={onAdd}
-            title="Tambah musik"
-            style={{ ...ctrlBtn, background: '#1db954', borderColor: '#1db954', color: '#000' }}
-          >
-            <Plus size={16} />
-            <span className="hidden md:inline">Tambah</span>
-          </button>
-          <button
-            onClick={onEnterSelectMode}
-            title="Pilih untuk dihapus"
-            style={ctrlBtn}
-          >
-            <Check size={16} />
-            <span className="hidden md:inline">Pilih</span>
-          </button>
-        </div>
-      )}
+      {/* Action buttons moved to PlaylistToolbar (section 2) */}
+    </div>
+  );
+}
+
+function PlaylistToolbar({
+  playlist, onPlay, onShuffle, onFilter, filterType, onToggleView, displayMode, onAdd, onEnterSelectMode,
+}) {
+  const playbackIsPlaying = usePlaybackStore(s => s.isPlaying);
+  const playbackShuffle = usePlaybackStore(s => s.shuffle);
+  const playbackPlaylistId = usePlaybackStore(s => s.playlistId);
+  const isThisPlaylist = !!playlist && String(playbackPlaylistId) === String(playlist.id || playlist._id);
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+      <button
+        onClick={onPlay}
+        title={isThisPlaylist && playbackIsPlaying ? 'Jeda' : 'Putar'}
+        style={{
+          width: 56, height: 56, borderRadius: '50%', background: 'linear-gradient(135deg,#0EA5E9,#8892E6)', border: 'none',
+          color: '#000', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          boxShadow: '0 8px 16px rgba(14,165,233,0.4)',
+        }}
+      >
+        {isThisPlaylist && playbackIsPlaying
+          ? <Pause size={24} fill="#000" />
+          : <Play size={26} fill="#000" style={{ marginLeft: 3 }} />}
+      </button>
+      <button
+        onClick={onShuffle}
+        title={playbackShuffle ? 'Matikan Acak' : 'Acak'}
+        style={{
+          position: 'relative',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 3,
+          width: 44, height: 44, borderRadius: 8,
+          background: 'transparent',
+          border: 'none',
+          color: playbackShuffle ? '#8892E6' : '#fff', cursor: 'pointer',
+        }}
+      >
+        <Shuffle size={20} />
+        <span style={{
+          width: 5, height: 5, borderRadius: '50%',
+          background: playbackShuffle ? '#8892E6' : 'transparent',
+        }} />
+      </button>
+      <div style={{ flex: 1 }} />
+      <button
+        onClick={onFilter}
+        title="Filter"
+        style={{
+          ...ctrlBtn,
+          ...(filterType !== 'all' ? { borderColor: 'rgba(56,189,248,0.5)', color: '#38bdf8' } : {}),
+        }}
+      >
+        <SlidersHorizontal size={16} />
+        <span className="hidden md:inline">Filter</span>
+      </button>
+      <button
+        onClick={onToggleView}
+        title="Ubah tampilan"
+        style={ctrlBtn}
+      >
+        {displayMode === 'grid' ? <Grid size={16} /> : <ListMusic size={16} />}
+        <span className="hidden md:inline">{displayMode === 'grid' ? 'Grid' : 'List'}</span>
+      </button>
+      <button
+        onClick={onAdd}
+        title="Tambah musik"
+        style={{ ...ctrlBtn, background: 'linear-gradient(135deg,#0EA5E9,#8892E6)', borderColor: 'transparent', color: '#000' }}
+      >
+        <Plus size={16} />
+        <span className="hidden md:inline">Tambah</span>
+      </button>
+      <button
+        onClick={onEnterSelectMode}
+        title="Pilih untuk dihapus"
+        style={ctrlBtn}
+      >
+        <Check size={16} />
+        <span className="hidden md:inline">Pilih</span>
+      </button>
     </div>
   );
 }
@@ -260,7 +280,9 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
   const { showToast } = useToast();
   const [selectedPlaylist, setSelectedPlaylist] = useState(() => {
     const savedId = sessionStorage.getItem('selectedPlaylistId');
-    return savedId ? { id: savedId, title: '' } : null;
+    if (!savedId) return null;
+    const hasImage = sessionStorage.getItem('selectedPlaylistHasImage') === '1';
+    return { id: savedId, title: '', has_image: hasImage };
   });
   const [playlistTracks, setPlaylistTracks] = useState([]);
   const [loadingTracks, setLoadingTracks] = useState(false);
@@ -586,8 +608,12 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
     setShowLoved(false);
     cachedPlaylistRef.current = playlist;
     sessionStorage.setItem('selectedPlaylistId', playlist.id);
-    setSelectedPlaylist(playlist);
-    setCurrentPlaylist(playlist);
+    const hasImage = playlist.has_image === true || !!playlist.image;
+    sessionStorage.setItem('selectedPlaylistHasImage', hasImage ? '1' : '0');
+    // Keep has_image through so the hero can resolve the cover immediately via
+    // the GET image endpoint (the list payload only carries the boolean).
+    setSelectedPlaylist({ ...playlist, has_image: hasImage });
+    setCurrentPlaylist({ ...playlist, has_image: hasImage });
     setViewMode('detail');
     const url = `#/playlists/${playlist.id}`;
     if (window.location.hash !== url) {
@@ -606,6 +632,10 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
         const tracks = data.tracks || [];
         cachedTracksRef.current = tracks;
         cachedPlaylistIdRef.current = playlist.id;
+        // Apply full playlist payload (incl. cover image) so the hero shows the
+        // set cover, not the default. The list item only carries has_image.
+        setSelectedPlaylist(prev => prev ? { ...prev, image: data.image, title: data.title ?? prev.title } : prev);
+        setCurrentPlaylist(prev => prev ? { ...prev, image: data.image, title: data.title ?? prev.title } : prev);
         setPlaylistTracks(tracks);
         setCurrentPlaylistTracks(tracks);
         resolveMissingDurations(tracks);
@@ -622,6 +652,10 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
       const tracks = data.tracks || [];
       cachedTracksRef.current = tracks;
       cachedPlaylistIdRef.current = playlist.id;
+      // Apply full playlist payload (incl. cover image) so the hero shows the
+      // set cover, not the default. The list item only carries has_image.
+      setSelectedPlaylist(prev => prev ? { ...prev, image: data.image, title: data.title ?? prev.title } : prev);
+      setCurrentPlaylist(prev => prev ? { ...prev, image: data.image, title: data.title ?? prev.title } : prev);
       setPlaylistTracks(tracks);
       setCurrentPlaylistTracks(tracks);
       resolveMissingDurations(tracks);
@@ -634,6 +668,7 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
 
   const handleBackToList = useCallback(() => {
     sessionStorage.removeItem('selectedPlaylistId');
+    sessionStorage.removeItem('selectedPlaylistHasImage');
     cachedPlaylistRef.current = null;
     setSelectedPlaylist(null);
     setPlaylistTracks([]);
@@ -1024,6 +1059,14 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
   const handlePlay = useCallback(() => {
     if (playAllGuardRef.current) return;
     if (loadingTracks || sortedTracks.length === 0) return;
+    const store = usePlaybackStore.getState();
+    const active = !!selectedPlaylist && String(store.playlistId) === String(selectedPlaylist.id || selectedPlaylist._id);
+    if (active) {
+      // Same playlist already loaded -> toggle play/pause (follows player state)
+      if (store.isPlaying) store.pause();
+      else store.play();
+      return;
+    }
     playAllGuardRef.current = true;
     setTimeout(() => { playAllGuardRef.current = false; }, 1000);
 
@@ -1034,10 +1077,9 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
 
   const handlePlayShuffle = useCallback(() => {
     if (lovedLoading || sortedTracks.length === 0) return;
-    const queue = shuffleArray(fullQueueMemo.filter(t => t.exists));
-    if (queue.length === 0) return;
-    onPlayPlaylist({ queue, playlist: selectedPlaylist });
-  }, [lovedLoading, sortedTracks, fullQueueMemo, selectedPlaylist, onPlayPlaylist]);
+    const store = usePlaybackStore.getState();
+    store.setShuffle(!store.shuffle);
+  }, [lovedLoading, sortedTracks]);
 
   const handlePlayTrack = useCallback((track, index) => {
     if (playTrackGuardRef.current) return;
@@ -1469,9 +1511,8 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
            favoritesCount={favorites.length}
            selectedPlaylist={selectedPlaylist}
            showLoved={showLoved}
-           handleSelectPlaylist={handleSelectPlaylist}
-           selectLoved={selectLoved}
-            onOpenLeaderboard={() => { setRightSidebarMode('leaderboard'); setRightSidebarOpen(true); }}
+handleSelectPlaylist={handleSelectPlaylist}
+            selectLoved={selectLoved}
           />
         </div>
          <div style={{ flex: 1, background: '#121212', borderRadius: 12, overflow: 'hidden', position: 'relative', minWidth: 0, display: 'flex', flexDirection: 'column' }}>
@@ -1545,6 +1586,7 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
               handleGridItemsRendered={handleGridItemsRendered}
               handleTrackGridSelect={handleTrackGridSelect}
               PlaylistHeroHeader={PlaylistHeroHeader}
+              PlaylistToolbar={PlaylistToolbar}
             />
         </div>
         <div style={{ flex: '0 0 360px', background: '#121212', borderRadius: 12, overflow: 'hidden', position: 'relative' }}>

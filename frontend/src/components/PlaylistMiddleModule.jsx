@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Music, Plus } from 'lucide-react';
 import { VariableSizeList as List } from 'react-window';
 import AutoSizer from 'react-virtualized-auto-sizer';
@@ -93,6 +93,7 @@ export default function PlaylistMiddleModule({
   handleGridItemsRendered,
   handleTrackGridSelect,
   PlaylistHeroHeader,
+  PlaylistToolbar,
 }) {
   const { showToast } = useToast();
 
@@ -166,105 +167,117 @@ export default function PlaylistMiddleModule({
         </div>
       )}
 
-       {/* Detail View */}
-       {selectedPlaylist && (
-           <div ref={detailScrollRef} data-debug-id="5.1" data-debug-name="PlaylistView" data-debug-type="panel" style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-           <PlaylistDetailHeader
-            selectionMode={deleteMode}
-            selectedCount={selectedForDelete?.size || 0}
-            trackCount={trackCount}
-            onSelectAll={() => {
-              setSelectAllForDelete?.(true);
-              setSelectedForDelete?.(new Set());
-            }}
-            onDeleteSelected={handleBulkDelete}
-            onCancelSelect={handleCancelDeleteMode}
-          />
-          <PlaylistHeroHeader
-            playlist={selectedPlaylist}
-            isLoved={isLoved}
-            trackCount={trackCount}
-            totalDurationSeconds={totalDurationSeconds}
-            onPlay={handlePlay}
-            onShuffle={handlePlayShuffle}
-            onCoverChange={() => coverInputRef?.current?.click()}
-            selectionMode={deleteMode}
-            selectedCount={selectedForDelete?.size || 0}
-            onEnterSelectMode={() => setDeleteMode?.(true)}
-            onSelectAll={() => {
-              setSelectAllForDelete?.(true);
-              setSelectedForDelete?.(new Set());
-            }}
-            onDeleteSelected={handleBulkDelete}
-            onCancelSelect={handleCancelDeleteMode}
-            onFilter={handleOpenTrackFilters}
-            filterType={trackFilterType}
-            onToggleView={() => setDisplayMode?.(d => d === 'grid' ? 'list' : 'grid')}
-            displayMode={displayMode}
-            onAdd={() => setShowAddMusicPanel?.(true)}
-          />
-          <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', padding: 8 }}>
-            <div
-              key={`pv-content-${selectedPlaylist?.id}-${loadingTracks ? 'loading' : 'ready'}`}
-              className="animate-in fade-in duration-300"
-              style={{ flex: 1, minHeight: 0, padding: '0 0 8px', display: 'flex', flexDirection: 'column', background: 'transparent', overflow: 'hidden' }}
-            >
-              {loadingTracks ? (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1 }}>
-                  <div style={{ width: '32px', height: '32px', border: `2px solid ${COLORS.border.primary}`, borderTop: `2px solid ${COLORS.accent}`, borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+{/* Detail View */}
+{selectedPlaylist && (
+           <div ref={detailScrollRef} data-debug-id="5.1" data-debug-name="PlaylistView" data-debug-type="panel" style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative', background: '#121212' }}>
+            <div style={{ position: 'relative', zIndex: 2, width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
+             {/* Colour region: full width of the module, height ends at the title line */}
+             <div style={{ position: 'relative' }}>
+               <div style={{ position: 'relative', width: '100%', maxWidth: 1100, margin: '0 auto', padding: '16px 24px 0' }}>
+                 <PlaylistDetailHeader
+                  selectionMode={deleteMode}
+                  selectedCount={selectedForDelete?.size || 0}
+                  trackCount={trackCount}
+                  onSelectAll={() => {
+                    setSelectAllForDelete?.(true);
+                    setSelectedForDelete?.(new Set());
+                  }}
+                  onDeleteSelected={handleBulkDelete}
+                  onCancelSelect={handleCancelDeleteMode}
+                />
+                <PlaylistHeroHeader
+                  playlist={selectedPlaylist}
+                  isLoved={isLoved}
+                  trackCount={trackCount}
+                  totalDurationSeconds={totalDurationSeconds}
+                  onCoverChange={() => coverInputRef?.current?.click()}
+                  selectionMode={deleteMode}
+                />
+                <div style={{ position: 'relative', padding: '20px 0 0' }}>
+                 <PlaylistToolbar
+                   playlist={selectedPlaylist}
+                   onPlay={handlePlay}
+                   onShuffle={handlePlayShuffle}
+                   onFilter={handleOpenTrackFilters}
+                   filterType={trackFilterType}
+                   onToggleView={() => setDisplayMode?.(d => d === 'grid' ? 'list' : 'grid')}
+                   displayMode={displayMode}
+                   onAdd={() => setShowAddMusicPanel?.(true)}
+                   onEnterSelectMode={() => setDeleteMode?.(true)}
+                 />
                 </div>
-              ) : displayTracks?.length === 0 ? (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, color: COLORS.text.secondary }}>
-                  <Music size={48} style={{ marginBottom: '12px', opacity: 0.3 }} />
-                  <p style={{ margin: 0, fontSize: '14px' }}>No tracks in this playlist</p>
+                {/* Title + divider. The colour drop completes around this line. */}
+                <div style={{ position: 'relative', padding: '18px 0 12px' }}>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: '#fff', lineHeight: 1.2 }}>
+                    {isLoved ? 'Loved' : (selectedPlaylist?.title || '')}
+                  </div>
+                  <div style={{ marginTop: 10, height: 1, background: COLORS.border.primary }} />
                 </div>
-              ) : displayMode === 'list' ? (
-                <div data-debug-id="5.2.2" data-debug-name="TrackListView" data-debug-type="list" style={{ flex: 1, minHeight: 0 }}>
-                  <AutoSizer>
-                    {({ height, width }) => (
-                      <div style={{ height, width, display: 'flex', justifyContent: 'center' }}>
-                        <List
-                          key={`track-list-${displayMode}`}
-                          height={height}
-                          width={Math.min(width || 0, 1100)}
-                          itemCount={displayTracks.length}
-                          itemSize={listItemSize}
-                          overscanCount={5}
-                          itemData={{ tracks: displayTracks, deleteMode, selectedForDelete, deletingTrackIds, leavingTrackIds, shiftAbove, enteringTrackIds, itemSize: 64, playingFileId, isPlayingActive, onSelect: (track, index) => { if (deleteMode) { toggleSelectForDelete?.(track.id); return; } if (track.file_id || track.id) handlePlayTrack(track, index); }, onRemove: handleRemoveTrack }}
-                          onItemsRendered={handleListItemsRendered}
-                        >
-                          {PlaylistListRow}
-                        </List>
-                      </div>
-                    )}
-                  </AutoSizer>
-                </div>
-              ) : (
-                <div data-debug-id="5.2.3" data-debug-name="TrackGridView" data-debug-type="grid" style={{ flex: 1, minHeight: 0 }}>
-                  <AutoSizer>
-                    {({ height, width }) => {
-                      const effW = Math.min(width || 0, CONTAINER_MAX);
-                      const iw = Math.min(MAX_CARD, Math.max(MIN_CARD, Math.round(effW * 0.10)));
-                      const ch = iw + 44;
-                      const cols = Math.max(1, Math.min(MAX_COLUMNS, Math.floor((effW - GUTTER) / (iw + GUTTER))));
-                      return (
-                        <PlaylistTrackGridInner
-                          height={height}
-                          width={width}
-                          gridItems={gridItems}
-                          onSelect={handleTrackGridSelect}
-                          selectedForDelete={selectedForDelete}
-                          deletingTrackIds={deletingTrackIds}
-                          selectMode={deleteMode}
-                          playingFileId={playingFileId}
-                          isPlayingActive={isPlayingActive}
-                          onProbeVisibleItems={handleGridItemsRendered}
-                        />
-                      );
-                    }}
-                  </AutoSizer>
-                </div>
-              )}
+               </div>
+             </div>
+             <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', width: '100%', maxWidth: 1100, margin: '0 auto', padding: '0 24px 16px', position: 'relative', background: '#121212' }}>
+             <div
+               key={`pv-content-${selectedPlaylist?.id}-${loadingTracks ? 'loading' : 'ready'}`}
+               className="animate-in fade-in duration-300"
+               style={{ flex: 1, minHeight: 0, padding: '0 0 8px', display: 'flex', flexDirection: 'column', background: 'transparent', overflow: 'hidden' }}
+             >
+               {loadingTracks ? (
+                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1 }}>
+                   <div style={{ width: '32px', height: '32px', border: `2px solid ${COLORS.border.primary}`, borderTop: `2px solid ${COLORS.accent}`, borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                 </div>
+               ) : displayTracks?.length === 0 ? (
+                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, color: COLORS.text.secondary }}>
+                   <Music size={48} style={{ marginBottom: '12px', opacity: 0.3 }} />
+                   <p style={{ margin: 0, fontSize: '14px' }}>No tracks in this playlist</p>
+                 </div>
+               ) : displayMode === 'list' ? (
+                 <div data-debug-id="5.2.2" data-debug-name="TrackListView" data-debug-type="list" style={{ flex: 1, minHeight: 0 }}>
+                   <AutoSizer>
+                     {({ height, width }) => (
+                       <div style={{ height, width, display: 'flex', justifyContent: 'center' }}>
+                         <List
+                           key={`track-list-${displayMode}`}
+                           height={height}
+                           width={Math.min(width || 0, 1100)}
+                           itemCount={displayTracks.length}
+                           itemSize={listItemSize}
+                           overscanCount={5}
+                           itemData={{ tracks: displayTracks, deleteMode, selectedForDelete, deletingTrackIds, leavingTrackIds, shiftAbove, enteringTrackIds, itemSize: 64, playingFileId, isPlayingActive, onSelect: (track, index) => { if (deleteMode) { toggleSelectForDelete?.(track.id); return; } if (track.file_id || track.id) handlePlayTrack(track, index); }, onRemove: handleRemoveTrack }}
+                           onItemsRendered={handleListItemsRendered}
+                         >
+                           {PlaylistListRow}
+                         </List>
+                       </div>
+                     )}
+                   </AutoSizer>
+                 </div>
+               ) : (
+                 <div data-debug-id="5.2.3" data-debug-name="TrackGridView" data-debug-type="grid" style={{ flex: 1, minHeight: 0 }}>
+                   <AutoSizer>
+                     {({ height, width }) => {
+                       const effW = Math.min(width || 0, CONTAINER_MAX);
+                       const iw = Math.min(MAX_CARD, Math.max(MIN_CARD, Math.round(effW * 0.10)));
+                       const ch = iw + 44;
+                       const cols = Math.max(1, Math.min(MAX_COLUMNS, Math.floor((effW - GUTTER) / (iw + GUTTER))));
+                       return (
+                         <PlaylistTrackGridInner
+                           height={height}
+                           width={width}
+                           gridItems={gridItems}
+                           onSelect={handleTrackGridSelect}
+                           selectedForDelete={selectedForDelete}
+                           deletingTrackIds={deletingTrackIds}
+                           selectMode={deleteMode}
+                           playingFileId={playingFileId}
+                           isPlayingActive={isPlayingActive}
+                           onProbeVisibleItems={handleGridItemsRendered}
+                         />
+                       );
+                     }}
+                   </AutoSizer>
+                 </div>
+               )}
+</div>
             </div>
           </div>
         </div>

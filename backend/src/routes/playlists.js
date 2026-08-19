@@ -300,6 +300,33 @@ router.post('/:id/image', (req, res) => {
 });
 
 /**
+ * GET /api/playlists/:id/image - Serve a playlist's cover image (base64 data URL).
+ * Lets the frontend show the set cover immediately from just the playlist id,
+ * instead of flashing the default until the full playlist payload is loaded.
+ */
+router.get('/:id/image', (req, res) => {
+  const playlistId = parseInt(req.params.id, 10);
+  if (isNaN(playlistId)) {
+    return res.status(400).json({ error: 'Invalid playlist ID' });
+  }
+  const playlist = stmts.getPlaylistById.get(playlistId);
+  if (!playlist || !playlist.image) {
+    return res.status(404).json({ error: 'Cover not found' });
+  }
+  const image = String(playlist.image);
+  if (/^data:(image\/[\w.+-]+);base64,/.test(image)) {
+    const matches = image.match(/^data:(image\/[\w.+-]+);base64,(.+)$/);
+    res.setHeader('Content-Type', matches[1]);
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    return res.send(Buffer.from(matches[2], 'base64'));
+  }
+  if (/^(https?:|\/\/)/i.test(image)) {
+    return res.redirect(image);
+  }
+  res.status(404).json({ error: 'Cover not found' });
+});
+
+/**
  * GET /api/playlists/:id/play - Get playback-ready queue
  */
 router.get('/:id/play', (req, res) => {

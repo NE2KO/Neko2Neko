@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, forwardRef, useImperativeHandle, memo } from 'react';
 
-const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId, onReady, onWaiting, onPlaying, onStalled, onSeeked, onEnded, onError, onLoadedMetadata, onPause, coverUrl, onVideoFrame }, ref) {
+const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId, onReady, onWaiting, onPlaying, onStalled, onSeeked, onEnded, onError, onLoadedMetadata, onPause, coverUrl, onVideoFrame, objectFit = 'contain' }, ref) {
   const videoRef = useRef(null);
   const [status, setStatus] = useState('checking');
   const [progress, setProgress] = useState(0);
@@ -326,7 +326,7 @@ const CachedVideoPlayer = memo(forwardRef(function CachedVideoPlayer({ youtubeId
   <video
     key={`${reloadKey}:${youtubeId}`} /* remounts on track change so skip follows */
     ref={videoRef}
-    className="w-full h-full object-contain rounded-2xl"
+    className={`w-full h-full object-${objectFit} rounded-2xl`}
     src={`/api/video-cache/stream/${youtubeId}`}
     preload="auto"
     playsInline

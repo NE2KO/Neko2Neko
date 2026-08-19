@@ -114,6 +114,13 @@ export default function MusicPlayer({
     }
     const onResume = () => {
       reloadResumeAtRef.current = 0;
+      // canplay may have already fired (once) during the resume window and
+      // been skipped by the reloadResumeAtRef guard, so no retry would ever
+      // happen. Re-attempt playback now that the gate is open.
+      const audio = audioRef?.current;
+      if (audio && audio.src && usePlaybackStore.getState().isPlaying && audio.paused) {
+        audio.play().catch(() => {});
+      }
     };
     window.addEventListener('audio-reload-resume', onResume);
     return () => window.removeEventListener('audio-reload-resume', onResume);
@@ -884,7 +891,12 @@ useEffect(() => {
     const fileId = activeFile?.file_id || activeFile?.id;
     if (!fileId) return;
 
-    const isSameTrack = prevFileIdRef.current === fileId;
+    // Also treat as the same track when the shared audio element is already
+    // loaded with this file (mini→full handoff). prevFileIdRef starts null on a
+    // fresh mount, so without this the full player would reload from 0 even
+    // though the shared audio is already sitting at the current position.
+    const audioHasTrack = !!audio && !!audio.src && audio.src.includes(`/file/${fileId}`);
+    const isSameTrack = prevFileIdRef.current === fileId || audioHasTrack;
     prevFileIdRef.current = fileId;
 
     if (isSameTrack) {
@@ -938,9 +950,24 @@ useEffect(() => {
      // is no silence gap / play-pause stutter while skipping.
     let cancelled = false;
     const generation = ++loadGenerationRef.current;
+    // Persisted resume position (applied on loadedmetadata so it survives load()).
+    let resumePos = 0;
+    let resumePosApplied = false;
+    const onLoadedMetadata = () => {
+      if (cancelled || generation !== loadGenerationRef.current) return;
+      if (resumePos > 0 && !resumePosApplied) {
+        resumePosApplied = true;
+        try { audio.currentTime = resumePos; } catch { /* ignore */ }
+      }
+    };
+    audio.addEventListener('loadedmetadata', onLoadedMetadata);
     const timer = setTimeout(() => {
       if (generation !== loadGenerationRef.current) return; // superseded
-      audio.currentTime = reloadResumeAtRef.current > Date.now() && storedPosition > 0 ? storedPosition : 0;
+      // Capture the resume target now: setting currentTime BEFORE load() is
+      // pointless (load() resets it), so we stash it and apply it on
+      // loadedmetadata instead.
+      resumePos = storedPosition > 0 ? storedPosition : 0;
+      audio.currentTime = 0;
       audio.src = `/file/${fileId}`;
       audio.load();
 
@@ -1018,6 +1045,7 @@ useEffect(() => {
       audio.removeEventListener('pause', onPause);
       audio.removeEventListener('playing', onPlaying);
       audio.removeEventListener('error', onError);
+      audio.removeEventListener('loadedmetadata', onLoadedMetadata);
     };
   }, [activeFile?.id, activeFile?.file_id, audioReady, audioRef, play]);
 
@@ -2191,7 +2219,7 @@ const handleSeekSync = useCallback((seconds) => {
               className="p-2 rounded-full hover:bg-white/20 transition-colors"
               title="Mini player"
             >
-              <Minimize2 className="w-5 h-5 text-white" />
+              <Minimize2 className="w-5 h-5 text-[#8892E6]" />
             </button>
           )}
           </div>
@@ -2486,6 +2514,7 @@ const handleSeekSync = useCallback((seconds) => {
 
     const isSplit = playerMode === 'video-split' || playerMode === 'video-cover';
     const hasVideo = !!youtubeId;
+    // Video shows when in a video mode OR while hovering the cover as a preview.
     const isVideo = isVideoMode && hasVideo;
 
     const baseVidW = coverBox * 16 / 9;

@@ -1,8 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronLeft, ChevronRight, Music, Heart } from 'lucide-react';
-import { playlistImageUrl } from '../utils/playlistApi';
-
-const API_BASE = import.meta.env.VITE_API_URL || '';
+import { ChevronLeft, ChevronRight, Heart } from 'lucide-react';
 
 const COLORS = {
   bg: { primary: '#121212', secondary: '#171717' },
@@ -13,7 +10,7 @@ const COLORS = {
 
 const HOVER_BG = 'rgba(255,255,255,0.06)';
 
-function PlaylistSidebar({ playlists, favoritesCount, activeId, lovedActive, onSelect, onSelectLoved, onOpenLeaderboard }) {
+function PlaylistSidebar({ playlists, favoritesCount, activeId, lovedActive, onSelect, onSelectLoved }) {
   const [hoverId, setHoverId] = useState(null);
   return (
     <div style={{
@@ -22,6 +19,7 @@ function PlaylistSidebar({ playlists, favoritesCount, activeId, lovedActive, onS
       background: '#121212',
       display: 'flex',
       flexDirection: 'column',
+      height: '100%',
       minHeight: 0,
       borderRadius: 12,
       overflow: 'hidden',
@@ -39,10 +37,6 @@ function PlaylistSidebar({ playlists, favoritesCount, activeId, lovedActive, onS
       <div style={{ flex: 1, overflowY: 'auto', padding: '0 8px', minHeight: 0 }}>
         {playlists.map((p) => {
           const active = String(p.id) === String(activeId) && !lovedActive;
-          const rawCover = playlistImageUrl(p);
-          const cover = rawCover
-            ? (rawCover.startsWith('/') && !rawCover.startsWith('//') ? `${API_BASE}${rawCover}` : rawCover)
-            : null;
           return (
             <button
               key={p.id}
@@ -77,14 +71,6 @@ function PlaylistSidebar({ playlists, favoritesCount, activeId, lovedActive, onS
                   background: 'var(--color-primary)',
                 }} />
               )}
-              <div style={{
-                width: 40, height: 40, borderRadius: 6, overflow: 'hidden', flexShrink: 0,
-                background: '#262626', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}>
-                {cover
-                  ? <img src={cover} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                  : <Music size={18} color="#737373" />}
-              </div>
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{
                   fontSize: 13, fontWeight: 500,
@@ -98,28 +84,6 @@ function PlaylistSidebar({ playlists, favoritesCount, activeId, lovedActive, onS
         })}
       </div>
       <div style={{ padding: '8px', borderTop: `1px solid ${COLORS.border.primary}`, display: 'flex', flexDirection: 'column', gap: 6, background: '#121212' }}>
-        <button
-          onClick={onOpenLeaderboard}
-          onMouseEnter={() => setHoverId('leaderboard')}
-          onMouseLeave={() => setHoverId(null)}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px',
-            borderRadius: 8, border: 'none', cursor: 'pointer', textAlign: 'left',
-            background: hoverId === 'leaderboard' ? HOVER_BG : 'transparent', color: COLORS.text.secondary, outline: 'none',
-          }}
-        >
-          <div style={{
-            width: 40, height: 40, borderRadius: 6, flexShrink: 0,
-            background: '#262626',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <Music size={18} color="#737373" />
-          </div>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 500, color: COLORS.text.secondary }}>Leaderboard</div>
-            <div style={{ fontSize: 11, color: COLORS.text.tertiary }}>Your top tracks</div>
-          </div>
-        </button>
         <button
           onClick={onSelectLoved}
           onMouseEnter={() => setHoverId('loved')}
@@ -174,7 +138,6 @@ export default function PlaylistLeftModule({
   showLoved,
   handleSelectPlaylist,
   selectLoved,
-  onOpenLeaderboard,
 }) {
   return (
     <div
@@ -184,6 +147,7 @@ export default function PlaylistLeftModule({
         overflow: 'hidden',
         flexShrink: 0,
         position: 'relative',
+        height: '100%',
       }}
     >
       {showSidebar && (
@@ -235,7 +199,6 @@ export default function PlaylistLeftModule({
              lovedActive={showLoved}
              onSelect={handleSelectPlaylist}
              onSelectLoved={selectLoved}
-             onOpenLeaderboard={onOpenLeaderboard}
            />
         </>
       )}

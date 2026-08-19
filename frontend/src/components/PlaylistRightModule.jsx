@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { X, ChevronRight, ChevronLeft } from 'lucide-react';
 import NowPlayingPanel from './NowPlayingPanel';
 import LeaderboardPanel from './LeaderboardPanel';
@@ -80,15 +80,30 @@ export default function PlaylistRightModule({
         </button>
         
           <div style={{ padding: '24px 24px 0', flexShrink: 0 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <div style={{ display: 'flex', gap: 4, background: 'rgba(255,255,255,0.05)', borderRadius: 8, padding: 2 }}>
+            <div style={{ position: 'relative', display: 'flex', justifyContent: 'center', alignItems: 'center', marginBottom: 16 }}>
+              <div style={{ position: 'relative', display: 'flex', gap: 4, background: 'rgba(255,255,255,0.05)', borderRadius: 8, padding: 2 }}>
+                <div style={{
+                  position: 'absolute',
+                  top: 2,
+                  left: 2,
+                  width: 'calc(50% - 4px)',
+                  height: 'calc(100% - 4px)',
+                  borderRadius: 6,
+                  background: 'rgba(255,255,255,0.12)',
+                  transition: 'transform 250ms ease',
+                  transform: mode === 'nowplaying' ? 'translateX(0)' : 'translateX(100%)',
+                }} />
                 <button
                   onClick={() => onModeChange?.('nowplaying')}
                   style={{
+                    position: 'relative',
+                    zIndex: 1,
+                    flex: 1,
                     padding: '4px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
                     fontSize: 11, fontWeight: 600, textAlign: 'center',
-                    background: mode === 'nowplaying' ? 'rgba(255,255,255,0.12)' : 'transparent',
+                    background: 'transparent',
                     color: mode === 'nowplaying' ? '#fff' : COLORS.text.tertiary,
+                    transition: 'color 200ms ease',
                   }}
                 >
                   Now Playing
@@ -96,10 +111,14 @@ export default function PlaylistRightModule({
                 <button
                   onClick={() => onModeChange?.('leaderboard')}
                   style={{
+                    position: 'relative',
+                    zIndex: 1,
+                    flex: 1,
                     padding: '4px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
                     fontSize: 11, fontWeight: 600, textAlign: 'center',
-                    background: mode === 'leaderboard' ? 'rgba(255,255,255,0.12)' : 'transparent',
+                    background: 'transparent',
                     color: mode === 'leaderboard' ? '#fff' : COLORS.text.tertiary,
+                    transition: 'color 200ms ease',
                   }}
                 >
                   Leaderboard
@@ -107,7 +126,7 @@ export default function PlaylistRightModule({
               </div>
               <button
                 onClick={onClose}
-                style={{ width: 28, height: 28, borderRadius: 999, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.05)', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', width: 28, height: 28, borderRadius: 999, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.05)', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                 title="Close sidebar"
               >
                 <X size={14} />
@@ -119,27 +138,49 @@ export default function PlaylistRightModule({
   background: 'transparent',
   borderRadius: 0,
   overflow: 'hidden',
-  display: 'flex',
-  flexDirection: 'column',
+  position: 'relative',
   padding: 16,
 }}>
-  {mode === 'nowplaying' && hasActivePlayback && (
-    <NowPlayingPanel queue={queue} currentTrackIndex={currentTrackIndex} />
-  )}
-  {mode === 'nowplaying' && !hasActivePlayback && (
-    <div style={{ textAlign: 'center', padding: '40px 0', color: COLORS.text.tertiary, fontSize: 13, flexShrink: 0 }}>
-      No track is playing
+    {/* Slide 1 — Now Playing */}
+    <div style={{
+      position: 'absolute',
+      inset: 0,
+      display: 'flex',
+      flexDirection: 'column',
+      overflow: 'hidden',
+      background: '#121212',
+      padding: 16,
+      transition: 'transform 300ms ease',
+      transform: mode === 'nowplaying' ? 'translateX(0)' : 'translateX(-100%)',
+    }}>
+      {hasActivePlayback ? (
+        <NowPlayingPanel queue={queue} currentTrackIndex={currentTrackIndex} />
+      ) : (
+        <div style={{ textAlign: 'center', padding: '40px 0', color: COLORS.text.tertiary, fontSize: 13 }}>
+          No track is playing
+        </div>
+      )}
     </div>
-  )}
-  {mode === 'leaderboard' && (
-    <LeaderboardPanel
-      listeningLeaderboardMetric={listeningLeaderboardMetric}
-      onMetricChange={onMetricChange}
-      leaderboardDisplayMode={leaderboardDisplayMode}
-      onDisplayModeChange={onDisplayModeChange}
-      formatListeningDuration={formatListeningDuration}
-    />
-  )}
+    {/* Slide 2 — Leaderboard */}
+    <div style={{
+      position: 'absolute',
+      inset: 0,
+      display: 'flex',
+      flexDirection: 'column',
+      overflow: 'hidden',
+      background: '#121212',
+      padding: 16,
+      transition: 'transform 300ms ease',
+      transform: mode === 'leaderboard' ? 'translateX(0)' : 'translateX(100%)',
+    }}>
+      <LeaderboardPanel
+        listeningLeaderboardMetric={listeningLeaderboardMetric}
+        onMetricChange={onMetricChange}
+        leaderboardDisplayMode={leaderboardDisplayMode}
+        onDisplayModeChange={onDisplayModeChange}
+        formatListeningDuration={formatListeningDuration}
+      />
+    </div>
 </div>
         
       </div>

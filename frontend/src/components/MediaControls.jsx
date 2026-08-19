@@ -5,16 +5,16 @@ import './MediaControls.css';
 function LoopIcon({ loopMode }) {
   if (loopMode === 'one') return (
     <div className="relative">
-    <svg className="w-5 h-5 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+    <svg className="w-5 h-5 text-[#8892E6]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
     <path d="M17 1l4 4-4 4" />
     <path d="M3 11V9a4 4 0 0 1 4-4h14" />
     <path d="M7 23l-4-4 4-4" />
     <path d="M21 13v2a4 4 0 0 1-4 4H3" />
     </svg>
-    <span className="absolute -top-1 -right-1 text-[8px] font-bold bg-sky-500 text-white rounded-full w-3 h-3 flex items-center justify-center">1</span>
+    <span className="absolute -top-1 -right-1 text-[8px] font-bold bg-[#8892E6] text-white rounded-full w-3 h-3 flex items-center justify-center">1</span>
     </div>
   );
-  if (loopMode === 'all') return <svg className="w-5 h-5 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+  if (loopMode === 'all') return <svg className="w-5 h-5 text-[#8892E6]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
     <path d="M17 1l4 4-4 4" />
     <path d="M3 11V9a4 4 0 0 1 4-4h14" />
     <path d="M7 23l-4-4 4-4" />
@@ -107,6 +107,18 @@ export default function MediaControls({
     const pos = shuffleOrderRef.current.findIndex(f => f.id === currentFile.id);
     if (pos >= 0) shufflePosRef.current = pos;
   }, [shuffle, currentFile?.id]);
+
+  useEffect(() => {
+    const media = mediaRef?.current;
+    if (!media) return;
+    const sync = () => {
+      setVolume(Math.round((media.volume ?? 0.8) * 100));
+      setIsMuted(media.muted);
+    };
+    media.addEventListener('volumechange', sync);
+    sync();
+    return () => media.removeEventListener('volumechange', sync);
+  }, [mediaRef]);
 
   useEffect(() => {
     const media = mediaRef?.current;
@@ -647,7 +659,7 @@ const onEnded = () => {
       onMouseDown={handleSeekStart}
       onTouchStart={handleSeekStart}
       >
-      <div ref={progressFillRef} className="absolute top-0 left-0 h-full rounded-lg" style={{ width: '0%', background: 'var(--color-primary)' }} />
+      <div ref={progressFillRef} className="absolute top-0 left-0 h-full rounded-lg" style={{ width: '0%', background: 'linear-gradient(90deg,#0EA5E9,#8892E6)' }} />
       <input
       ref={progressBarRef}
       type="range"
@@ -669,7 +681,7 @@ const onEnded = () => {
       <div className="flex items-center">
       <button
       onClick={toggleShuffleMode}
-      className={`p-2 rounded-xl transition-all active:scale-90 ${shuffle ? 'text-sky-400 bg-sky-500/10' : 'text-neutral-500 hover:text-neutral-300'}`}
+      className={`p-2 rounded-xl transition-all active:scale-90 ${shuffle ? 'text-[#8892E6]' : 'text-neutral-500 hover:text-neutral-300'}`}
       title="Shuffle"
       >
       <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -711,7 +723,7 @@ const onEnded = () => {
     }
   }}
   className="w-14 h-14 rounded-full flex items-center justify-center shadow-lg hover:scale-105 active:scale-90 transition-all duration-200 focus:outline-none focus:ring-0"
-  style={{ background: 'var(--color-primary)', color: 'var(--color-bg-dark)' }}
+  style={{ background: '#fff', color: '#000' }}
   tabIndex={-1}
   onMouseDown={(e) => e.preventDefault()}
   >
@@ -755,10 +767,10 @@ const onEnded = () => {
       >
       <div className="relative w-full h-1.5 flex items-center">
       <div className="absolute inset-0 flex items-center pointer-events-none">
-      <div className="w-full h-full bg-neutral-700 rounded-full overflow-hidden">
+      <div className="w-full h-full rounded-full overflow-hidden" style={{ background: '#262626' }}>
       <div
-      className="h-full bg-sky-500 rounded-full transition-all duration-75"
-      style={{ width: `${isMuted ? 0 : volume}%` }}
+      className="h-full rounded-full transition-all duration-75"
+      style={{ width: `${isMuted ? 0 : volume}%`, background: 'linear-gradient(90deg,#0EA5E9,#8892E6)' }}
       />
       </div>
       </div>

@@ -326,6 +326,10 @@ const [menuSidebarOpen, setMenuSidebarOpen] = useState(false);
               store.setQueue(snapshot.queue, snapshot.currentTrackIndex);
               store.setActiveFile(snapshot.activePlaybackId);
               store.setPosition(snapshot.position);
+              const restoredMeta = snapshot.playlistMetadata;
+              if (restoredMeta) {
+                store.setActivePlaylist(restoredMeta.id ?? restoredMeta._id ?? null, restoredMeta, snapshot.queue);
+              }
               store.pause();
 
               setPlaylistQueue(snapshot.playlistQueue);
@@ -545,6 +549,15 @@ const [menuSidebarOpen, setMenuSidebarOpen] = useState(false);
           const audio = sharedAudioRef.current;
           const store = usePlaybackStore.getState();
 
+          // Base64 cover images in metadata blow past the sessionStorage quota.
+          // Strip them (the list can re-fetch the cover after reload).
+          const meta = playlistMetadataRef.current;
+          const sanitizedMeta = meta
+            ? (typeof meta.image === 'string' && meta.image.startsWith('data:')
+                ? { ...meta, image: null }
+                : meta)
+            : meta;
+
           const snapshot = {
             queue: store.queue,
             currentTrackIndex: store.currentTrackIndex,
@@ -552,13 +565,42 @@ const [menuSidebarOpen, setMenuSidebarOpen] = useState(false);
             position: audio ? audio.currentTime : store.position,
             wasPlaying: audio ? !audio.paused : store.isPlaying,
             playlistQueue: playlistQueueRef.current,
-            playlistMetadata: playlistMetadataRef.current,
+            playlistMetadata: sanitizedMeta,
           };
+
+          // Persist the reload-resume window here (unload/pagehide), NOT in a
+          // mount effect. Music.jsx caches this value when IT mounts; since
+          // child effects run before parent effects, a mount-time write in App
+          // landed after Music had already read a stale/null value, so the full
+          // player resumed from 0. Writing it on save guarantees it exists in
+          // sessionStorage before Music mounts on reload.
+          try {
+            sessionStorage.setItem('audioReloadResumeAt', String(Date.now() + 2000));
+            sessionStorage.setItem('audioReloadWasPlaying', String(snapshot.wasPlaying));
+          } catch { /* ignore quota */ }
 
           try {
             sessionStorage.setItem('playbackResumeSnapshot', JSON.stringify(snapshot));
           } catch (e) {
-            console.error('[saveSnapshot] quota/write error:', e);
+            // The full queue (large playlists) can exceed sessionStorage quota.
+            // Fall back to a compact snapshot with only the current track so
+            // resume still works without throwing on every save.
+            try {
+              const current = store.queue?.[store.currentTrackIndex] ?? null;
+              sessionStorage.setItem('playbackResumeSnapshot', JSON.stringify({
+                queue: current ? [current] : [],
+                currentTrackIndex: current ? 0 : store.currentTrackIndex,
+                activePlaybackId: store.activePlaybackId,
+                position: audio ? audio.currentTime : store.position,
+                wasPlaying: false,
+                // Drop the heavy list payload entirely — restoring the queue +
+                // current track is enough to resume playback.
+                playlistQueue: null,
+                playlistMetadata: null,
+              }));
+            } catch (e2) {
+              console.error('[saveSnapshot] compact quota/write error:', e2);
+            }
           }
         } catch (e) {
           console.error('[saveSnapshot] Error:', e);
@@ -2904,6 +2946,7 @@ if (route.type === 'sendqueue') { setView('sendqueue'); return; }
          usePlaybackStore.getState().clearPlayback();
          sharedPrevFileIdRef.current = null;
         usePlaybackStore.getState().setQueue(data.queue, 0);
+        usePlaybackStore.getState().setActivePlaylist(data.playlist?.id ?? data.playlist?._id ?? null, data.playlist, data.queue);
         usePlaybackStore.getState().play();
         setPlaylistQueue(data.queue);
         setPlaylistMetadata(data.playlist);

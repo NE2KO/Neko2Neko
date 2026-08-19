@@ -272,9 +272,15 @@ export async function uploadPlaylistCover(playlistId, file) {
  */
 export function playlistImageUrl(playlist) {
   const img = playlist?.image;
-  if (!img) return null;
-  if (/^(data:|https?:|undefined:|\/\/)/i.test(img)) return img;
+  // Uploaded covers are stored as base64 data URLs — return as-is.
+  if (/^data:/i.test(img)) return img;
+  // The list endpoint only returns has_image (boolean), not the payload. If the
+  // playlist has an image flag but no inline payload, resolve it via the GET
+  // endpoint so the cover appears immediately (no default flash).
   const id = playlist.id ?? playlist._id;
-  if (id == null) return null;
-  return `/api/playlists/${id}/image`;
+  if (id != null && (img || playlist.has_image)) {
+    if (/^(https?:|\/\/)/i.test(img)) return img;
+    return `/api/playlists/${id}/image`;
+  }
+  return img || null;
 }

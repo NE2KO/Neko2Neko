@@ -36,18 +36,20 @@ const LIST_ROW_STYLE = `
     box-shadow: inset 0 0 0 1.5px ${COLORS.accent} !important;
   }
   .playlist-list-row.playing {
-    background: rgba(34,197,94,0.10) !important;
-    box-shadow: inset 3px 0 0 0 #22c55e !important;
+    background: linear-gradient(90deg, rgba(14,165,233,0.12), rgba(136,146,230,0.12)) !important;
+    box-shadow: inset 3px 0 0 0 #8892E6 !important;
   }
   .playlist-list-row.playing .track-index {
-    color: #22c55e !important;
+    color: #8892E6 !important;
   }
   .playlist-list-row .track-eq-bar {
-    width: 3px; border-radius: 2px; background: #22c55e; height: 6px;
+    width: 3px; border-radius: 2px; background: #8892E6; height: 6px;
+  }
+  .playlist-list-row.eq-active .track-eq-bar {
     animation: eqPulse 0.9s ease-in-out infinite;
   }
-  .playlist-list-row .track-eq-bar:nth-child(2) { animation-delay: 0.15s; }
-  .playlist-list-row .track-eq-bar:nth-child(3) { animation-delay: 0.3s; }
+  .playlist-list-row.eq-active .track-eq-bar:nth-child(2) { animation-delay: 0.15s; }
+  .playlist-list-row.eq-active .track-eq-bar:nth-child(3) { animation-delay: 0.3s; }
   @keyframes eqPulse {
     0%, 100% { height: 5px; }
     50% { height: 15px; }
@@ -136,8 +138,9 @@ const PlaylistListRow = memo(({ index, style, data }) => {
   const shift = shiftAbove?.get(trackId) || 0;
   const isEntering = enteringTrackIds?.has(trackId);
   const isPlaying = !!(playingFileId && track.file_id && String(track.file_id) === String(playingFileId));
+  const eqActive = isPlaying && isPlayingActive;
 
-  const rowClass = `playlist-list-row${isSelected ? ' selected' : ''}${!track.exists ? ' not-exists' : ''}${isEntering ? ' row-enter' : ''}${isPlaying ? ' playing' : ''}`;
+  const rowClass = `playlist-list-row${isSelected ? ' selected' : ''}${!track.exists ? ' not-exists' : ''}${isEntering ? ' row-enter' : ''}${isPlaying ? ' playing' : ''}${eqActive ? ' eq-active' : ''}`;
 
   return (
     <div

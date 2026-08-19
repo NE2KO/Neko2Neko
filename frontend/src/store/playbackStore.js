@@ -173,7 +173,6 @@ const usePlaybackStore = create(
         shuffle: state.shuffle,
         loopMode: state.loopMode,
         playerMode: state.playerMode,
-        queue: state.queue,
         currentTrackIndex: state.currentTrackIndex,
         activePlaybackId: state.activePlaybackId,
         position: state.position,

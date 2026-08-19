@@ -30,6 +30,7 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
     }
   });
   const bgVideoRef = useRef(null);
+  const volumeWrapRef = useRef(null);
 
   const [autoPlayPending, setAutoPlayPending] = useState(false);
   const [userInteracted, setUserInteracted] = useState(false);
@@ -208,6 +209,8 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
           resetAutoPlayPending();
         }
       });
+    } else if (!isPlaying && !audio.paused) {
+      audio.pause();
     }
   }, [isPlaying, audioRef, audioReady]);
 
@@ -280,6 +283,32 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
       localStorage.setItem('audio.volume', String(Math.round(newVol * 100)));
     } catch {}
   }, [audioRef]);
+
+  useEffect(() => {
+    const audio = audioRef?.current;
+    if (!audio) return;
+    const sync = () => setVolume(audio.volume ?? 0);
+    audio.addEventListener('volumechange', sync);
+    sync();
+    return () => audio.removeEventListener('volumechange', sync);
+  }, [audioRef]);
+
+  // Mouse-wheel volume control on the volume bar. Non-passive so we can
+  // preventDefault and stop the page from scrolling while adjusting volume.
+  useEffect(() => {
+    const el = volumeWrapRef.current;
+    if (!el) return undefined;
+    const onWheel = (e) => {
+      e.preventDefault();
+      const audio = audioRef?.current;
+      const current = audio ? Math.round(audio.volume * 100) : Math.round(volume * 100);
+      const step = 5;
+      const next = Math.max(0, Math.min(100, current - Math.sign(e.deltaY) * step));
+      handleVolumeChange({ target: { value: String(next / 100) } });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [audioRef, volume, handleVolumeChange]);
 
   const toggleMute = useCallback(() => {
     const newVol = volume > 0 ? 0 : 0.7;
@@ -408,8 +437,8 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
                 className="flex-1 h-1.5 bg-neutral-700/60 rounded-full cursor-pointer group relative"
               >
                 <div
-                  className="h-full bg-indigo-500 rounded-full transition-all"
-                  style={{ width: `${progress}%` }}
+                  className="h-full rounded-full transition-all"
+                  style={{ width: `${progress}%`, background: 'linear-gradient(90deg,#0EA5E9,#8892E6)' }}
                 />
                 <div
                   className="absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full shadow-md opacity-0 group-hover:opacity-100 transition-all pointer-events-none"
@@ -421,8 +450,9 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
             <div className="flex items-center gap-1">
               <button
                 onClick={handleShuffle}
-                className={`transition-colors p-1.5 rounded-lg hover:bg-neutral-700 focus:outline-none focus:ring-0 ${shuffle ? 'text-indigo-400' : 'text-neutral-400 hover:text-white'}`}
+                className={`transition-colors p-1.5 rounded-lg hover:bg-neutral-700 focus:outline-none focus:ring-0 ${shuffle ? '' : 'text-neutral-400 hover:text-white'}`}
                 title={shuffle ? 'Shuffle on' : 'Shuffle off'}
+                style={shuffle ? { color: '#8892E6' } : undefined}
               >
                 <Shuffle size={14} />
               </button>
@@ -456,8 +486,9 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
               </button>
               <button
                 onClick={handleLoop}
-                className={`relative transition-colors p-1.5 rounded-lg hover:bg-neutral-700 focus:outline-none focus:ring-0 ${loopMode !== 'off' ? 'text-indigo-400' : 'text-neutral-400 hover:text-white'}`}
+                className={`relative transition-colors p-1.5 rounded-lg hover:bg-neutral-700 focus:outline-none focus:ring-0 ${loopMode !== 'off' ? '' : 'text-neutral-400 hover:text-white'}`}
                 title={`Loop: ${loopMode}`}
+                style={loopMode !== 'off' ? { color: '#8892E6' } : undefined}
               >
                 <Repeat size={14} />
                 {loopMode === 'one' && (
@@ -484,11 +515,11 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
                {volume === 0 ? <VolumeX size={14} /> : <Volume2 size={14} />}
              </button>
 <div className="flex-1 min-w-0 flex items-center" style={{ minWidth: 80, maxWidth: 160 }}>
-                 <div className="relative w-full" style={{ height: 24 }}>
+                  <div ref={volumeWrapRef} className="relative w-full" style={{ height: 24 }}>
                    <div className="absolute inset-0 flex items-center">
-                     <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--color-secondary)' }}>
-                       <div className="h-full bg-sky-500 rounded-full transition-all" style={{ width: `${volume * 100}%` }} />
-                     </div>
+<div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: '#262626' }}>
+                        <div className="h-full rounded-full transition-all" style={{ width: `${volume * 100}%`, background: 'linear-gradient(90deg,#0EA5E9,#8892E6)' }} />
+                      </div>
                    </div>
                    <input
                      type="range"
@@ -513,7 +544,7 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
 <button
   onClick={handleExpand}
   className="p-1.5 rounded-lg hover:bg-neutral-700 focus:outline-none focus:ring-0 flex-shrink-0 transition-colors"
-  style={{ color: 'var(--color-primary)' }}
+  style={{ color: '#8892E6' }}
   title="Full player"
 >
   <Maximize2 size={14} />
