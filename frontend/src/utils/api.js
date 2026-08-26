@@ -75,7 +75,7 @@ export async function fetchFileById(id) {
 }
 
 export function getThumbnailUrl(file) {
-  return `${API}/thumbnails/${file.id}.jpg`;
+  return `${API}/thumbnails/${file.file_id || file.id}.jpg`;
 }
 
 // === PLAYLIST API FUNCTIONS ===

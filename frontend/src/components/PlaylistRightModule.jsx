@@ -11,6 +11,7 @@ const COLORS = {
 
 export default function PlaylistRightModule({
   open,
+  peeking = false,
   mode,
   onModeChange,
   onClose,
@@ -26,18 +27,65 @@ export default function PlaylistRightModule({
   rightHovered,
   setRightHovered,
 }) {
-  if (open) {
+  const expanded = open || peeking;
+
+  if (!expanded) {
     return ( <>
       <div
+        onMouseEnter={() => setRightHovered?.(true)}
+        onMouseLeave={() => setRightHovered?.(false)}
         style={{
-          width: 360,
-          flexShrink: 0,
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-          position: 'relative', height: '100%', background: '#121212', borderRadius: 0,
+          position: 'absolute',
+          right: 0,
+          top: 0,
+          bottom: 0,
+          width: 40,
+          zIndex: 40,
+          cursor: 'pointer',
         }}
+      />
+      <button
+        onClick={onOpen}
+        style={{
+          position: 'absolute',
+          right: 8,
+          top: '50%',
+          transform: 'translateY(-50%)',
+          width: 24,
+          height: 48,
+          borderRadius: '8px 0 0 8px',
+          background: COLORS.bg.secondary,
+          border: `1px solid ${COLORS.border.primary}`,
+          borderRight: 'none',
+          color: COLORS.text.secondary,
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 40,
+          opacity: rightHovered ? 1 : 0,
+          transition: 'opacity 0.2s ease',
+          pointerEvents: rightHovered ? 'auto' : 'none',
+        }}
+        title={hasActivePlayback ? "Open Now Playing" : "Open Leaderboard"}
       >
+        <ChevronLeft size={16} />
+      </button>
+    </> );
+  }
+
+  return ( <>
+    <div
+      style={{
+        width: 360,
+        flexShrink: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        position: 'relative', height: '100%', background: '#121212', borderRadius: 0,
+      }}
+    >
+      {open && (
         <div
           onMouseEnter={() => setRightHovered?.(true)}
           onMouseLeave={() => setRightHovered?.(false)}
@@ -51,6 +99,8 @@ export default function PlaylistRightModule({
             cursor: 'pointer',
           }}
         />
+      )}
+      {open && (
         <button
           onClick={onClose}
           style={{
@@ -78,52 +128,54 @@ export default function PlaylistRightModule({
         >
           <ChevronRight size={16} />
         </button>
-        
-          <div style={{ padding: '24px 24px 0', flexShrink: 0 }}>
-            <div style={{ position: 'relative', display: 'flex', justifyContent: 'center', alignItems: 'center', marginBottom: 16 }}>
-              <div style={{ position: 'relative', display: 'flex', gap: 4, background: 'rgba(255,255,255,0.05)', borderRadius: 8, padding: 2 }}>
-                <div style={{
-                  position: 'absolute',
-                  top: 2,
-                  left: 2,
-                  width: 'calc(50% - 4px)',
-                  height: 'calc(100% - 4px)',
-                  borderRadius: 6,
-                  background: 'rgba(255,255,255,0.12)',
-                  transition: 'transform 250ms ease',
-                  transform: mode === 'nowplaying' ? 'translateX(0)' : 'translateX(100%)',
-                }} />
-                <button
-                  onClick={() => onModeChange?.('nowplaying')}
-                  style={{
-                    position: 'relative',
-                    zIndex: 1,
-                    flex: 1,
-                    padding: '4px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
-                    fontSize: 11, fontWeight: 600, textAlign: 'center',
-                    background: 'transparent',
-                    color: mode === 'nowplaying' ? '#fff' : COLORS.text.tertiary,
-                    transition: 'color 200ms ease',
-                  }}
-                >
-                  Now Playing
-                </button>
-                <button
-                  onClick={() => onModeChange?.('leaderboard')}
-                  style={{
-                    position: 'relative',
-                    zIndex: 1,
-                    flex: 1,
-                    padding: '4px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
-                    fontSize: 11, fontWeight: 600, textAlign: 'center',
-                    background: 'transparent',
-                    color: mode === 'leaderboard' ? '#fff' : COLORS.text.tertiary,
-                    transition: 'color 200ms ease',
-                  }}
-                >
-                  Leaderboard
-                </button>
-              </div>
+      )}
+
+        <div style={{ padding: '24px 24px 0', flexShrink: 0 }}>
+          <div style={{ position: 'relative', display: 'flex', justifyContent: 'center', alignItems: 'center', marginBottom: 16 }}>
+            <div style={{ position: 'relative', display: 'flex', gap: 4, background: 'rgba(255,255,255,0.05)', borderRadius: 8, padding: 2 }}>
+              <div style={{
+                position: 'absolute',
+                top: 2,
+                left: 2,
+                width: 'calc(50% - 4px)',
+                height: 'calc(100% - 4px)',
+                borderRadius: 6,
+                background: 'rgba(255,255,255,0.12)',
+                transition: 'transform 250ms ease',
+                transform: mode === 'nowplaying' ? 'translateX(0)' : 'translateX(100%)',
+              }} />
+              <button
+                onClick={() => onModeChange?.('nowplaying')}
+                style={{
+                  position: 'relative',
+                  zIndex: 1,
+                  flex: 1,
+                  padding: '4px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
+                  fontSize: 11, fontWeight: 600, textAlign: 'center',
+                  background: 'transparent',
+                  color: mode === 'nowplaying' ? '#fff' : COLORS.text.tertiary,
+                  transition: 'color 200ms ease',
+                }}
+              >
+                Now Playing
+              </button>
+              <button
+                onClick={() => onModeChange?.('leaderboard')}
+                style={{
+                  position: 'relative',
+                  zIndex: 1,
+                  flex: 1,
+                  padding: '4px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
+                  fontSize: 11, fontWeight: 600, textAlign: 'center',
+                  background: 'transparent',
+                  color: mode === 'leaderboard' ? '#fff' : COLORS.text.tertiary,
+                  transition: 'color 200ms ease',
+                }}
+              >
+                Leaderboard
+              </button>
+            </div>
+            {open && (
               <button
                 onClick={onClose}
                 style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', width: 28, height: 28, borderRadius: 999, border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.05)', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
@@ -131,9 +183,10 @@ export default function PlaylistRightModule({
               >
                 <X size={14} />
               </button>
-            </div>
+            )}
           </div>
-          <div style={{
+        </div>
+        <div style={{
   flex: 1,
   background: 'transparent',
   borderRadius: 0,
@@ -181,56 +234,8 @@ export default function PlaylistRightModule({
         formatListeningDuration={formatListeningDuration}
       />
     </div>
-</div>
-        
-      </div>
-</>
-);
-  }
+  </div>
 
-  return ( <>
-    
-      <div
-        onMouseEnter={() => setRightHovered?.(true)}
-        onMouseLeave={() => setRightHovered?.(false)}
-        style={{
-          position: 'absolute',
-          right: 0,
-          top: 0,
-          bottom: 0,
-          width: 40,
-          zIndex: 40,
-          cursor: 'pointer',
-        }}
-      />
-      <button
-        onClick={onOpen}
-        style={{
-          position: 'absolute',
-          right: 8,
-          top: '50%',
-          transform: 'translateY(-50%)',
-          width: 24,
-          height: 48,
-          borderRadius: '8px 0 0 8px',
-          background: COLORS.bg.secondary,
-          border: `1px solid ${COLORS.border.primary}`,
-          borderRight: 'none',
-          color: COLORS.text.secondary,
-          cursor: 'pointer',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 40,
-          opacity: rightHovered ? 1 : 0,
-          transition: 'opacity 0.2s ease',
-          pointerEvents: rightHovered ? 'auto' : 'none',
-        }}
-        title={hasActivePlayback ? "Open Now Playing" : "Open Leaderboard"}
-      >
-        <ChevronLeft size={16} />
-      </button>
-    
-  </>
-);
+      </div>
+  </> );
 }

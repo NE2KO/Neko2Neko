@@ -1,4 +1,4 @@
-import React, { memo } from 'react';
+import React, { memo, useState, useRef, useEffect } from 'react';
 import { formatBytes as formatSize } from '../utils/format.js';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -140,6 +140,37 @@ const PlaylistListRow = memo(({ index, style, data }) => {
   const isPlaying = !!(playingFileId && track.file_id && String(track.file_id) === String(playingFileId));
   const eqActive = isPlaying && isPlayingActive;
 
+  // Phase machine for the EQ slide in/out, recycle-safe: react-window reuses row
+  // instances across different tracks, so reset the phase when track.file_id changes.
+  const [phase, setPhase] = useState(isPlaying ? 'active' : 'idle');
+  const eqRaf = useRef(0);
+  const eqTimeout = useRef(0);
+  const lastFid = useRef(track.file_id);
+  useEffect(() => {
+    if (lastFid.current !== track.file_id) {
+      lastFid.current = track.file_id;
+      setPhase(isPlaying ? 'active' : 'idle');
+      return;
+    }
+    if (isPlaying) {
+      if (phase === 'active' || phase === 'enter') return;
+      setPhase('enter');
+      cancelAnimationFrame(eqRaf.current);
+      eqRaf.current = requestAnimationFrame(() => {
+        eqRaf.current = requestAnimationFrame(() => setPhase('active'));
+      });
+    } else {
+      if (phase === 'idle' || phase === 'exit') return;
+      setPhase('exit');
+      clearTimeout(eqTimeout.current);
+      eqTimeout.current = setTimeout(() => setPhase('idle'), 320);
+    }
+    return () => { cancelAnimationFrame(eqRaf.current); clearTimeout(eqTimeout.current); };
+  }, [track.file_id, isPlaying, phase]);
+
+  const eqX = phase === 'enter' || phase === 'exit' ? -6 : 0;
+  const eqO = phase === 'idle' || phase === 'exit' ? 0 : 1;
+
   const rowClass = `playlist-list-row${isSelected ? ' selected' : ''}${!track.exists ? ' not-exists' : ''}${isEntering ? ' row-enter' : ''}${isPlaying ? ' playing' : ''}${eqActive ? ' eq-active' : ''}`;
 
   return (
@@ -153,21 +184,26 @@ const PlaylistListRow = memo(({ index, style, data }) => {
       className={rowClass}
       onClick={() => onSelect?.(track, index)}
     >
-      <div className="track-index" style={{
-        width: 32, flexShrink: 0, textAlign: 'right',
-        display: 'flex', alignItems: 'center', justifyContent: 'flex-end',
-        fontSize: '13px', fontWeight: 700, color: COLORS.text.secondary,
-        fontVariantNumeric: 'tabular-nums', userSelect: 'none',
-      }}>
-        {isPlaying ? (
-          <span style={{ display: 'inline-flex', alignItems: 'flex-end', gap: 2, height: 16 }} aria-label="Now playing">
-            <span className="track-eq-bar" />
-            <span className="track-eq-bar" />
-            <span className="track-eq-bar" />
-          </span>
-        ) : (
-          index + 1
-        )}
+      <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+        {/* EQ indicator — sits to the left of the track number, slides in from the
+            left + fades in when active, slides back out to the left + fades out. */}
+        <div style={{ width: 24, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'visible' }}>
+          {phase !== 'idle' && (
+            <span style={{ display: 'inline-flex', alignItems: 'flex-end', gap: 2, height: 16, transform: `translateX(${eqX}px)`, opacity: eqO, transition: 'transform 300ms cubic-bezier(.2,.8,.2,1), opacity 300ms ease' }} aria-label="Now playing">
+              <span className="track-eq-bar" />
+              <span className="track-eq-bar" />
+              <span className="track-eq-bar" />
+            </span>
+          )}
+        </div>
+        <div className="track-index" style={{
+          width: 32, flexShrink: 0, textAlign: 'right',
+          display: 'flex', alignItems: 'center', justifyContent: 'flex-end',
+          fontSize: '13px', fontWeight: 700, color: COLORS.text.secondary,
+          fontVariantNumeric: 'tabular-nums', userSelect: 'none',
+        }}>
+          {index + 1}
+        </div>
       </div>
       <div style={{
         width: 48, height: 48, borderRadius: '8px',

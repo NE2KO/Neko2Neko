@@ -2,7 +2,7 @@
  * ListeningTracker — accurate per-track listening statistics.
  *
  * Tracks actual playback time using a monotonic clock, excluding pause/seek/
- * buffering intervals. Persists to localStorage incrementally.
+ * buffering intervals. Persists to backend API incrementally.
  *
  * Play count semantics:
  *   - A "play session" starts when audio begins playing after a pause or on
@@ -19,22 +19,22 @@
  *     double counting.
  */
 
-const STORAGE_KEY = 'listeningStats';
 const MIN_PLAY_SECONDS = 30;
 const PERSIST_DEBOUNCE_MS = 2000;
+const STORAGE_KEY = 'musicListeningStats';
 
 function getStorage() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return JSON.parse(raw);
-  } catch { /* ignore */ }
+  } catch {}
   return {};
 }
 
 function setStorage(data) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  } catch { /* ignore */ }
+  } catch {}
 }
 
 export function formatDuration(totalSeconds) {
@@ -70,7 +70,12 @@ export class ListeningTracker {
     this.lastAudioTime = null;
     this.lastTick = null;
     this.rafId = null;
+    this._currentSessionId = null;
     this._attachCount = 0;
+    this._migrationAttempted = false;
+    this._prevTrackId = null;
+    this._sessionPersisted = false;
+    this._paused = false;
     this._boundTick = this._tick.bind(this);
     this._onPlay = this._onPlay.bind(this);
     this._onPause = this._onPause.bind(this);
@@ -99,8 +104,13 @@ export class ListeningTracker {
         displayName: null,
         sessionAccumulated: 0,
         sessionPlayCounted: false,
+        lastSyncedSeconds: 0,
+        lastSyncedPlayCount: 0,
       };
     }
+    // Ensure new fields exist for older entries
+    if (this.stats[trackId].lastSyncedSeconds == null) this.stats[trackId].lastSyncedSeconds = 0;
+    if (this.stats[trackId].lastSyncedPlayCount == null) this.stats[trackId].lastSyncedPlayCount = 0;
     return this.stats[trackId];
   }
 
@@ -179,7 +189,10 @@ export class ListeningTracker {
       this.sessionAccumulated = saved.sessionAccumulated || 0;
     } else {
       this.sessionStart = null;
-      this.sessionListened = 0;
+      if (this._prevTrackId !== trackId) {
+        this.sessionListened = 0;
+      }
+      this._prevTrackId = null;
       this.sessionAccumulated = 0;
       this.sessionPlayCounted = false;
     }
@@ -188,6 +201,11 @@ export class ListeningTracker {
     this._attachCount += 1;
     if (!wasAttached) {
       this._attach();
+      if (!this._migrationAttempted) {
+        this._migrationAttempted = true;
+        this.migrateLegacyStats().catch(() => {});
+      }
+      this.recoverUnsyncedData().catch(() => {});
     } else if (!audio.paused) {
       this._startSession();
     }
@@ -200,6 +218,7 @@ export class ListeningTracker {
       this._detach();
       this._stopTick();
       this._finalizeSession();
+      this._prevTrackId = this.currentTrackId;
       this._audio = null;
       this.currentTrackId = null;
       this._attachCount = 0;
@@ -216,6 +235,7 @@ export class ListeningTracker {
       this.sessionListened = 0;
       this.sessionAccumulated = 0;
       this.sessionPlayCounted = false;
+      this._sessionPersisted = false;
       this.sessionThreshold = computePlayThreshold(this._audio.duration);
       this.lastAudioTime = null;
       this.lastTick = null;
@@ -226,6 +246,7 @@ export class ListeningTracker {
       this.sessionListened = 0;
       this.sessionAccumulated = 0;
       this.sessionPlayCounted = false;
+      this._sessionPersisted = false;
       this.sessionThreshold = computePlayThreshold(this._audio?.duration);
       this.lastAudioTime = null;
       this.lastTick = null;
@@ -237,7 +258,17 @@ export class ListeningTracker {
     this.sessionStart = performance.now();
     this.lastAudioTime = this._audio.currentTime || 0;
     this.lastTick = this.sessionStart;
+    this._currentSessionId = this._generateSessionId();
+    this._sessionPersisted = false;
     this._startTick();
+  }
+
+  _generateSessionId() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      const v = c === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
   }
 
   _startTick() {
@@ -285,6 +316,7 @@ export class ListeningTracker {
 
   _onPlay() {
     if (!this.currentTrackId) return;
+    this._paused = false;
     if (this.sessionStart == null) {
       this._startSession();
     } else {
@@ -296,6 +328,7 @@ export class ListeningTracker {
 
   _onPause() {
     if (!this.currentTrackId) return;
+    this._paused = true;
     this._finalizeSessionInterval();
     this._stopTick();
   }
@@ -324,21 +357,36 @@ export class ListeningTracker {
 
   _finalizeSessionInterval() {
     if (!this.currentTrackId) return;
-    if (this.sessionListened > 0) {
-      const stats = this.getTrackStats(this.currentTrackId);
-      stats.listenedSeconds = Math.round((stats.listenedSeconds || 0) + this.sessionListened);
-      stats.lastPlayedAt = Date.now();
-      stats.updatedAt = Date.now();
-      if (!this.sessionPlayCounted && this.sessionAccumulated >= this.sessionThreshold) {
-        stats.playCount += 1;
-        this.sessionPlayCounted = true;
-      }
-      stats.sessionAccumulated = this.sessionAccumulated;
-      stats.sessionPlayCounted = this.sessionPlayCounted;
-      this._schedulePersist();
+    const listenDelta = Math.round(this.sessionListened || 0);
+    const playDelta = (!this.sessionPlayCounted && this.sessionAccumulated >= this.sessionThreshold) ? 1 : 0;
+    if (listenDelta === 0 && playDelta === 0) {
+      this.lastTick = null;
+      return;
     }
+    const stats = this.getTrackStats(this.currentTrackId);
+    stats.listenedSeconds = Math.round((stats.listenedSeconds || 0) + listenDelta);
+    stats.lastPlayedAt = Date.now();
+    stats.updatedAt = Date.now();
+    if (playDelta > 0) {
+      stats.playCount += playDelta;
+      this.sessionPlayCounted = true;
+    }
+    stats.sessionAccumulated = this.sessionAccumulated;
+    stats.sessionPlayCounted = this.sessionPlayCounted;
     this.sessionListened = 0;
+    // Persist to localStorage immediately (crash recovery).
+    setStorage(this.stats);
     this.lastTick = null;
+    // Sync to DB. Only update lastSyncedSeconds on success so
+    // recoverUnsyncedData() can re-send failed deltas on next load.
+    this.syncToBackend(this._currentSessionId, this.currentTrackId, playDelta, listenDelta)
+      .then((ok) => {
+        if (ok) {
+          stats.lastSyncedSeconds = stats.listenedSeconds;
+          stats.lastSyncedPlayCount = stats.playCount;
+          setStorage(this.stats);
+        }
+      });
   }
 
   _finalizeSession() {
@@ -346,6 +394,99 @@ export class ListeningTracker {
     this.sessionStart = null;
     this.sessionAccumulated = 0;
     this.sessionPlayCounted = false;
+    this._sessionPersisted = false;
+    setStorage(this.stats);
+  }
+
+  syncToBackend(sessionId, trackId, playCountDelta, listenedSecondsDelta) {
+    const sid = sessionId || this._currentSessionId;
+    const tid = trackId || this.currentTrackId;
+
+    if (!sid || !tid) return Promise.resolve();
+    if (playCountDelta === 0 && listenedSecondsDelta === 0) return Promise.resolve();
+
+    const payload = JSON.stringify({
+      sessionId: sid,
+      trackId: tid,
+      playCountDelta,
+      listenedSecondsDelta,
+    });
+
+    try {
+      // fetch with keepalive survives page unload (same as sendBeacon) but
+      // returns a promise so the caller can detect success/failure.
+      return fetch('/api/listening/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+        keepalive: true,
+      }).then(r => r.ok).catch(() => false);
+    } catch (err) {
+      console.warn('[ListeningTracker] Backend sync failed:', err.message);
+      return Promise.resolve();
+    }
+  }
+
+  async migrateLegacyStats() {
+    try {
+      const raw = localStorage.getItem('listeningStats');
+      if (!raw) return { migrated: 0 };
+
+      const legacyStats = JSON.parse(raw);
+      const validEntries = Object.entries(legacyStats).filter(([trackId, data]) => {
+        return data.playCount > 0 || data.listenedSeconds > 0;
+      });
+
+      if (validEntries.length === 0) {
+        localStorage.removeItem('listeningStats');
+        return { migrated: 0 };
+      }
+
+      const newStats = {};
+      for (const [trackId, data] of validEntries) {
+        newStats[trackId] = {
+          playCount: data.playCount || 0,
+          listenedSeconds: data.listenedSeconds || 0,
+          lastPlayedAt: data.lastPlayedAt || null,
+          updatedAt: data.updatedAt || null,
+          displayName: data.displayName || null,
+          sessionAccumulated: 0,
+          sessionPlayCounted: false,
+        };
+      }
+
+      setStorage(newStats);
+
+      const response = await fetch('/api/listening/migrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stats: Object.fromEntries(validEntries) }),
+      });
+
+      if (!response.ok) throw new Error('Migration failed');
+
+      localStorage.removeItem('listeningStats');
+      return await response.json();
+    } catch (err) {
+      console.error('[ListeningTracker] Migration failed:', err);
+      throw err;
+    }
+  }
+
+  async recoverUnsyncedData() {
+    const entries = Object.entries(this.stats);
+    for (const [trackId, stats] of entries) {
+      const unsyncedListen = Math.max(0, (stats.listenedSeconds || 0) - (stats.lastSyncedSeconds || 0));
+      const unsyncedPlays = Math.max(0, (stats.playCount || 0) - (stats.lastSyncedPlayCount || 0));
+      if (unsyncedListen === 0 && unsyncedPlays === 0) continue;
+      const sid = this._generateSessionId();
+      const ok = await this.syncToBackend(sid, trackId, unsyncedPlays, unsyncedListen).catch(() => false);
+      if (ok) {
+        stats.lastSyncedSeconds = stats.listenedSeconds;
+        stats.lastSyncedPlayCount = stats.playCount;
+      }
+    }
+    setStorage(this.stats);
   }
 
   _schedulePersist() {
@@ -363,6 +504,22 @@ export class ListeningTracker {
     }
     this._finalizeSession();
     setStorage(this.stats);
+    // Best-effort final sync before page unload.  sendBeacon is more
+    // reliable than fetch+keepalive for unload scenarios.
+    if (this.currentTrackId) {
+      const stats = this.getTrackStats(this.currentTrackId);
+      const unsyncedListen = Math.max(0, (stats.listenedSeconds || 0) - (stats.lastSyncedSeconds || 0));
+      const unsyncedPlays = Math.max(0, (stats.playCount || 0) - (stats.lastSyncedPlayCount || 0));
+      if ((unsyncedListen > 0 || unsyncedPlays > 0) && navigator.sendBeacon) {
+        const payload = JSON.stringify({
+          sessionId: this._currentSessionId || this._generateSessionId(),
+          trackId: this.currentTrackId,
+          playCountDelta: unsyncedPlays,
+          listenedSecondsDelta: unsyncedListen,
+        });
+        navigator.sendBeacon('/api/listening/sync', new Blob([payload], { type: 'application/json' }));
+      }
+    }
   }
 
   reset() {

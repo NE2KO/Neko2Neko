@@ -130,6 +130,18 @@ export default function MetadataEditor({ fileId, onClose, onSaved, onCoverChange
     setPickedVideoId(vid.id);
   }, []);
 
+  const saveYoutubeId = useCallback(async () => {
+    let youtubeId = form.youtube_id.trim();
+    const urlMatch = youtubeId.match(/(?:https?:\/\/(?:www\.)?youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/);
+    if (urlMatch) youtubeId = urlMatch[1];
+    if (!youtubeId) return;
+    await fetch(`/api/video-cache/save-id/${fileId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ youtubeId, video_offset: form.video_offset || 0 }),
+    });
+  }, [fileId, form.youtube_id, form.video_offset]);
+
   const handleCoverApplied = useCallback(async () => {
     try {
       const res = await fetch(`/api/metadata/${fileId}`);
@@ -156,30 +168,31 @@ export default function MetadataEditor({ fileId, onClose, onSaved, onCoverChange
     onSaved?.();
   }, [fileId, onSaved]);
 
-  // Auto-save video offset / youtube_id as they change on the Video tab.
-  // Immediate (no debounce) and never aborted on unmount, so closing the
-  // editor right after a change never drops the save. The first run (initial
-  // load / tab open) is skipped to avoid re-PUTting untouched data.
-  const autoSaveSkippedRef = useRef(true);
-  useEffect(() => {
-    if (activeTab !== 'video') return;
-    if (autoSaveSkippedRef.current) {
-      autoSaveSkippedRef.current = false;
-      return;
-    }
-    let youtubeId = form.youtube_id.trim();
-    const urlMatch = youtubeId.match(/(?:https?:\/\/(?:www\.)?youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/);
-    if (urlMatch) youtubeId = urlMatch[1];
-    fetch(`/api/metadata/${fileId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...form, youtube_id: youtubeId }),
-    })
-      .then(() => onSaved?.())
-      .catch(err => console.error('[MetadataEditor] Auto-save failed:', err));
-  }, [activeTab, fileId, form]);
+   // Auto-save video offset / youtube_id as they change on the Video tab.
+   // Immediate (no debounce) and never aborted on unmount, so closing the
+   // editor right after a change never drops the save. The first run (initial
+   // load / tab open) is skipped to avoid re-PUTting untouched data.
+   const autoSaveSkippedRef = useRef(true);
+   useEffect(() => {
+     if (activeTab !== 'video') return;
+     if (autoSaveSkippedRef.current) {
+       autoSaveSkippedRef.current = false;
+       return;
+     }
+     let youtubeId = form.youtube_id.trim();
+     const urlMatch = youtubeId.match(/(?:https?:\/\/(?:www\.)?youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/);
+     if (urlMatch) youtubeId = urlMatch[1];
 
-  // Check video cache status when video tab opens
+     fetch(`/api/metadata/${fileId}`, {
+       method: 'PUT',
+       headers: { 'Content-Type': 'application/json' },
+       body: JSON.stringify({ ...form, youtube_id: youtubeId }),
+     })
+       .then(() => { onSaved?.(); })
+       .catch(err => console.error('[MetadataEditor] Auto-save failed:', err));
+   }, [activeTab, fileId, form, onSaved]);
+
+   // Check video cache status when video tab opens or youtube_id changes
   useEffect(() => {
     if (activeTab === 'video' && form.youtube_id) {
       fetch(`/api/video-cache/progress/${form.youtube_id}`)
@@ -191,7 +204,7 @@ export default function MetadataEditor({ fileId, onClose, onSaved, onCoverChange
         })
         .catch(() => setVideoStatus('error'));
     }
-  }, [activeTab]);
+  }, [activeTab, form.youtube_id]);
 
   // Reset detected formats whenever the YouTube ID changes
   useEffect(() => {
@@ -380,21 +393,31 @@ export default function MetadataEditor({ fileId, onClose, onSaved, onCoverChange
 
               <div className="border-t border-white/5" />
 
-              <div>
-                <label className="block text-xs text-white/50 mb-1.5">YouTube URL / ID</label>
-                <input
-                  type="text"
-                  value={form.youtube_id}
-                  onChange={e => {
-                    const val = e.target.value.trim();
-                    const match = val.match(/(?:https?:\/\/(?:www\.)?youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/);
-                    const id = match ? match[1] : val;
-                    setForm(f => ({ ...f, youtube_id: id }));
-                  }}
-                  placeholder="YouTube video ID (dQw4w9WgXcQ) atau URL"
-                  className="w-full bg-neutral-800 border border-white/10 rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-purple-500"
-                />
-              </div>
+               <div>
+                 <label className="block text-xs text-white/50 mb-1.5">
+                   YouTube URL / ID
+                   {videoStatus === 'cached' && (
+                     <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase bg-green-500/20 text-green-400 border border-green-500/30">Cached</span>
+                   )}
+                 </label>
+                 <input
+                   type="text"
+                   value={form.youtube_id}
+                   onChange={e => {
+                     const val = e.target.value.trim();
+                     const match = val.match(/(?:https?:\/\/(?:www\.)?youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/);
+                     const id = match ? match[1] : val;
+                     setForm(f => ({ ...f, youtube_id: id }));
+                   }}
+                   placeholder="YouTube video ID (dQw4w9WgXcQ) atau URL"
+                   readOnly={videoStatus === 'cached'}
+                   className={`w-full rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-purple-500 ${
+                     videoStatus === 'cached'
+                       ? 'bg-neutral-800/50 border border-green-500/50 text-green-400'
+                       : 'bg-neutral-800 border border-white/10'
+                   }`}
+                 />
+               </div>
               <div>
                 <label className="block text-xs text-white/50 mb-1.5">Video Offset (detik)</label>
                 <div className="flex items-center gap-2">
@@ -508,64 +531,54 @@ export default function MetadataEditor({ fileId, onClose, onSaved, onCoverChange
                 </div>
               </div>
 
-              <button
-                onClick={async () => {
-                  if (!form.youtube_id) return;
-                  setDownloading(true);
-                  setVideoStatus('downloading');
-                  try {
-                    const res = await fetch(`/api/video-cache/download/${form.youtube_id}?force=true`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ format: selectedFormat }),
-                    });
-                    const data = await res.json();
+               <button
+                 onClick={async () => {
+                   if (!form.youtube_id) return;
+                   setDownloading(true);
+                   setVideoStatus('downloading');
+                   try {
+                     const res = await fetch(`/api/video-cache/download/${form.youtube_id}?force=true`, {
+                       method: 'POST',
+                       headers: { 'Content-Type': 'application/json' },
+                       body: JSON.stringify({ format: selectedFormat }),
+                     });
+                     const data = await res.json();
 
-                    if (data.status === 'cached') {
-                      setVideoStatus('cached');
-                    } else {
-                      // Poll for progress
-                      let pollInterval = setInterval(async () => {
-                        try {
-                          const prog = await fetch(`/api/video-cache/progress/${form.youtube_id}`).then(r => r.json());
-                          if (prog.status === 'cached') {
-                            setVideoStatus('cached');
-                            clearInterval(pollInterval);
-                          } else if (prog.status === 'error') {
-                            setVideoStatus('error');
-                            clearInterval(pollInterval);
-                          }
-                        } catch {}
-                      }, 1000);
+                     if (data.status === 'cached') {
+                       setVideoStatus('cached');
+                       await saveYoutubeId();
+                     } else {
+                       // Poll for progress
+                       let pollInterval = setInterval(async () => {
+                         try {
+                           const prog = await fetch(`/api/video-cache/progress/${form.youtube_id}`).then(r => r.json());
+                           if (prog.status === 'cached') {
+                             setVideoStatus('cached');
+                             clearInterval(pollInterval);
+                             await saveYoutubeId();
+                           } else if (prog.status === 'error') {
+                             setVideoStatus('error');
+                             clearInterval(pollInterval);
+                           }
+                         } catch {}
+                       }, 1000);
 
-                      setTimeout(() => {
-                        clearInterval(pollInterval);
-                        setDownloading(false);
-                      }, 60000);
-                    }
-
-                    // Auto-save youtube_id to DB
-                    try {
-                      let youtubeId = form.youtube_id.trim();
-                      const urlMatch = youtubeId.match(/(?:https?:\/\/(?:www\.)?youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/);
-                      if (urlMatch) youtubeId = urlMatch[1];
-                      await fetch(`/api/video-cache/save-id/${fileId}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ youtubeId }),
-                      });
-                    } catch {}
-                  } catch (e) {
-                    setVideoStatus('error');
-                  } finally {
-                    setTimeout(() => setDownloading(false), 500);
-                  }
-                }}
-                disabled={downloading || !form.youtube_id}
-                className="w-full py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {downloading ? 'Downloading...' : (videoStatus === 'cached' ? 'Redownload Video' : 'Download Video')}
-              </button>
+                       setTimeout(() => {
+                         clearInterval(pollInterval);
+                         setDownloading(false);
+                       }, 60000);
+                     }
+                   } catch (e) {
+                     setVideoStatus('error');
+                   } finally {
+                     setTimeout(() => setDownloading(false), 500);
+                   }
+                 }}
+                 disabled={downloading || !form.youtube_id}
+                 className="w-full py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+               >
+                 {downloading ? 'Downloading...' : (videoStatus === 'cached' ? 'Redownload Video' : 'Download Video')}
+               </button>
 
               {videoStatus === 'cached' && (
                 <button

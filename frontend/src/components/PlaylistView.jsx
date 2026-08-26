@@ -370,19 +370,74 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
     typeof window !== 'undefined' ? window.innerWidth : 1280
   );
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(() => {
-    return typeof window !== 'undefined' ? window.innerWidth >= 760 : true;
+    if (typeof window === 'undefined') return true;
+    const stored = localStorage.getItem('playlist_leftSidebarOpen');
+    if (stored !== null) return stored === 'true';
+    return window.innerWidth >= 760;
   });
   const [showLoved, setShowLoved] = useState(false);
   const [favorites, setFavorites] = useState([]);
   const [lovedLoading, setLovedLoading] = useState(false);
-  const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
+  const [rightSidebarOpen, setRightSidebarOpen] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    const stored = localStorage.getItem('playlist_rightSidebarOpen');
+    return stored !== null ? stored === 'true' : false;
+  });
   const [rightSidebarMode, setRightSidebarMode] = useState('nowplaying');
   const [leaderboardDisplayMode, setLeaderboardDisplayMode] = useState('list');
   const [leaderboardTick, setLeaderboardTick] = useState(0);
   const [leftHovered, setLeftHovered] = useState(false);
   const [rightHovered, setRightHovered] = useState(false);
   const userClosedSidebarRef = useRef(false);
+  const userClosedLeftSidebarRef = useRef(false);
+  const leftHoverTimer = useRef(null);
+  const rightHoverTimer = useRef(null);
+
+  useEffect(() => { localStorage.setItem('playlist_leftSidebarOpen', leftSidebarOpen); }, [leftSidebarOpen]);
+  useEffect(() => { localStorage.setItem('playlist_rightSidebarOpen', rightSidebarOpen); }, [rightSidebarOpen]);
   const showSidebar = containerWidth >= 760;
+
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(260);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
+  const dragRef = useRef(null); // { side: 'left'|'right', startX, startWidth }
+  const [isResizing, setIsResizing] = useState(false);
+  const PEEK_WIDTH = 64;
+  const RIGHT_PEEK_WIDTH = 200;
+  const PANEL_GAP = 8;
+  const BAR_WIDTH = 28;
+
+  const leftReveal = leftSidebarOpen ? leftSidebarWidth : leftHovered ? PEEK_WIDTH : 0;
+  const rightPeeking = rightHovered && !rightSidebarOpen;
+  const [leftResizeHover, setLeftResizeHover] = useState(false);
+  const [rightResizeHover, setRightResizeHover] = useState(false);
+
+  const handleResizeStart = useCallback((side, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizing(true);
+    const startWidth = side === 'left' ? leftSidebarWidth : rightSidebarWidth;
+    dragRef.current = { side, startX: e.clientX, startWidth };
+    const onMouseMove = (ev) => {
+      if (!dragRef.current) return;
+      const { side: s, startX, startWidth: sw } = dragRef.current;
+      const delta = s === 'left' ? ev.clientX - startX : startX - ev.clientX;
+      const newWidth = Math.min(360, Math.max(200, sw + delta));
+      if (s === 'left') setLeftSidebarWidth(newWidth);
+      else setRightSidebarWidth(newWidth);
+    };
+    const onMouseUp = () => {
+      setIsResizing(false);
+      dragRef.current = null;
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, [leftSidebarWidth, rightSidebarWidth]);
 
   // Force leaderboard re-render every second while open so stats update live.
   useEffect(() => {
@@ -409,19 +464,6 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
   useEffect(() => {
     sessionStorage.setItem('playlistDisplayMode', displayMode);
   }, [displayMode]);
-
-  // Reset leaderboard data once per session (early stage, start fresh)
-  useEffect(() => {
-    try {
-      if (sessionStorage.getItem('leaderboardReset')) return;
-      const raw = localStorage.getItem('listeningStats');
-      if (raw) {
-        localStorage.removeItem('listeningStats');
-        listeningTracker.reset();
-      }
-      sessionStorage.setItem('leaderboardReset', '1');
-    } catch {}
-  }, []);
 
   // Persist sort state
   useEffect(() => {
@@ -575,7 +617,7 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
     const update = () => {
       const width = el.getBoundingClientRect().width;
       setContainerWidth(width);
-      if (width >= 760 && !leftSidebarOpen) {
+      if (width >= 760 && !leftSidebarOpen && !userClosedLeftSidebarRef.current) {
         setLeftSidebarOpen(true);
       }
     };
@@ -1116,6 +1158,7 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
       showToast('Lagu belum tersedia', 'error');
       return;
     }
+    console.log('[PlaylistView] onPlayTrack', { fileId, clickedIdx, queueLen: playableTracks.length, trackName: track?.display_name || track?.name });
     onPlayTrack(track, playableTracks, clickedIdx, selectedPlaylist);
   }, [selectedPlaylist, onPlayTrack, loadingTracks, lovedLoading, displayTracks, showToast]);
 
@@ -1270,6 +1313,7 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
       _exists: !!(track.exists && track.file_id),
       _file_id: track.file_id,
       _is_favorite: track.is_favorite || 0,
+      _youtube_id: track.youtube_id || null,
     }));
   }, [displayTracks, leavingTrackIds, enteringTrackIds]);
 
@@ -1500,22 +1544,99 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
       <ServiceStoppedBanner service="playlists" />
 
       <div style={{ flex: 1, margin: 4, borderRadius: 12, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ flex: 1, display: 'flex', gap: 8, minHeight: 0, overflow: 'hidden', position: 'relative', background: '#000' }}>
-        <div style={{ flex: '0 0 260px', background: '#121212', borderRadius: 12, overflow: 'hidden', position: 'relative' }}>
-           <PlaylistLeftModule
-           showSidebar={leftSidebarOpen}
-           leftHovered={leftHovered}
-           setLeftHovered={setLeftHovered}
-           onToggleSidebar={() => setLeftSidebarOpen(prev => !prev)}
-           sortedPlaylists={sortedPlaylists}
-           favoritesCount={favorites.length}
-           selectedPlaylist={selectedPlaylist}
-           showLoved={showLoved}
-handleSelectPlaylist={handleSelectPlaylist}
-            selectLoved={selectLoved}
-          />
+        <div style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden', position: 'relative', background: '#000' }}>
+
+        {/* ── Left sidebar assembly (decoupled: bar translates, module masked from its LEFT edge) ── */}
+        <div
+          style={{
+            position: 'absolute', left: 0, top: 0, bottom: 0,
+            width: BAR_WIDTH + leftReveal,
+            overflow: 'hidden',
+            zIndex: 10,
+            background: '#121212',
+            borderRadius: 12,
+            transition: 'width 0.3s ease',
+            pointerEvents: leftSidebarOpen || leftHovered ? 'auto' : 'none',
+          }}
+        >
+          {/* Preview content — fixed in place, revealed from its LEFT edge (playlist name shows during peek) */}
+          <div style={{
+            position: 'absolute', left: 0, top: 0, bottom: 0,
+            width: leftSidebarWidth,
+            WebkitMaskImage: 'linear-gradient(#000, #000)',
+            maskImage: 'linear-gradient(#000, #000)',
+            WebkitMaskSize: `${leftReveal}px 100%`,
+            maskSize: `${leftReveal}px 100%`,
+            WebkitMaskPosition: 'left top',
+            maskPosition: 'left top',
+            WebkitMaskRepeat: 'no-repeat',
+            maskRepeat: 'no-repeat',
+            transition: 'mask-size 0.3s ease, -webkit-mask-size 0.3s ease',
+          }}>
+            <PlaylistLeftModule
+              showSidebar={leftSidebarOpen}
+              sidebarWidth={leftSidebarWidth}
+              onToggleSidebar={() => setLeftSidebarOpen(prev => !prev)}
+              onClose={() => { userClosedLeftSidebarRef.current = true; setLeftSidebarOpen(false); }}
+              sortedPlaylists={sortedPlaylists}
+              favoritesCount={favorites.length}
+              selectedPlaylist={selectedPlaylist}
+              showLoved={showLoved}
+              handleSelectPlaylist={handleSelectPlaylist}
+              selectLoved={selectLoved}
+            />
+          </div>
+          {/* Edge bar + chevron — translates with the same timeline as before (closed [0,28] → open [260,288]). When open, shows a clickable collapse control. */}
+          <div
+            onClick={() => { if (leftSidebarOpen) { userClosedLeftSidebarRef.current = true; setLeftSidebarOpen(false); } }}
+            style={{
+              position: 'absolute', top: 0, bottom: 0,
+              width: BAR_WIDTH,
+              transform: `translateX(${leftReveal}px)`,
+              transition: 'transform 0.3s ease, opacity 0.15s ease',
+              background: '#121212',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              opacity: 1,
+              cursor: leftSidebarOpen ? 'pointer' : 'default',
+              pointerEvents: leftSidebarOpen ? 'auto' : 'none',
+            }}
+          >
+            {leftSidebarOpen
+              ? <ChevronLeft size={16} strokeWidth={2.5} style={{ color: '#fff', opacity: 0.7 }} />
+              : <ChevronRight size={16} strokeWidth={2.5} style={{ color: '#fff', opacity: 0.45 }} />}
+          </div>
+          {/* Resize is handled by the invisible gap strip rendered after the assemblies */}
         </div>
-         <div style={{ flex: 1, background: '#121212', borderRadius: 12, overflow: 'hidden', position: 'relative', minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+
+        {/* ── Left hit-area (only when !open) — events for bar + peek region ── */}
+        {!leftSidebarOpen && (
+          <div
+            onMouseEnter={() => { clearTimeout(leftHoverTimer.current); setLeftHovered(true); }}
+            onMouseLeave={() => { leftHoverTimer.current = setTimeout(() => setLeftHovered(false), 100); }}
+            onClick={() => { clearTimeout(leftHoverTimer.current); userClosedLeftSidebarRef.current = false; setLeftSidebarOpen(true); }}
+            style={{
+              position: 'absolute', left: 0, top: 0, bottom: 0,
+              width: BAR_WIDTH + PEEK_WIDTH,
+              zIndex: 30,
+              cursor: 'pointer',
+            }}
+          />
+        )}
+
+        {/* ── Middle ── */}
+         <div style={{
+           flex: 1,
+           background: '#121212',
+           borderRadius: 12,
+           overflow: 'hidden',
+           position: 'relative',
+           minWidth: 0,
+           display: 'flex',
+           flexDirection: 'column',
+            marginLeft: (leftSidebarOpen ? BAR_WIDTH + leftSidebarWidth : BAR_WIDTH + (leftHovered ? PEEK_WIDTH : 0)) + PANEL_GAP,
+            marginRight: (rightSidebarOpen ? BAR_WIDTH + rightSidebarWidth : BAR_WIDTH + (rightHovered ? RIGHT_PEEK_WIDTH : 0)) + PANEL_GAP,
+           transition: isResizing ? 'none' : 'margin 0.3s ease',
+         }}>
             <PlaylistMiddleModule
               selectedPlaylist={selectedPlaylist}
               loadingTracks={loadingTracks}
@@ -1589,27 +1710,130 @@ handleSelectPlaylist={handleSelectPlaylist}
               PlaylistToolbar={PlaylistToolbar}
             />
         </div>
-        <div style={{ flex: '0 0 360px', background: '#121212', borderRadius: 12, overflow: 'hidden', position: 'relative' }}>
-          <PlaylistRightModule
-          open={rightSidebarOpen}
-          mode={rightSidebarMode}
-          onModeChange={setRightSidebarMode}
-          onClose={() => { userClosedSidebarRef.current = true; setRightSidebarOpen(false); }}
-          onOpen={() => { userClosedSidebarRef.current = false; setRightSidebarMode(hasActivePlayback ? 'nowplaying' : 'leaderboard'); setRightSidebarOpen(true); }}
-          hasActivePlayback={hasActivePlayback}
-          queue={queue}
-          currentTrackIndex={currentTrackIndex}
-          listeningLeaderboardMetric={listeningLeaderboardMetric}
-          onMetricChange={setListeningLeaderboardMetric}
-          leaderboardDisplayMode={leaderboardDisplayMode}
-          onDisplayModeChange={setLeaderboardDisplayMode}
-          formatListeningDuration={formatListeningDuration}
-          rightHovered={rightHovered}
-          setRightHovered={setRightHovered}
-        />
-       </div>
-     </div>
-     </div>
+
+        {/* ── Right sidebar assembly (ONE coupled surface: bar at LEFT edge, preview to its right, grows leftward via translate) ── */}
+        <div
+          style={{
+            position: 'absolute', right: 0, top: 0, bottom: 0,
+            width: BAR_WIDTH + rightSidebarWidth,
+            display: 'flex',
+            transform: rightSidebarOpen
+              ? 'translateX(0)'
+              : rightPeeking
+                ? `translateX(${rightSidebarWidth - RIGHT_PEEK_WIDTH}px)`
+                : `translateX(${rightSidebarWidth}px)`,
+            transition: 'transform 0.3s ease',
+            zIndex: 10,
+            background: '#121212',
+            borderRadius: 12,
+            overflow: 'hidden',
+            pointerEvents: rightSidebarOpen || rightHovered ? 'auto' : 'none',
+          }}
+        >
+          {/* Edge bar + chevron — coupled, at the assembly's LEFT edge (moves left as assembly grows) */}
+          <div style={{
+            width: BAR_WIDTH,
+            flexShrink: 0,
+            background: '#121212',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            opacity: rightSidebarOpen ? 0 : 1,
+            transition: 'opacity 0.15s ease',
+            pointerEvents: 'none',
+          }}>
+            <ChevronLeft size={16} strokeWidth={2.5} style={{ color: '#fff', opacity: 0.45 }} />
+          </div>
+          {/* Preview content */}
+          <div style={{ width: rightSidebarWidth, flexShrink: 0, height: '100%', overflow: 'hidden' }}>
+            <PlaylistRightModule
+              open={rightSidebarOpen}
+              peeking={rightPeeking}
+              sidebarWidth={rightSidebarWidth}
+              mode={rightSidebarMode}
+              onModeChange={setRightSidebarMode}
+              onClose={() => { userClosedSidebarRef.current = true; setRightSidebarOpen(false); }}
+              onOpen={() => { userClosedSidebarRef.current = false; setRightSidebarMode(hasActivePlayback ? 'nowplaying' : 'leaderboard'); setRightSidebarOpen(true); }}
+              hasActivePlayback={hasActivePlayback}
+              queue={queue}
+              currentTrackIndex={currentTrackIndex}
+              listeningLeaderboardMetric={listeningLeaderboardMetric}
+              onMetricChange={setListeningLeaderboardMetric}
+              leaderboardDisplayMode={leaderboardDisplayMode}
+              onDisplayModeChange={setLeaderboardDisplayMode}
+              formatListeningDuration={formatListeningDuration}
+            />
+          </div>
+          {/* Resize is handled by the invisible gap strip rendered after the assemblies */}
+        </div>
+
+        {/* ── Right hit-area (only when !open) — events for bar + peek region ── */}
+        {!rightSidebarOpen && (
+          <div
+            onMouseEnter={() => { clearTimeout(rightHoverTimer.current); setRightHovered(true); }}
+            onMouseLeave={() => { rightHoverTimer.current = setTimeout(() => setRightHovered(false), 100); }}
+            onClick={() => { clearTimeout(rightHoverTimer.current); userClosedSidebarRef.current = false; setRightSidebarMode(hasActivePlayback ? 'nowplaying' : 'leaderboard'); setRightSidebarOpen(true); }}
+            style={{
+              position: 'absolute', right: 0, top: 0, bottom: 0,
+              width: BAR_WIDTH + RIGHT_PEEK_WIDTH,
+              zIndex: 30,
+              cursor: 'pointer',
+            }}
+          />
+        )}
+
+        {/* ── Left resize strip (invisible; thin accent line on hover/hold, in the gap) ── */}
+        {leftSidebarOpen && (
+          <div
+            onMouseDown={(e) => handleResizeStart('left', e)}
+            onMouseEnter={() => setLeftResizeHover(true)}
+            onMouseLeave={() => setLeftResizeHover(false)}
+            style={{
+              position: 'absolute', top: 0, bottom: 0,
+              left: (BAR_WIDTH + leftSidebarWidth) - 6,
+              width: 12,
+              zIndex: 20,
+              cursor: 'col-resize',
+              background: 'transparent',
+              pointerEvents: 'auto',
+            }}
+          >
+            <div style={{
+              position: 'absolute', left: 5, top: 0, bottom: 0,
+              width: 2,
+              borderRadius: 2,
+              background: (leftResizeHover || isResizing) ? 'rgba(136,146,230,0.7)' : 'transparent',
+              transition: 'background 0.15s ease',
+            }} />
+          </div>
+        )}
+
+        {/* ── Right resize strip (invisible; thin accent line on hover/hold, in the gap) ── */}
+        {rightSidebarOpen && (
+          <div
+            onMouseDown={(e) => handleResizeStart('right', e)}
+            onMouseEnter={() => setRightResizeHover(true)}
+            onMouseLeave={() => setRightResizeHover(false)}
+            style={{
+              position: 'absolute', top: 0, bottom: 0,
+              right: (BAR_WIDTH + rightSidebarWidth) - 6,
+              width: 12,
+              zIndex: 20,
+              cursor: 'col-resize',
+              background: 'transparent',
+              pointerEvents: 'auto',
+            }}
+          >
+            <div style={{
+              position: 'absolute', left: 5, top: 0, bottom: 0,
+              width: 2,
+              borderRadius: 2,
+              background: (rightResizeHover || isResizing) ? 'rgba(136,146,230,0.7)' : 'transparent',
+              transition: 'background 0.15s ease',
+            }} />
+          </div>
+        )}
+
+      </div>
+      </div>
 
       <FilterPanel
         open={showFilterPanel}

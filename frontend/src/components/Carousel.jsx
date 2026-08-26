@@ -48,7 +48,7 @@ const CarouselItem = React.memo(React.forwardRef(function CarouselItem({ file, c
   // All types (video / audio / image) use the lightweight 200px thumbnail the
   // backend generates — previously images loaded the full original file here,
   // which is what made the strip heavy when browsing an image gallery.
-  const thumbUrl = file.id ? `/thumbnails/${file.id}.jpg?v=${cacheBust}` : null;
+  const thumbUrl = fileId ? `/thumbnails/${fileId}.jpg?v=${cacheBust}` : null;
 
   const handleFavoriteClick = useCallback((e) => {
     e.stopPropagation();
@@ -57,26 +57,22 @@ const CarouselItem = React.memo(React.forwardRef(function CarouselItem({ file, c
     onToggleFavorite(file).finally(() => setIsToggling(false));
   }, [isToggling, onToggleFavorite, file]);
 
-  const activeBg = { video: 'bg-sky-500/25', audio: 'bg-purple-500/25', image: 'bg-green-500/25' }[file.type] || 'bg-sky-500/25';
-  const borderColor = { video: 'border-sky-400', audio: 'border-purple-400', image: 'border-green-400' }[file.type] || 'border-sky-400';
   const typeIcon = { video: <VideoIcon className="w-5 h-5 text-neutral-600" />, audio: <AudioIcon className="w-5 h-5 text-purple-400" />, image: <ImageIcon className="w-5 h-5 text-neutral-600" /> }[file.type] || <VideoIcon className="w-5 h-5 text-neutral-600" />;
 
-  return (
-      <div
-        ref={ref}
-        className="relative flex-shrink-0 select-none"
-        style={{ paddingRight: GAP_PX }}
-      >
+  const itemButton = (
       <button
         onClick={onClick}
         draggable={false}
         tabIndex={-1}
         onMouseDown={(e) => e.preventDefault()}
-        className={`${ITEM_SIZES[itemSize] || ITEM_SIZES.sm} rounded-lg overflow-hidden relative block transition-opacity border-2 ${
-          isActive ? borderColor : 'border-transparent'
-        } ${
-          isActive ? 'opacity-100' : 'opacity-60 hover:opacity-90'
+        className={`${ITEM_SIZES[itemSize] || ITEM_SIZES.sm} rounded-lg overflow-hidden relative block border-2 ${
+          isActive ? 'border-[#8C98ED]/70' : 'border-transparent'
         }`}
+        style={{
+          transform: isActive ? 'scale(1)' : 'scale(0.82)',
+          opacity: isActive ? 1 : 0.55,
+          transition: 'transform 200ms ease, opacity 200ms ease',
+        }}
       >
         {thumbUrl && !imgFailed ? (
           <img
@@ -90,7 +86,7 @@ const CarouselItem = React.memo(React.forwardRef(function CarouselItem({ file, c
             onError={() => setImgFailed(true)}
           />
         ) : (
-          <div className={`w-full h-full flex items-center justify-center ${isActive ? activeBg : 'bg-neutral-800'}`}>
+          <div className="w-full h-full flex items-center justify-center bg-neutral-800">
             {typeIcon}
           </div>
         )}
@@ -98,6 +94,15 @@ const CarouselItem = React.memo(React.forwardRef(function CarouselItem({ file, c
           <p className="text-[8px] truncate text-white/70">{file.display_name || file.name}</p>
         </div>
       </button>
+  );
+
+  return (
+      <div
+        ref={ref}
+        className="relative flex-shrink-0 select-none"
+        style={{ paddingRight: GAP_PX }}
+      >
+      {itemButton}
       {onToggleFavorite && (
         <span
           onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}

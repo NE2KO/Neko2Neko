@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { ChevronLeft, Minimize2, ListMusic, Heart, ChevronUp, ChevronDown, Ban, RotateCw, Trash2, Activity, Play, Grid } from 'lucide-react';
 import MediaControls from './MediaControls';
 import Carousel from './Carousel';
@@ -15,13 +16,14 @@ import { applySink, getStoredDevice } from '../utils/audioOutput';
 import { cancelSendQueueItem, retrySendQueueItem, removeSendQueueItem } from '../utils/api';
 import { safeParseTrackFilter, safeParseTrackSearchQuery, applyTrackFilter, applyTrackSearch } from '../utils/trackFilter';
 import { SharedSyncCore } from '../utils/syncCore';
+
 import { buildSensorSnapshot, validateAndAttach, logSensorSnapshot } from '../utils/sensor';
+import { trackProfileStore } from '../utils/trackProfileStore';
 import { evaluateDriftAnalyzer, evaluatePipelineAnalyzer, evaluateSchedulerAnalyzer, evaluateDecoderAnalyzer, evaluateConsistencyAnalyzer } from '../utils/analyzers';
 import { DriftMemory, PipelineMemory, SchedulerMemory, DecoderMemory, LearningMemory, GlobalMemory, createMemorySnapshot } from '../utils/memory';
-import { trackProfileStore } from '../utils/trackProfileStore.js';
-import { listeningTracker } from '../utils/listeningTracker.js';
 import { computeDerivedMetrics } from '../utils/memory/DerivedMetrics.js';
 import { decide, ExecutionQueue, getConstraints, createActionRequest } from '../utils/decision';
+import { listeningTracker } from '../utils/listeningTracker.js';
 import { createVideoSyncEngine } from '../utils/videoSyncEngine';
 import { circularDiff, isValidTelemetrySample } from '../utils/syncHelpers';
 import { cancelAutoPlayPending, isAutoPlayPendingCanceled, resetAutoPlayPending } from '../utils/autoPlayPending';
@@ -82,11 +84,15 @@ export default function MusicPlayer({
 
   const [coverBlobUrl, setCoverBlobUrl] = useState(null);
   const [autoPlayPending, setAutoPlayPending] = useState(false);
+  const autoMutedRef = useRef(false);
+  const reloadWasMutedRef = useRef(false);
   const [userInteracted, setUserInteracted] = useState(false);
   const [showQueuePanel, setShowQueuePanel] = useState(false);
   const [playerMode, setPlayerMode] = useState('cover');
   const [videoRemountKey, setVideoRemountKey] = useState(0);
   const [showMetadataEditor, setShowMetadataEditor] = useState(false);
+  const bgVideoLoadFailedRef = useRef(false);
+  const bgVideoProgressTimerRef = useRef(null);
   const [trackMetadata, setTrackMetadata] = useState(null);
   const [lyricsSynced, setLyricsSynced] = useState(null);
   const [youtubeId, setYoutubeId] = useState(null);
@@ -112,14 +118,30 @@ export default function MusicPlayer({
     if (saved) {
       reloadResumeAtRef.current = Number(saved);
     }
+    if (sessionStorage.getItem('audioReloadWasMuted') === 'true') {
+      reloadWasMutedRef.current = true;
+      sessionStorage.removeItem('audioReloadWasMuted');
+    }
     const onResume = () => {
       reloadResumeAtRef.current = 0;
-      // canplay may have already fired (once) during the resume window and
-      // been skipped by the reloadResumeAtRef guard, so no retry would ever
-      // happen. Re-attempt playback now that the gate is open.
       const audio = audioRef?.current;
       if (audio && audio.src && usePlaybackStore.getState().isPlaying && audio.paused) {
-        audio.play().catch(() => {});
+        const tryPlayWithMuted = () => {
+          audio.play().then(() => {}).catch((err) => {
+            if (err?.name === 'NotAllowedError' && !reloadWasMutedRef.current && !audio.muted) {
+              autoMutedRef.current = true;
+              audio.muted = true;
+              audio.play().catch(() => {
+                setAutoPlayPending(true);
+                resetAutoPlayPending();
+              });
+            } else {
+              setAutoPlayPending(true);
+              resetAutoPlayPending();
+            }
+          });
+        };
+        tryPlayWithMuted();
       }
     };
     window.addEventListener('audio-reload-resume', onResume);
@@ -206,7 +228,6 @@ export default function MusicPlayer({
     const shouldLog = alwaysLog.includes(kind) || (performance.now() - log.lastConsoleLog > 500);
     if (shouldLog && ['hard_seek', 'soft_seek', 'stall', 'large_drift', 'error', 'anchor_call', 'anchor_complete', 'mode_switch', 'bg_seek_call', 'bg_seeked', 'bg_pending_force_seek'].includes(kind)) {
       log.lastConsoleLog = performance.now();
-      console.log(`[SYNC ${event.t.toFixed(0)}ms] ${kind}`, engine, data);
     }
   };
 
@@ -749,6 +770,14 @@ useEffect(() => {
     ? (storeCurrentTrackIndex >= 0 && storeCurrentTrackIndex < playlistFiles.length ? playlistFiles[storeCurrentTrackIndex] : null)
     : file;
 
+  // Guarded cover URL: activeFile is null during the first paint after a reload
+  // (queue/snapshot restore runs in an effect), so the raw template used to
+  // request /thumbnails/undefined.jpg?v=0 and 404'd on every load.
+  const activeCoverId = activeFile?.file_id || activeFile?.id || null;
+  const activeCoverUrl = activeCoverId
+    ? `/thumbnails/${activeCoverId}.jpg?v=${coverVersion}`
+    : null;
+
   // Telemetry: auto close/open session on track change (one session per track).
   useEffect(() => {
     const trackId = activeFile?.file_id || activeFile?.id || null;
@@ -843,7 +872,7 @@ useEffect(() => {
   }, []);
 
   // Stable cacheBust for Carousel - only changes when file ID changes
-  const stableCacheBust = useMemo(() => String(coverVersion), [activeFile?.id, coverVersion]);
+  const stableCacheBust = useMemo(() => String(coverVersion), [activeFile?.file_id || activeFile?.id, coverVersion]);
 
   // Warm the browser HTTP cache for the ±2 neighbor cover thumbnails so that the
   // cover swap on skip is instant. Uses the exact displayed URL (same coverVersion
@@ -857,7 +886,7 @@ useEffect(() => {
     const cv = coverVersion;
     [-2, -1, 1, 2].forEach((off) => {
       const f = queue[(idx + off + n) % n];
-      const fid = f?.id || f?.file_id;
+      const fid = f?.file_id || f?.id;
       if (fid) {
         const img = new Image();
         img.decoding = 'async';
@@ -968,13 +997,16 @@ useEffect(() => {
       // loadedmetadata instead.
       resumePos = storedPosition > 0 ? storedPosition : 0;
       audio.currentTime = 0;
+      console.log("[Music] setting audio src:", `/file/${fileId}`);
       audio.src = `/file/${fileId}`;
+      console.log("[Music] audio.src set:", `/file/${fileId}`);
       audio.load();
 
       let sinkReady = false;
       let canPlayFired = false;
       const tryPlay = () => {
         if (cancelled) return;
+        console.log("[Music] calling audio.play()");
         audio.play().then(() => {
           if (cancelled) return;
           setIsLoading(false);
@@ -986,8 +1018,20 @@ useEffect(() => {
           // Browser blocked autoplay (no user gesture yet, e.g. right after a
           // reload). Remember it and resume on the first user interaction.
           if (err?.name === 'NotAllowedError') {
-            setAutoPlayPending(true);
-            resetAutoPlayPending();
+            const tryMuted = !reloadWasMutedRef.current && !audio.muted;
+            if (tryMuted) {
+              autoMutedRef.current = true;
+              audio.muted = true;
+              audio.play().catch(() => {
+                setAutoPlayPending(true);
+                resetAutoPlayPending();
+              });
+            } else {
+              setAutoPlayPending(true);
+              resetAutoPlayPending();
+            }
+          } else {
+            console.error("[Music] audio.play() error:", err);
           }
         });
       };
@@ -1144,28 +1188,40 @@ useEffect(() => {
   // track's video is NOT actually cached on disk (a YouTube ID may exist but the
   // file was never downloaded). Only stay in video mode when the cached file
   // exists. A manual switch into video mode for the current track is NOT
-  // overridden (prevYoutubeIdRef guard) — the user still sees the download
+  // overridden (prevFileIdRef guard) — the user still sees the download
   // spinner rather than being bounced to cover.
   useEffect(() => {
+    const fileId = activeFile?.file_id || activeFile?.id;
     const videoMode =
       playerMode === 'video' || playerMode === 'video-split' || playerMode === 'video-cover';
-    // Switch to cover only when the new track has no video at all.
-    // CachedVideoPlayer handles its own download/cache UI when a yt_id exists
-    // but the file is not yet cached (or is still downloading), so we no
-    // longer force-fallback to cover on cache miss.
-    if (!youtubeId && videoMode) { setPlayerMode('cover'); return; }
-  }, [youtubeId, playerMode, setPlayerMode]);
+    // Switch to cover only when the track CHANGES to one with no video at all.
+    // The guard is suppressed on the initial mount (prevFileIdRef.current === null)
+    // and when the user manually switches to MV mode for the SAME track, so a
+    // late metadata fetch can't bounce the player back to cover.
+    if (prevFileIdRef.current != null && fileId !== prevFileIdRef.current && !youtubeId && videoMode) {
+      setPlayerMode('cover');
+    }
+    prevFileIdRef.current = fileId;
+  }, [youtubeId, playerMode, setPlayerMode, activeFile?.file_id, activeFile?.id]);
 
-  // Retry autoplay after user gesture
+  // First user interaction after a blocked/muted resume: unmute and retry play.
+  // Also handles the legacy autoPlayPending fallback.
   useEffect(() => {
-    if (autoPlayPending && userInteracted && audioRef?.current && !isAutoPlayPendingCanceled()) {
-      audioRef.current.play().catch(() => {});
+    if (!userInteracted || !audioRef?.current) return;
+    const audio = audioRef.current;
+    if (autoMutedRef.current) {
+      autoMutedRef.current = false;
+      audio.muted = false;
+      if (audio.paused) audio.play().catch(() => {});
+    }
+    if (autoPlayPending && !isAutoPlayPendingCanceled()) {
+      audio.play().catch(() => {});
       setAutoPlayPending(false);
       resetAutoPlayPending();
     }
   }, [autoPlayPending, userInteracted, audioRef]);
 
-    // Mark the first user gesture so a previously-blocked autoplay can resume.
+  // Mark the first user gesture so a previously-blocked autoplay can resume.
     // Browsers block audio.play() without a user gesture; the effect above waits
     // for `userInteracted` to become true before retrying. (VaultAudioPlayer has
     // the same listener — MusicPlayer was missing it, so autoplay never resumed
@@ -1831,6 +1887,17 @@ useEffect(() => {
     bgEngine.anchor({ play: playing, target: bgTarget });
 }, [youtubeId, playerMode]);
 
+// Cleanup bg video progress timer on track change.
+useEffect(() => {
+  return () => {
+    if (bgVideoProgressTimerRef.current) {
+      clearInterval(bgVideoProgressTimerRef.current);
+      bgVideoProgressTimerRef.current = null;
+    }
+    bgVideoLoadFailedRef.current = false;
+  };
+}, [youtubeId]);
+
 // One-time sync: position the video at the offset target as soon as it becomes
 // ready. This runs again if videoOffset arrives/changes AFTER the first pass.
 useEffect(() => {
@@ -1920,8 +1987,10 @@ useEffect(() => {
     const confidence = profile.getEffectiveConfidence();
 
     if (confidence > 0.1) {
-      syncCore.applyProfile('mv', profile);
-      syncCore.applyProfile('bg', profile);
+      if (syncCore) {
+        syncCore.applyProfile('mv', profile);
+        syncCore.applyProfile('bg', profile);
+      }
       mvEngine.softReset();
       bgEngine.softReset();
     } else {
@@ -2132,11 +2201,30 @@ const handleSeekSync = useCallback((seconds) => {
   }, []);
 
   const handleToggleEngine = useCallback(() => {
+    const enteringVideo = playerMode === 'cover' || playerMode === 'lyrics';
+    if (enteringVideo && !youtubeId) {
+      const fileId = activeFile?.file_id || activeFile?.id;
+      if (fileId) {
+        fetch(`/api/metadata/${fileId}`)
+          .then(r => r.ok ? r.json() : null)
+          .then(data => {
+            if (data?.youtube_id && playerMode !== 'cover') {
+              setYoutubeId(data.youtube_id);
+              setVideoOffset(Number(data.video_offset) || 0);
+              setTrackMetadata(data);
+              setLyricsSynced(data.lyrics_synced || data.syncedLyrics || null);
+            }
+          })
+          .catch(() => {});
+      }
+    }
+
     setPlayerMode(prev => {
-      if (prev === 'cover') return 'video';
-      return 'cover';
+      if (prev === 'cover' || prev === 'lyrics') return 'video';
+      if (prev === 'video' || prev === 'video-split' || prev === 'video-cover') return 'cover';
+      return prev;
     });
-  }, []);
+  }, [youtubeId, playerMode, activeFile?.file_id, activeFile?.id]);
 
   function formatTime(seconds) {
     if (!seconds || isNaN(seconds)) return '0:00';
@@ -2186,11 +2274,11 @@ const handleSeekSync = useCallback((seconds) => {
              >
                <Activity size={20} />
              </button>
-               <button
-                 onClick={handleToggleEngine}
-                 className={`p-2 rounded-full transition-colors min-w-[3.5rem] text-center ${isVideoMode ? 'bg-white/20 text-emerald-400' : 'text-white/70 hover:bg-white/20 hover:text-white'}`}
-                 title={isVideoMode ? 'Switch to Cover mode' : 'Switch to MV mode'}
-               >
+                <button
+                  onClick={handleToggleEngine}
+                  className={`p-2 rounded-full transition-colors min-w-[3.5rem] text-center ${isVideoMode ? 'bg-gradient-to-r from-sky-500/30 to-indigo-500/30 text-white' : 'text-white/70 hover:bg-white/20 hover:text-white'}`}
+                  title={isVideoMode ? 'Switch to Cover mode' : 'Switch to MV mode'}
+                >
                  <span className="text-xs font-bold">{isVideoMode ? 'Cover' : 'MV'}</span>
                </button>
               <button
@@ -2637,7 +2725,7 @@ const handleSeekSync = useCallback((seconds) => {
           >
             {activeFile ? (
               <NetworkImage
-                src={coverBlobUrl || `/thumbnails/${activeFile.id}.jpg?v=${coverVersion}`}
+                src={coverBlobUrl || activeCoverUrl}
                 alt="Cover"
                 className="absolute inset-0 w-full h-full object-cover"
               />
@@ -2654,8 +2742,8 @@ const handleSeekSync = useCallback((seconds) => {
               <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-sm">
                 <div className="w-12 h-12 border-4 border-purple-500/20 border-t-purple-500 rounded-full animate-spin" />
               </div>
-            )}
-            {playerMode === 'cover' && (
+             )}
+             {playerMode === 'cover' && (
               <div className="absolute top-2 right-2 opacity-0 hover:opacity-100 transition-opacity">
                 <button
                   onClick={(e) => { e.stopPropagation(); setShowMetadataEditor(true); }}
@@ -2687,7 +2775,7 @@ const handleSeekSync = useCallback((seconds) => {
                   key={videoRemountKey}
                   ref={videoRef}
                   youtubeId={youtubeId}
-                  coverUrl={coverBlobUrl || `/thumbnails/${activeFile?.id}.jpg?v=${coverVersion}`}
+                  coverUrl={coverBlobUrl || activeCoverUrl}
                   muted
                   onReady={handleVideoReady}
                   onLoadedMetadata={onVideoLoadedMetadata}
@@ -2715,13 +2803,13 @@ const handleSeekSync = useCallback((seconds) => {
             }}
           >
             <div className="absolute inset-0 bg-gradient-to-br from-purple-900 via-neutral-900 to-sky-900" />
-            <NetworkImage
-              src={coverBlobUrl || `/thumbnails/${activeFile?.id}.jpg?v=${coverVersion}`}
-              alt=""
-              className="absolute inset-0 w-full h-full object-cover"
-              style={{ filter: 'blur(28px) brightness(0.7) saturate(1.25)', transform: 'scale(1.15)' }}
-              showRetry={false}
-            />
+              <NetworkImage
+                src={coverBlobUrl || activeCoverUrl}
+                alt=""
+                className="absolute inset-0 w-full h-full object-cover"
+                style={{ filter: 'blur(28px) brightness(0.7) saturate(1.25)', transform: 'scale(1.15)' }}
+                showRetry={false}
+              />
             <div className="absolute inset-0 bg-black/15" />
             <div
               className="absolute inset-0"
@@ -2752,11 +2840,11 @@ const handleSeekSync = useCallback((seconds) => {
             className="absolute inset-0"
             style={{ opacity: playerMode === 'video-cover' ? 1 : 0, transition: 'opacity 300ms ease' }}
           >
-            <NetworkImage
-              src={coverBlobUrl || `/thumbnails/${activeFile?.id}.jpg?v=${coverVersion}`}
-              alt="Cover"
-              className="absolute inset-0 w-full h-full object-cover"
-            />
+             <NetworkImage
+               src={coverBlobUrl || activeCoverUrl}
+               alt="Cover"
+               className="absolute inset-0 w-full h-full object-cover"
+             />
           </div>
           {/* Child B: lyrics (video-split) */}
           <div
@@ -2767,13 +2855,13 @@ const handleSeekSync = useCallback((seconds) => {
             }}
           >
             <div className="absolute inset-0 bg-gradient-to-br from-purple-900 via-neutral-900 to-sky-900" />
-            <NetworkImage
-              src={coverBlobUrl || `/thumbnails/${activeFile?.id}.jpg?v=${coverVersion}`}
-              alt=""
-              className="absolute inset-0 w-full h-full object-cover"
-              style={{ filter: 'blur(22px) brightness(0.75) saturate(1.2)', transform: 'scale(1.1)' }}
-              showRetry={false}
-            />
+             <NetworkImage
+               src={coverBlobUrl || activeCoverUrl}
+               alt=""
+               className="absolute inset-0 w-full h-full object-cover"
+               style={{ filter: 'blur(22px) brightness(0.75) saturate(1.2)', transform: 'scale(1.1)' }}
+               showRetry={false}
+             />
             <div className="absolute inset-0 bg-black/15" />
             <div className="relative z-10 w-full h-full">
               <LyricsDisplay
@@ -3036,7 +3124,25 @@ const handleSeekSync = useCallback((seconds) => {
             onError={() => {
               const bg = bgVideoRef.current;
               if (syncCore && bg) syncCore.recordVideoLifecycleEvent('bg', 'error', bg);
-              // BG stream error is harmless — it shares the same src as the MV.
+              bgVideoLoadFailedRef.current = true;
+              // BG stream error — start polling for cache so we can retry
+              // the moment the download completes, without a page reload.
+              if (!bgVideoProgressTimerRef.current && youtubeId) {
+                bgVideoProgressTimerRef.current = setInterval(async () => {
+                  try {
+                    const r = await fetch(`/api/video-cache/progress/${youtubeId}`);
+                    if (!r.ok) return;
+                    const data = await r.json();
+                    if (data.status === 'cached' && bgVideoRef.current) {
+                      clearInterval(bgVideoProgressTimerRef.current);
+                      bgVideoProgressTimerRef.current = null;
+                      bgVideoLoadFailedRef.current = false;
+                      // Force reload the bg video now that the cached file exists.
+                      bgVideoRef.current.load();
+                    }
+                  } catch {}
+                }, 1000);
+              }
             }}
         />
       )}
@@ -3119,11 +3225,11 @@ const handleSeekSync = useCallback((seconds) => {
         onTrackSelect={handleQueueSelect}
         onFavoriteToggle={onFavoriteToggle}
       />
-    {showMetadataEditor && activeFile?.id && (
+    {showMetadataEditor && activeFile?.file_id && createPortal(
       <MetadataEditor
-        fileId={activeFile.id}
+        fileId={activeFile.file_id}
         onSaved={() => {
-          fetch(`/api/metadata/${activeFile.id}`)
+          fetch(`/api/metadata/${activeFile.file_id}`)
             .then(r => r.ok ? r.json() : null)
             .then(data => {
               if (data) {
@@ -3138,7 +3244,7 @@ const handleSeekSync = useCallback((seconds) => {
         onCoverChanged={() => setCoverVersion(v => v + 1)}
         onClose={() => {
           setShowMetadataEditor(false);
-          fetch(`/api/metadata/${activeFile.id}`)
+          fetch(`/api/metadata/${activeFile.file_id}`)
             .then(r => r.ok ? r.json() : null)
             .then(data => {
               if (data) {
@@ -3150,7 +3256,8 @@ const handleSeekSync = useCallback((seconds) => {
             })
             .catch(() => {});
         }}
-      />
+      />,
+      document.body
     )}
     </div>
     </div>
