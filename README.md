@@ -1,19 +1,21 @@
 > ## 🚧 Project Status: In Progress
 >
 > - **Project started:** May 1, 2026
+> - **Last updated:** August 27, 2026 — **P1 + P1.5 READ/RESOLUTION boundary complete**
+> - **Media Engine:** `@homelab/media-engine@0.1.0` extracted (`file:../../media-engine`), `fileResolver.js` deleted, all media file resolution via `MediaEngine`
 > - **Status:** Actively being worked on.
-> - **Current focus (as fast as possible):**
+> - **Current focus:**
+>   - Media Engine hardening (visibility, changeset, operations)
 >   - Performance optimization
 >   - UI polish / beautification
 >   - Bug fixing
->   - Making the logic more proper and robust
->   - Improving the menus and making them better
 
 # Media Vault
 
 ![Node](https://img.shields.io/badge/Node-%3E%3D18-green)
 ![React](https://img.shields.io/badge/React-18.3.1-blue)
 ![SQLite](https://img.shields.io/badge/SQLite-WAL-orange)
+![Media Engine](https://img.shields.io/badge/media--engine-0.1.0-purple)
 
 Self-hosted media server — stream, download, manage, and monitor from one dashboard.
 
@@ -42,12 +44,14 @@ Self-hosted media server — stream, download, manage, and monitor from one dash
 
 | Information | Detail |
 |-------------|--------|
-| **Version** | backend v1.0.0 · frontend v1.0.0 · whatsapp-bot v1.0.0 |
+| **Version** | backend v1.1.0 · frontend v1.0.0 · whatsapp-bot v1.0.0 · **@homelab/media-engine v0.1.0** |
+| **Media Engine** | `file:../../media-engine` — see [`../media-engine/README.md`](../media-engine/README.md) and [`../media-engine/plan.md`](../media-engine/plan.md) |
 | **Documentation** | See [ARCHITECTURE.md](ARCHITECTURE.md) for full technical reference |
 
 ## Table of Contents
 
 - [About](#about)
+- [Media Engine](#media-engine)
 - [Features](#features)
 - [Menu Workflow](#menu-workflow)
 - [Tech Stack](#tech-stack)
@@ -77,26 +81,47 @@ Media Vault is a self-hosted media server born from the need to access media fil
 - **Git Integration**: Web-based Git operations without opening terminal (backend routes defined in `git.js` but **not yet mounted** in `server.js`; frontend `GitView.jsx` exists and calls `/api/git/*`, which currently returns 404)
 - **WhatsApp**: WhatsApp Web pairing and bot controls, accessible from the sidebar
 
-**Technology Stack:** Node.js, Express, SQLite, React, FFmpeg, HLS streaming, waveform visualization.
+**Technology Stack:** Node.js, Express, SQLite, React, FFmpeg, HLS streaming, waveform visualization, **@homelab/media-engine** (media gateway + safety boundary).
+
+## Media Engine
+
+**`@homelab/media-engine@0.1.0`** is the single domain boundary for all media resources. The web layer never touches the filesystem or SQLite directly for media — it asks the engine.
+
+```
+HTTP Route → MediaEngine → MediaRepository → SQLite → Filesystem
+                ↑ resolve()/getServeTarget()/listFiles()/searchFiles()
+           Safety guards (pathGuard, visibilityGuard) + symlink-aware homelab/Music
+```
+
+**What the engine owns (P1 + P1.5 complete):**
+- `MediaScanner` — incremental scan, `fs.watch` + 15-min periodic, `pause()`/`resume()` for `adaptiveController`, `enrichDurations`/`enrichMetadata`
+- `MediaEngine` — `resolve`/`getServeTarget`/`stat`, `listFiles`/`searchFiles`/`searchFolders`/`getFileMetadata`/`getSearchSuggestions`/`getStats`/`getBatchFiles`/`resolveBatchFilenames`/`listFavorites`, visibility (`delete`/`restore` soft, `trash`/`purge` stubs), changesets (`beta → pre → release`)
+- `MediaRepository` — 56-method interface; `SqliteMediaRepository` (backend) and `MockMediaRepository` (tests); visibility via `LEFT JOIN ... OR IS NULL` (missing row = `PRESENT`)
+- `resolveFile` + `assertSafePath` — handles symlinked `homelab/Music → /home/CATIAA/Music`
+- `OperationLock` + `OperationResult` + `EventBus`
+
+**What stays in the backend:** HTTP (`res.sendFile`, `Range`, `Cache-Control`), SSE, multipart upload, FFmpeg (thumbnails, HLS, transcode), YouTube/video cache, playlists, send queue, ADB, Telegram, WhatsApp, AI.
+
+**Legacy deleted:** `fileResolver.js`, `fileScanner.js`, `scannerWorker.js`, `scannerClient.js`, `watcher.js` — zero `grep` hits in `backend/src`. See [`../media-engine/README.md`](../media-engine/README.md) and [`../media-engine/plan.md`](../media-engine/plan.md) (13 phases, transaction strategy).
 
 ## Features
 
 | Menu | Status | Description | Technology Used |
 |------|--------|-------------|---------------|
-| Media Vault | Optional | Browse and stream offline video/audio/image files seamlessly with adaptive HLS streaming, waveform visualization, and instant search | hls.js, FFmpeg, better-sqlite3 FTS, recharts, framer-motion |
-| Library Management | Optional | Auto-scan, full-text search, thumbnail generation | better-sqlite3 WAL, incremental scanning |
-| Playlists | Optional | XSPF import, full CRUD, drag-reorder | XSPF parser, folder-based playlists |
-| Metadata Editing | Optional | Read/write audio tags, cover art, lyrics | FFprobe, MusicBrainz, LRCLIB |
-| Monitoring | Optional | System stats, fan/clock control (Linux only, AMD-focused, under development) | nbfc, ryzenadj, WebSocket (real-time) |
-| Downloader | Optional | Download from YouTube, TikTok, Instagram, Twitter/X, torrent, gallery-dl; send link to Telegram bot for auto-download with default settings (1080p, h264) or custom parameters | yt-dlp, gallery-dl, aria2c, Telegram bot |
-| ADB Transfer | Optional | Push/pull files Android <-> laptop (concurrent workers, no overhead from file managers) | ADB, concurrent workers |
-| Scrcpy Monitor | Optional | Remote phone screen viewing via external scrcpy window (zero overhead) | node-pty shell execution |
-| Music Player | Optional | Dual modes: cover mode (audio only) and video mode (separate audio/video with precision sync); fixes Strawberry player navigation bug | waveform, synced LRC, hls.js, precision sync engine |
-| Send Queue | Optional | Monitors sent/failed/cancelled files to Telegram and WA; tick-based queue for WA status (1-6 posts per day in 24h format) | Tick-based precision, SSE, WA/Telegram APIs |
-| WhatsApp | Optional | WhatsApp Web pairing (QR), connection status, and bot/message controls | whatsapp-web.js, whatsapp-bot, /api/whatsapp |
-| Git Integration | API-only (not mounted) | Full Git operations without terminal (status, branches, tags, stash, commit, push, pull, diff, file editor, tree browser); routes defined in `git.js` but not yet wired into the server; web UI (`GitView.jsx`) exists but hits 404 until routes are mounted | Simple Git wrapper |
+| Media Vault | Active | Browse and stream offline video/audio/image files via MediaEngine (visibility-aware listing, FTS search, safe resolution) | **@homelab/media-engine**, hls.js, FFmpeg, better-sqlite3 FTS, recharts, framer-motion |
+| Library Management | Active | Auto-scan via MediaScanner, full-text search, thumbnail generation | **MediaScanner** (watch + periodic), better-sqlite3 WAL |
+| Playlists | Active | XSPF import, full CRUD, drag-reorder | XSPF parser, folder-based playlists |
+| Metadata Editing | Active | Read/write audio tags, cover art, lyrics — via `MediaEngine.getFileMetadata`/`updateMetadata` | FFprobe, MusicBrainz, LRCLIB |
+| Monitoring | Active | System stats, fan/clock control (Linux only, AMD-focused) + SSE stats via `engine.repository.countByType` | nbfc, ryzenadj, WebSocket (real-time) |
+| Downloader | Active | Download from YouTube, TikTok, Instagram, Twitter/X, torrent, gallery-dl; send link to Telegram bot for auto-download | yt-dlp, gallery-dl, aria2c, Telegram bot |
+| ADB Transfer | WIP | Push/pull files Android <-> laptop (concurrent workers) | ADB, concurrent workers |
+| Scrcpy Monitor | WIP | Remote phone screen viewing via external scrcpy window | node-pty shell execution |
+| Music Player | Active | Dual modes: cover mode and video mode with precision sync (fixes Strawberry navigation bug) | waveform, synced LRC, hls.js, precision sync engine |
+| Send Queue | Active | Monitors sent/failed/cancelled to Telegram and WA; tick-based queue for WA status | Tick-based precision, SSE, WA/Telegram APIs |
+| WhatsApp | Active | WhatsApp Web pairing (QR), connection status, bot controls — media path via `MediaEngine.resolve` | whatsapp-web.js, whatsapp-bot |
+| Git Integration | API-only (not mounted) | Full Git operations without terminal; routes defined in `git.js` but not yet wired | Simple Git wrapper |
 
-> **Note:** All menus are still actively worked on and under development. New menus may be added in the future.
+> **Note:** All menus are still actively worked on. `trash`/`purge`/`move`/`rename` in MediaEngine are stubs (Phase 5/7) — physical `unlinkSync` + `DELETE FROM files` remains backend until then.
 
 ## Menu Workflow
 
@@ -107,36 +132,38 @@ flowchart LR
     U([User / Phone]) -->|opens| DASH{{Media Vault Dashboard}}
 
     DASH -->|Media Vault| MV[Media Vault]
-    MV --> FILES[files · stream · thumbnails]
-    FILES --> DB[(media.db)]
-    FILES --> FF[ffmpeg / HLS]
+    MV --> ENG[MediaEngine<br/>resolve / listFiles / searchFiles]
+    ENG --> REPO[(SqliteMediaRepository)]
+    REPO --> DB[(media.db<br/>files, folders, FTS, visibility)]
+    ENG --> FF[ffmpeg / HLS]
 
     DASH -->|Library Mgmt| LIB[Library Management]
-    LIB --> SCAN[incremental watcher scan]
-    SCAN --> FILES
+    LIB --> SCAN[MediaScanner<br/>incremental watch]
+    SCAN --> ENG
 
     DASH -->|Playlists| PL[Playlists]
     PL --> XSPF[XSPF / folder scan]
     PL --> DB
 
     DASH -->|Metadata| MD[Metadata Editing]
+    MD --> ENG2[MediaEngine<br/>getFileMetadata / updateMetadata]
     MD --> FP[ffprobe · MusicBrainz · LRCLIB]
 
     DASH -->|Monitoring| MON[Monitoring]
     MON --> NB[nbfc · ryzenadj]
     MON --> DK[dockerode]
-    MON --> WS[WebSocket / SSE]
+    MON --> WS[WebSocket / SSE<br/>via engine stats]
 
     DASH -->|Downloader| DL[Downloader]
     DL --> YT[yt-dlp · gallery-dl · aria2c]
     DL --> TG1[Telegram bot auto-download]
 
     DASH -->|Send Queue| SQ[Send Queue]
-    SQ --> TG[Telegram]
-    SQ --> WAQ[WhatsApp status - tick queue]
+    SQ --> TG[Telegram<br/>engine.resolve]
+    SQ --> WAQ[WhatsApp status<br/>tick queue]
 
     DASH -->|WhatsApp| WA[WhatsApp]
-    WA --> WB[whatsapp-web.js - in-process]
+    WA --> WB[whatsapp-web.js<br/>engine.resolve]
 
     DASH -->|Music Player| MUS[Music Player]
     MUS --> SYNC[Precision Sync Engine]
@@ -152,7 +179,7 @@ flowchart LR
     ADB:::wip --> ADBT[adb push / pull]
 ```
 
-> **Legend:** Boxes outlined in **red dashed** — **Scrcpy Monitor** and **ADB Transfer** — are *not* the current development focus. They are usable but still rough, with known bugs and incomplete UX. Current effort concentrates on Media Vault, Music sync, Monitoring, Downloader, and Send Queue polish. Git Integration routes exist but are not yet mounted (see [ARCHITECTURE.md](ARCHITECTURE.md)).
+> **Legend:** Red dashed — **Scrcpy** and **ADB Transfer** are WIP. Current effort: Media Vault, Music sync, Monitoring, Downloader, Send Queue, and **Media Engine hardening** (P1+P1.5 done, fileResolver deleted).
 
 ## Tech Stack
 
@@ -160,6 +187,7 @@ flowchart LR
 
 | Package | Version | Purpose |
 |---------|---------|---------|
+| **@homelab/media-engine** | `file:../../media-engine` **0.1.0** | Media gateway, scanner, safety boundary |
 | better-sqlite3 | ^12.9.0 | SQLite driver (WAL mode) |
 | busboy | ^1.6.0 | Multipart upload |
 | compression | ^1.8.1 | Gzip/deflate |
@@ -230,26 +258,43 @@ flowchart LR
 ## Quick Start
 
 ```bash
-# 1. Clone
+# 1. Clone (includes sibling media-engine)
 git clone <repo-url>
 cd homelab-media-server
 
-# 2. Backend
+# 2. Media Engine (sibling, file:../../media-engine)
+# No publish — backend uses file:../../media-engine
+# After editing media-engine, re-sync:
+cd backend && npm install --silent && cd ..
+
+# 3. Backend
 cd backend && npm install
 cp ../.env.example ../credentials/.env   # edit as needed
 npm start
+# or dev (expose-gc + watch):
+npm run dev
 
-# 3. Frontend (dev only)
+# 4. Frontend (dev only)
 cd frontend && npm install && npm run dev
 ```
 
-> **Note:** In production, the frontend is served statically by the backend. Vite is for development only.
+> **Note:** In production, the frontend is served statically by the backend. Vite is for development only. `MEDIA_ROOT` defaults to `/home/CATIAA/homelab` (supports `:`-separated multi-root; symlink `homelab/Music → /home/CATIAA/Music` handled).
 
 ## Project Structure
 
 ```
 homelab-media-server/
-├── backend/          # Express API + media processing
+├── backend/          # Express API + media processing (via MediaEngine)
+│   ├── src/
+│   │   ├── server.js          # Entry, Express, MediaScanner + MediaEngine wiring
+│   │   ├── db.js              # SQLite, FTS, settings (stmts)
+│   │   ├── repository/        # SqliteMediaRepository (MediaRepository impl)
+│   │   ├── routes/            # 19 route modules (files.js via MediaEngine)
+│   │   ├── monitor/           # System metrics
+│   │   ├── services/          # Background services
+│   │   ├── utils/             # Helpers (thumbnailQueue, maintenance, etc.)
+│   │   └── middleware/        # Route guards
+│   └── test/smoke-test-scanner.mjs  # 113k-file sync validation
 ├── frontend/         # React 18 SPA
 ├── whatsapp-bot/     # WhatsApp integration
 ├── data/             # media.db, download tasks, thumbnails
@@ -257,41 +302,56 @@ homelab-media-server/
 ├── logs/             # Rotating logs
 ├── credentials/      # .env, auth files (gitignored)
 └── docs/             # Documentation archives
+
+../media-engine/      # Sibling package (file:../../media-engine)
+├── src/
+│   ├── MediaEngine.js         # Gateway (resolve, listFiles, search, visibility)
+│   ├── MediaScanner.js        # Incremental scan, watch, enrich
+│   ├── scanner/               # constants, fileUtils, walk, probe, sync
+│   ├── resolver/resolveFile.js # realpath + assertSafePath (symlink-aware)
+│   ├── safety/                # pathGuard, visibilityGuard
+│   ├── visibility/            # visibility + changeset (beta→pre→release)
+│   ├── operations/            # lock, result (trash/purge stubs)
+│   ├── events/EventBus.js
+│   └── repository/            # MediaRepository (interface) + MockMediaRepository
+├── plan.md           # 13-phase production plan
+└── README.md         # Engine docs
 ```
 
 ### Backend
 
 | Path | Description |
 |------|-------------|
-| `backend/src/server.js` | Entry point, Express, lifecycle |
-| `backend/src/db.js` | SQLite database, FTS, settings |
-| `backend/src/routes/` | 19 route modules |
-| `backend/src/monitor/` | System metrics |
+| `backend/src/server.js` | Entry point, Express, MediaScanner + MediaEngine lifecycle |
+| `backend/src/db.js` | SQLite database, FTS, settings (129 stmts) |
+| `backend/src/repository/sqliteMediaRepository.js` | MediaRepository impl (visibility LEFT JOIN, 56 methods) |
+| `backend/src/routes/` | 19 route modules (see below, all media reads via MediaEngine) |
+| `backend/src/monitor/` | System metrics (WebSocket, historical) |
 | `backend/src/services/` | Background service modules |
-| `backend/src/utils/` | Helpers (watcher, downloader, upload) |
+| `backend/src/utils/` | Helpers (thumbnailQueue, maintenance, uploadManager, etc. — fileResolver deleted) |
 | `backend/src/middleware/` | Route guards |
 
 | Route Module | Description |
 |--------------|-------------|
 | `adb.js` | Android transfer |
 | `downloader.js` | Download management (yt-dlp, gallery-dl, aria2c) |
-| `file.js` | Raw file serve (range, cache headers) |
-| `files.js` | File listing, FTS search, pagination |
-| `git.js` | Git operations (defined, NOT mounted — see Subsystems) |
-| `jobs.js` | Background job status |
-| `metadata.js` | Audio tags, covers, lyrics |
+| `file.js` | Raw file serve via `MediaEngine.getServeTarget` |
+| `files.js` | File listing, FTS search, pagination — **via `MediaEngine`** |
+| `git.js` | Git operations (defined, NOT mounted) |
+| `jobs.js` | Background job status (via `MediaScanner.getStatus`) |
+| `metadata.js` | Audio tags, covers, lyrics — **via `MediaEngine.getFileMetadata`/`updateMetadata`** |
 | `monitoring.js` | Stats, history, alerts |
 | `playback.js` | Cache, health, config |
-| `playlists.js` | XSPF import, CRUD |
+| `playlists.js` | XSPF import, CRUD (playlist domain, media resolve via `MediaEngine`) |
 | `scrcpy.js` | Scrcpy control |
-| `send.js` | Telegram send |
-| `services.js` | Service registry |
+| `send.js` | Telegram/WhatsApp send — media resolve via `MediaEngine` |
+| `services.js` | Service registry (scanner/monitor lifecycle) |
 | `settings.js` | Config CRUD |
-| `stream.js` | Video/audio streaming |
-| `thumbnails.js` | Thumbnail generation |
-| `upload.js` | Multipart upload |
+| `stream.js` | Video/audio streaming via `MediaEngine.resolve` + `playbackEngine` |
+| `thumbnails.js` | Thumbnail generation — source via `MediaEngine.resolve` |
+| `upload.js` | Multipart upload — DB via `MediaRepository` |
 | `videoCache.js` | Video cache management |
-| `whatsapp.js` | WhatsApp bridge |
+| `whatsapp.js` | WhatsApp bridge — media resolve via `MediaEngine` |
 
 ### Frontend
 
@@ -328,30 +388,31 @@ homelab-media-server/
 
 ## API Reference
 
-**Files & Search** (`/api/files`, `/api/search`)
+**Files & Search** (`/api/files`, `/api/search`) — **via MediaEngine**
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET | `/api/files` | Browse a folder with cursor pagination |
-| GET | `/api/files/shuffle` | Return all playable files in random order |
-| POST | `/api/files/refresh` | Run incremental scan + orphan cleanup |
-| POST | `/api/files/cleanup` | Remove orphan DB entries |
-| GET | `/api/files/stats` | Quick file-type counts |
-| GET | `/api/files/folders/:id` | Resolve folder id to path metadata |
-| GET | `/api/files/:id/previews` | Up to 4 preview file IDs for a folder |
-| GET | `/api/search` | FTS file search + folder search |
-| GET | `/api/search/suggest` | Autocomplete name suggestions |
+| GET | `/api/files` | Browse folder via `engine.listFiles` + `engine.getFoldersByParent` |
+| GET | `/api/files/shuffle` | Deterministic shuffle (via `engine.listFiles` + `getBatchFiles`) |
+| POST | `/api/files/refresh` | `mediaScanner.scan()` + orphan cleanup |
+| POST | `/api/files/cleanup` | Orphan cleanup |
+| GET | `/api/files/stats` | `engine.getStats()` |
+| GET | `/api/files/folders/:id` | `engine.getFolder()` |
+| GET | `/api/files/:id/previews` | `engine.getPreviewFilesForFolder()` |
+| GET | `/api/search` | `engine.searchFiles` + `engine.searchFolders` (FTS) |
+| GET | `/api/search/suggest` | `engine.getSearchSuggestions()` |
 
-**Streaming & Playback** (`/stream`)
+**Streaming & Playback** (`/stream`, `/file`) — **via MediaEngine**
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET | `/stream/video/:id/playback-info` | Playback decision + mobile flags |
-| GET | `/stream/video/:id` | Stream video (direct/remux/transcode) |
-| GET | `/stream/video/:id/hls/playlist.m3u8` | HLS playlist |
+| GET | `/file/:id` | `engine.getServeTarget()` → `res.sendFile` |
+| GET | `/stream/video/:id/playback-info` | `engine.resolve()` + `getPlaybackDecision` |
+| GET | `/stream/video/:id` | `engine.resolve()` → direct/remux/transcode |
+| GET | `/stream/video/:id/hls/playlist.m3u8` | `engine.resolve()` → HLS |
 | GET | `/stream/video/:id/hls/segment-:n.ts` | HLS segment |
-| GET | `/stream/video/:id/faststart` | Re-mux with +faststart |
-| GET | `/stream/audio/:id` | Audio stream with ranges |
+| GET | `/stream/video/:id/faststart` | `engine.resolve()` → faststart |
+| GET | `/stream/audio/:id` | `engine.resolve()` → audio stream |
 
 **Monitoring** (`/api/monitoring`)
 
@@ -385,14 +446,14 @@ homelab-media-server/
 | PUT | `/api/playlists/:id/tracks` | Add tracks |
 | DELETE | `/api/playlists/:id/tracks/:trackId` | Remove track |
 
-**Metadata** (`/api/metadata`)
+**Metadata** (`/api/metadata`) — **via MediaEngine**
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET | `/api/metadata/:id` | Read metadata |
-| PUT | `/api/metadata/:id` | Update tags |
-| PUT | `/api/metadata/:id/cover/upload` | Embed cover art |
-| GET | `/api/metadata/:id/lyrics` | Get lyrics |
+| GET | `/api/metadata/:id` | `engine.getFileMetadata()` + embedded `ffprobe` |
+| PUT | `/api/metadata/:id` | `engine.updateMetadata()` (whitelist: title, artist, album, genre, youtube_id, video_offset) |
+| PUT | `/api/metadata/:id/cover/upload` | `engine.resolve()` + `embedCover` → `engine.updateMetadata({cover_source})` |
+| GET | `/api/metadata/:id/lyrics` | `engine.getFileMetadata()` |
 
 **Services** (`/api/services`)
 
@@ -447,14 +508,15 @@ homelab-media-server/
 | Package | Command | Description |
 |---------|---------|-------------|
 | backend | `npm start` | Start server |
-| backend | `npm run dev` | Auto-reload mode |
+| backend | `npm run dev` | Auto-reload mode (`--watch`, `--expose-gc`) |
 | backend | `npm run debug` | Debug mode |
 | frontend | `npm run dev` | Vite dev server |
 | frontend | `npm run build` | Production build |
 | whatsapp-bot | `npm start` | Start bot |
 | whatsapp-bot | `npm run dev` | Auto-reload mode |
+| media-engine | `npm test` | `node --test src/**/*.test.js` |
 
-> **Note:** `backend/`, `frontend/`, and `whatsapp-bot/` are independent packages (not a monorepo).
+> **Note:** `backend/`, `frontend/`, and `whatsapp-bot/` are independent packages (not a monorepo). `media-engine` is a sibling (`file:../../media-engine`) — after editing it, run `cd backend && npm install --silent` to re-sync `backend/node_modules/@homelab/media-engine`.
 
 ## Codebase Metrics
 
@@ -463,15 +525,23 @@ homelab-media-server/
 | `backend/src/` | 91 | ~26,042 |
 | `frontend/src/` | 193 | ~46,858 |
 | `whatsapp-bot/src/` | 6 | ~921 |
-| **Total** | **290** | **~73,821** |
+| `../media-engine/src/` | 18 | ~1,800 |
+| **Total** | **308** | **~75,600** |
 
 > Note: Lines of code approximate. Does not include `node_modules`, `cache/`, `logs/`, or `data/`.
+
+## Recent Changes
+
+- **2026-08-27 — P1 + P1.5:** Media file READ/RESOLUTION boundary complete. `MediaEngine` is now canonical for `resolve`/`getServeTarget`/`listFiles`/`searchFiles`/`getFileMetadata`/`updateMetadata`/`getStats`/etc. `fileResolver.js` deleted, `fileScanner`/`watcher` deleted, `MediaScanner` is sole scanner. Visibility via `LEFT JOIN` (missing row = `PRESENT`), symlink `homelab/Music` handled.
+- **2026-08-27 — Phase 3:** `MediaRepository` 56-method interface, `SqliteMediaRepository` + `MockMediaRepository`, `MediaEngine` no longer holds `db`/`stmts`.
+- **2026-08-27 — Scanner migration:** `MediaScanner` wired in `server.js` (`SqliteMediaRepository` + `MEDIA_ROOT`), `adaptiveController` via `pause()`/`resume()`, SSE via `EventBus`.
 
 ## Future Ideas
 
 - **Authentication System**: The auth design is still under consideration — ranging from user login and multi-user support to account recovery in case a user loses their password.
 - **Web Stream-based Remote Control (GSR-inspired)**: Direct frame copying from the GPU block encoder for zero-overhead screen capture.
 - **Modular Web / Menu Splitting**: Break the web app into independent modules so a deployment does not need the full repo or every menu. Users could pick only 1–2 menus (e.g. just Media Vault + Music, or just Downloader) and run a lighter build with only the selected backend routes, frontend bundles, and dependencies loaded.
+- **Media Engine Operations:** Implement `trash()`/`purge()`/`move()`/`rename()` (Phase 5/7) — currently stubs, physical `unlinkSync` remains backend.
 
 ## Documentation
 
@@ -479,10 +549,13 @@ homelab-media-server/
 |------|-------------|
 | [README.md](README.md) | This file — project overview and quick start |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Full technical reference (system architecture, DB schema, API routes, subsystems, monitoring, deployment) |
+| [`../media-engine/README.md`](../media-engine/README.md) | Media Engine docs (scanner, repository, safety, visibility) |
+| [`../media-engine/plan.md`](../media-engine/plan.md) | 13-phase production plan + transaction strategy |
 | `docs/` | Notes, ideas, and archived documentation |
 
 ## Contributing
 
-- Read [ARCHITECTURE.md](ARCHITECTURE.md) for technical details
+- Read [ARCHITECTURE.md](ARCHITECTURE.md) and [`../media-engine/README.md`](../media-engine/README.md) for technical details
 - Use `npm run dev` in each directory
+- After editing `media-engine`, run `cd backend && npm install --silent`
 - Report issues on GitHub
