@@ -44,12 +44,14 @@ const LIST_ROW_STYLE = `
   }
   .playlist-list-row .track-eq-bar {
     width: 3px; border-radius: 2px; background: #8892E6; height: 6px;
+    transition: height 300ms ease;
   }
   .playlist-list-row.eq-active .track-eq-bar {
     animation: eqPulse 0.9s ease-in-out infinite;
   }
   .playlist-list-row.eq-active .track-eq-bar:nth-child(2) { animation-delay: 0.15s; }
   .playlist-list-row.eq-active .track-eq-bar:nth-child(3) { animation-delay: 0.3s; }
+  .playlist-list-row.eq-paused .track-eq-bar { animation: none; }
   @keyframes eqPulse {
     0%, 100% { height: 5px; }
     50% { height: 15px; }
@@ -139,6 +141,7 @@ const PlaylistListRow = memo(({ index, style, data }) => {
   const isEntering = enteringTrackIds?.has(trackId);
   const isPlaying = !!(playingFileId && track.file_id && String(track.file_id) === String(playingFileId));
   const eqActive = isPlaying && isPlayingActive;
+  const eqPaused = isPlaying && !isPlayingActive;
 
   // Phase machine for the EQ slide in/out, recycle-safe: react-window reuses row
   // instances across different tracks, so reset the phase when track.file_id changes.
@@ -171,7 +174,7 @@ const PlaylistListRow = memo(({ index, style, data }) => {
   const eqX = phase === 'enter' || phase === 'exit' ? -6 : 0;
   const eqO = phase === 'idle' || phase === 'exit' ? 0 : 1;
 
-  const rowClass = `playlist-list-row${isSelected ? ' selected' : ''}${!track.exists ? ' not-exists' : ''}${isEntering ? ' row-enter' : ''}${isPlaying ? ' playing' : ''}${eqActive ? ' eq-active' : ''}`;
+  const rowClass = `playlist-list-row${isSelected ? ' selected' : ''}${!track.exists ? ' not-exists' : ''}${isEntering ? ' row-enter' : ''}${isPlaying ? ' playing' : ''}${eqActive ? ' eq-active' : ''}${eqPaused ? ' eq-paused' : ''}`;
 
   return (
     <div
@@ -188,7 +191,7 @@ const PlaylistListRow = memo(({ index, style, data }) => {
         {/* EQ indicator — sits to the left of the track number, slides in from the
             left + fades in when active, slides back out to the left + fades out. */}
         <div style={{ width: 24, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'visible' }}>
-          {phase !== 'idle' && (
+          {isPlaying && phase !== 'idle' && (
             <span style={{ display: 'inline-flex', alignItems: 'flex-end', gap: 2, height: 16, transform: `translateX(${eqX}px)`, opacity: eqO, transition: 'transform 300ms cubic-bezier(.2,.8,.2,1), opacity 300ms ease' }} aria-label="Now playing">
               <span className="track-eq-bar" />
               <span className="track-eq-bar" />

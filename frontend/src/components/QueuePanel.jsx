@@ -45,6 +45,7 @@ const EQ_STYLE = `
   }
   .queue-eq-active .queue-eq-bar:nth-child(2) { animation-delay: 0.15s; }
   .queue-eq-active .queue-eq-bar:nth-child(3) { animation-delay: 0.3s; }
+  .queue-eq-paused .queue-eq-bar { animation: none; }
   @keyframes queueEqPulse {
     0%, 100% { transform: scaleY(0.3); }
     50% { transform: scaleY(1); }
@@ -76,6 +77,8 @@ const QueueItem = memo(({ track, index, isActive, onSelect, onToggleFavorite, is
   const isFav = useIsFavorite(fileId || track.id, track.is_favorite ? 1 : 0);
   const isPlaying = usePlaybackStore(s => s.isPlaying);
   const eqActive = isActive && isPlaying;
+  const eqPaused = isActive && !isPlaying;
+  const eqPaused = isActive && !isPlaying;
   const dirRef = useRef(slideDir);
   if (dirRef.current !== slideDir) dirRef.current = slideDir;
   const entrySide = dirRef.current === 'left' ? -1 : 1;
@@ -173,11 +176,13 @@ const QueueItem = memo(({ track, index, isActive, onSelect, onToggleFavorite, is
         }}
       >
         <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: '#8C98ED', borderRadius: '0 2px 2px 0' }} />
-        <span className={eqActive ? 'queue-eq-active' : ''} style={{ display: 'inline-flex', alignItems: 'flex-end', gap: 2, height: 16 }}>
-          <span className="queue-eq-bar" />
-          <span className="queue-eq-bar" />
-          <span className="queue-eq-bar" />
-        </span>
+         {isActive && (
+           <span className={eqActive ? 'queue-eq-active' : eqPaused ? 'queue-eq-paused' : ''} style={{ display: 'inline-flex', alignItems: 'flex-end', gap: 2, height: 16 }}>
+             <span className="queue-eq-bar" />
+             <span className="queue-eq-bar" />
+             <span className="queue-eq-bar" />
+           </span>
+         )}
       </div>
       <div style={{ position: 'relative', zIndex: 1, display: 'flex', alignItems: 'center', gap: `${CLIP_GAP}px`, width: '100%' }}>
         <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
