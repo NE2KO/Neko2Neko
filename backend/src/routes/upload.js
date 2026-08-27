@@ -66,7 +66,7 @@ router.delete('/:id/file', async (req, res) => {
   // Delete from files table
   try {
     // Compute file ID the same way as uploadManager
-    const { getFileId } = await import('../utils/fileScanner.js');
+    const { getFileId } = await import('@homelab/media-engine');
     const fileId = getFileId(upload.target_path);
     const result = db.prepare('DELETE FROM files WHERE id = ?').run(fileId);
     if (result.changes > 0) dbCleaned = true;

@@ -11,6 +11,7 @@
     "test:send-debug": "node test/send-debug.test.mjs"
   },
   "dependencies": {
+    "@homelab/media-engine": "file:../../media-engine",
     "better-sqlite3": "^12.9.0",
     "busboy": "^1.6.0",
     "compression": "^1.8.1",

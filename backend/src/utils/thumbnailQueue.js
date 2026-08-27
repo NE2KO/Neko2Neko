@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import db, { stmts } from '../db.js';
 import { hasEmbeddedCover, extractEmbeddedThumbnail, extractFrameThumbnail, generateImageThumbnail, generateAudioPlaceholder, THUMBNAIL_DIR, VAAPI_AVAILABLE, getThumbPath } from './thumbnailUtils.js';
-import { resolveFullPath, getFileId, getRelPath } from './fileScanner.js';
+import { getFileId, getRelPath } from '@homelab/media-engine';
 import { get } from './runtimeSettings.js';
 import { registerSubsystem, setPaused } from './resourceManager.js';
 
@@ -120,12 +120,16 @@ async function scanForMissing() {
     totalMissing = files.length;
 
     const missing = [];
+    const engine = globalThis.mediaEngine;
     for (const f of files) {
       if (!existingThumbs.has(f.id + '.jpg')) {
-        const folder = stmts.getFolderById.get(f.dir_id);
-        if (folder) {
-          const relPath = folder.path ? join(folder.path, f.name) : f.name;
-          missing.push({ id: f.id, fullPath: resolveFullPath(relPath), type: f.type });
+        if (engine) {
+          try {
+            const resolved = await engine.resolve(f.id);
+            if (resolved && !resolved.blocked && resolved.fullPath) {
+              missing.push({ id: f.id, fullPath: resolved.fullPath, type: f.type });
+            }
+          } catch {}
         }
       }
       if (missing.length >= BATCH_SIZE) break;
@@ -267,12 +271,16 @@ async function tryRefill() {
   const files = db.prepare('SELECT id, name, type, dir_id FROM files WHERE (has_thumb = 0 OR has_thumb = 2) AND thumb_cache_path IS NULL').all();
 
   const missing = [];
+  const engine2 = globalThis.mediaEngine;
   for (const f of files) {
     if (!existingThumbs.has(f.id + '.jpg') && !queue.find(q => q.id === f.id)) {
-      const folder = stmts.getFolderById.get(f.dir_id);
-      if (folder) {
-        const relPath = folder.path ? join(folder.path, f.name) : f.name;
-        missing.push({ id: f.id, fullPath: resolveFullPath(relPath), type: f.type });
+      if (engine2) {
+        try {
+          const resolved = await engine2.resolve(f.id);
+          if (resolved && !resolved.blocked && resolved.fullPath) {
+            missing.push({ id: f.id, fullPath: resolved.fullPath, type: f.type });
+          }
+        } catch {}
       }
     }
     if (missing.length >= BATCH_SIZE) break;

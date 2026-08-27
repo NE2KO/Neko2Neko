@@ -1,10 +1,8 @@
 import { Router } from 'express';
-import { join } from 'node:path';
-import { mkdirSync, existsSync, unlinkSync } from 'node:fs';
-import db, { stmts } from '../db.js';
-import { getFileWithRelPath } from '../utils/fileResolver.js';
+import { mkdirSync, unlinkSync } from 'node:fs';
 import { THUMBNAIL_DIR, getThumbPath } from '../utils/thumbnailUtils.js';
 import { ensureThumbnailForFile } from './thumbnails.js';
+
 mkdirSync(THUMBNAIL_DIR, { recursive: true });
 
 const DEFAULT_LIMIT = 5000;
@@ -35,6 +33,7 @@ function getIndexStmt(sortBy, sortOrder, type, favoriteOnly) {
   if (type && INDEX_TYPES.has(type)) clauses.push("f.type = ?");
   if (favoriteOnly) clauses.push('f.is_favorite = 1');
   const sql = `SELECT f.id FROM files f WHERE ${clauses.join(' AND ')} ORDER BY ${order[dir]}`;
+  const db = globalThis.db || globalThis.mediaEngine?.repository?.db;
   stmt = db.prepare(sql);
   indexStmtCache.set(key, stmt);
   return stmt;
@@ -54,31 +53,33 @@ function queryIndex(dirId, sortBy, sortOrder, type, favoriteOnly) {
 
 // GET /api/files?path=&folder_id=&cursor=&limit=&view=&sortBy=&sortOrder=
 router.get('/', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
     console.time('[files] API request');
     const folderPath = req.query.path || '';
     const folderIdQuery = req.query.folder_id ? parseInt(req.query.folder_id, 10) : null;
-     const cursor = req.query.cursor || null;
+    const cursor = req.query.cursor || null;
     const prevCursorParam = req.query.prev_cursor || null;
-     const limit = Math.min(parseInt(req.query.limit, 10) || DEFAULT_LIMIT, 10000);
-     const view = req.query.view || 'grid';
-     const sortBy = req.query.sortBy || 'created_at';
-     const sortOrder = req.query.sortOrder || 'desc';
+    const limit = Math.min(parseInt(req.query.limit, 10) || DEFAULT_LIMIT, 10000);
+    const view = req.query.view || 'grid';
+    const sortBy = req.query.sortBy || 'created_at';
+    const sortOrder = req.query.sortOrder || 'desc';
 
     let folder;
     if (folderIdQuery) {
-      folder = stmts.getFolder.get(folderIdQuery);
+      folder = await engine.getFolder(folderIdQuery);
     } else {
-      folder = stmts.getFolderByPath.get(folderPath);
-      if (!folder) {
-        const { ensureFolder } = await import('../utils/fileScanner.js');
-        try {
-          const newId = ensureFolder(folderPath);
-          folder = stmts.getFolder.get(newId);
-        } catch (e) {
-          console.timeEnd('[files] API request');
-          return res.json({ items: [], folders: [], next_cursor: null, prev_cursor: null, has_more: false, total_count: 0 });
+      try {
+        const newId = globalThis.mediaScanner?.ensureFolder(folderPath);
+        if (newId != null) {
+          folder = await engine.getFolder(newId);
+        } else {
+          folder = null;
         }
+      } catch (e) {
+        console.timeEnd('[files] API request');
+        return res.json({ items: [], folders: [], next_cursor: null, prev_cursor: null, has_more: false, total_count: 0 });
       }
     }
     if (!folder) {
@@ -86,78 +87,32 @@ router.get('/', async (req, res) => {
       return res.json({ items: [], folders: [], next_cursor: null, prev_cursor: null, has_more: false, total_count: 0 });
     }
 
-    const folders = stmts.getFoldersByParentDistinct.all(folder.id);
+    const folders = await engine.getFoldersByParent(folder.id);
 
-    let items;
-    const hasCursor = !!cursor;
     const queryLimit = limit + 1;
 
-    // Helper: extract cursor value for any sort field
-    function parseCursor(c) {
-      try { return JSON.parse(c); } catch { return null; }
-    }
+    const listOpts = {
+      folderId: folder.id,
+      sortBy,
+      sortOrder,
+      limit: queryLimit,
+      cursor,
+      prevCursor: prevCursorParam,
+    };
+    const type = req.query.type;
+    if (type && !['folder', 'all'].includes(type)) listOpts.type = type;
+    const favoriteOnly = req.query.favoriteOnly;
+    if (favoriteOnly === '1' || favoriteOnly === 'true' || favoriteOnly === true) listOpts.favoriteOnly = true;
 
-     if (prevCursorParam && sortBy === 'created_at' && sortOrder === 'desc') {
-      const [pc, pid] = prevCursorParam.split('_');
-      const pCreatedAt = parseInt(pc, 10) || 0;
-      items = stmts.getFilesCursorWithPathPrev.all(folder.id, pCreatedAt, pid, queryLimit);
-    } else if (hasCursor && sortBy === 'created_at' && sortOrder === 'desc') {
-      const [cursorCreatedAt, cursorId] = cursor.split('_');
-      const createdAtNum = parseInt(cursorCreatedAt, 10) || 0;
-      items = stmts.getFilesCursorWithPath.all(folder.id, createdAtNum, cursorId, queryLimit);
-    } else if (hasCursor && sortBy === 'created_at' && sortOrder === 'asc') {
-      const c = parseCursor(cursor);
-      if (c) items = stmts.getFilesCursorAscWithPath.all(folder.id, c.v, c.v, c.id, queryLimit);
-      else items = stmts.getFilesFirstPageAscWithPath.all(folder.id, queryLimit);
-    } else if (hasCursor && sortBy === 'mtime' && sortOrder === 'desc') {
-      const c = parseCursor(cursor);
-      if (c) items = stmts.getFilesSortedByMtimeDescCursor.all(folder.id, c.v, c.v, c.id, queryLimit);
-      else items = stmts.getFilesSortedByMtimeDescWithPath.all(folder.id, queryLimit);
-    } else if (hasCursor && sortBy === 'mtime' && sortOrder === 'asc') {
-      const c = parseCursor(cursor);
-      if (c) items = stmts.getFilesSortedByMtimeAscCursor.all(folder.id, c.v, c.v, c.id, queryLimit);
-      else items = stmts.getFilesSortedByMtimeAscWithPath.all(folder.id, queryLimit);
-    } else if (hasCursor && sortBy === 'name' && sortOrder === 'desc') {
-      const c = parseCursor(cursor);
-      if (c) items = stmts.getFilesSortedByNameDescCursor.all(folder.id, c.v, c.v, c.id, queryLimit);
-      else items = stmts.getFilesSortedByNameDescWithPath.all(folder.id, queryLimit);
-    } else if (hasCursor && sortBy === 'name' && sortOrder === 'asc') {
-      const c = parseCursor(cursor);
-      if (c) items = stmts.getFilesSortedByNameAscCursor.all(folder.id, c.v, c.v, c.id, queryLimit);
-      else items = stmts.getFilesSortedByNameAscWithPath.all(folder.id, queryLimit);
-    } else if (hasCursor && sortBy === 'size' && sortOrder === 'desc') {
-      const c = parseCursor(cursor);
-      if (c) items = stmts.getFilesSortedBySizeDescCursor.all(folder.id, c.v, c.v, c.id, queryLimit);
-      else items = stmts.getFilesSortedBySizeDescWithPath.all(folder.id, queryLimit);
-    } else if (hasCursor && sortBy === 'size' && sortOrder === 'asc') {
-      const c = parseCursor(cursor);
-      if (c) items = stmts.getFilesSortedBySizeAscCursor.all(folder.id, c.v, c.v, c.id, queryLimit);
-      else items = stmts.getFilesSortedBySizeAscWithPath.all(folder.id, queryLimit);
-    } else if (sortBy === 'name' && sortOrder === 'asc') {
-      items = stmts.getFilesSortedByNameAscWithPath.all(folder.id, queryLimit);
-    } else if (sortBy === 'name' && sortOrder === 'desc') {
-      items = stmts.getFilesSortedByNameDescWithPath.all(folder.id, queryLimit);
-    } else if (sortBy === 'mtime' && sortOrder === 'asc') {
-      items = stmts.getFilesSortedByMtimeAscWithPath.all(folder.id, queryLimit);
-    } else if (sortBy === 'mtime' && sortOrder === 'desc') {
-      items = stmts.getFilesSortedByMtimeDescWithPath.all(folder.id, queryLimit);
-    } else if (sortBy === 'size' && sortOrder === 'asc') {
-      items = stmts.getFilesSortedBySizeAscWithPath.all(folder.id, queryLimit);
-    } else if (sortBy === 'size' && sortOrder === 'desc') {
-      items = stmts.getFilesSortedBySizeDescWithPath.all(folder.id, queryLimit);
-    } else if (sortBy === 'created_at' && sortOrder === 'asc') {
-      items = stmts.getFilesFirstPageAscWithPath.all(folder.id, queryLimit);
-    } else {
-      // Default: created_at desc - first page when no cursor
-      items = stmts.getFilesFirstPageWithPath.all(folder.id, queryLimit);
-    }
-
-    const hasMore = items.length > limit;
-    if (hasMore) {
+    const result = await engine.listFiles(listOpts);
+    let items = result.items || [];
+    let hasMore = !!result.hasMore;
+    if (!hasMore && items.length > limit) {
+      hasMore = true;
       items.pop();
     }
+    void view;
 
-    // Generate cursor value from last item
     const lastItem = items[items.length - 1];
     let nextCursor = null;
     if (lastItem) {
@@ -200,52 +155,40 @@ router.get('/', async (req, res) => {
       is_favorite: item.is_favorite || 0,
     }));
 
-    // Batch fetch folder previews (single query, no N+1)
     let previewsByFolder = {};
     if (folders.length > 0) {
-      const folderIds = folders.map(f => f.id);
-      const placeholders = folderIds.map(() => '?').join(',');
-      const previewRows = db.prepare(`
-        SELECT id, type, has_thumb, dir_id FROM files
-        WHERE dir_id IN (${placeholders})
-        ORDER BY
-          CASE type
-            WHEN 'image' THEN 1
-            WHEN 'video' THEN 2
-            WHEN 'audio' THEN 3
-            ELSE 4
-          END,
-          id ASC
-      `).all(...folderIds);
-      previewsByFolder = {};
-      for (const row of previewRows) {
-        if (!previewsByFolder[row.dir_id]) {
-          previewsByFolder[row.dir_id] = [];
-        }
-        if (previewsByFolder[row.dir_id].length < 4) {
-          previewsByFolder[row.dir_id].push({ id: row.id, name: row.name, type: row.type, has_thumb: row.has_thumb });
-        }
+      const previewEntries = await Promise.all(
+        folders.map(async (f) => {
+          try {
+            const previews = await engine.getPreviewFilesForFolder(f.id, 4);
+            return [f.id, previews.map((p) => ({ id: p.id, name: p.name, type: p.type, has_thumb: p.has_thumb }))];
+          } catch {
+            return [f.id, []];
+          }
+        })
+      );
+      for (const [fid, prevs] of previewEntries) {
+        previewsByFolder[fid] = prevs;
       }
     }
 
-    // Pre-generate thumbnails for first page items in background. Kept tiny
-    // (2) and skips video: video thumbs are the most expensive ffmpeg job, and
-    // generating a burst of them on *every* folder open spikes CPU right when the
-    // user is about to click into media — which is what made folder open feel
-    // heavy. Image/audio covers are cheap; video thumbs generate lazily on demand.
     if (shapedItems.length > 0) {
       const pregenLimit = Math.min(shapedItems.length, 2);
       for (let i = 0; i < pregenLimit; i++) {
         const item = shapedItems[i];
         if (item.has_thumb || item.type === 'video') continue;
-        const file = getFileWithRelPath(item.id);
-        if (file && file.fullPath) {
-          ensureThumbnailForFile(file).catch(() => {});
-        }
+        try {
+          const resolved = await engine.resolve(item.id);
+          if (resolved && resolved.fullPath) {
+            ensureThumbnailForFile(resolved).catch(() => {});
+          }
+        } catch {}
       }
     }
 
     console.timeEnd('[files] API request');
+    const folderFileCount = folder.fileCount ?? folder.file_count ?? 0;
+    const folderTotalSize = folder.totalSize ?? folder.total_size ?? 0;
     res.json({
       items: shapedItems,
       folders: folders.map((f) => ({
@@ -253,9 +196,9 @@ router.get('/', async (req, res) => {
         path: f.path,
         name: f.path.split('/').pop(),
         type: 'folder',
-        file_count: f.file_count,
-        total_size: f.total_size,
-        subfolder_count: f.subfolder_count,
+        file_count: f.file_count ?? f.fileCount ?? 0,
+        total_size: f.total_size ?? f.totalSize ?? 0,
+        subfolder_count: f.subfolder_count ?? f.subfolderCount ?? 0,
         previews: previewsByFolder[f.id] || [],
       })),
       current_folder: {
@@ -263,13 +206,13 @@ router.get('/', async (req, res) => {
         path: folder.path,
         name: folder.path.split('/').pop(),
         type: 'folder',
-        file_count: folder.file_count,
-        total_size: folder.total_size,
+        file_count: folderFileCount,
+        total_size: folderTotalSize,
       },
       next_cursor: nextCursor,
       prev_cursor: prevCursor,
       has_more: hasMore,
-      total_count: folder.file_count,
+      total_count: folderFileCount,
     });
   } catch (err) {
     console.error('[files] Error:', err);
@@ -279,8 +222,9 @@ router.get('/', async (req, res) => {
 
 const SHUFFLE_LIMIT = 50000;
 
-// GET /api/files/shuffle — deterministic shuffled playable files by folder + seed
 router.get('/shuffle', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
     const limit = Math.min(parseInt(req.query.limit, 10) || SHUFFLE_LIMIT, 100000);
     const folderId = req.query.folder_id ? parseInt(req.query.folder_id, 10) : null;
@@ -291,26 +235,13 @@ router.get('/shuffle', async (req, res) => {
       const { getShuffledFiles } = await import('../utils/deterministicShuffle.js');
       items = await getShuffledFiles(folderId, seed, limit);
     } else {
-      const idRows = db.prepare(`
-        SELECT f.id
-        FROM files f
-        WHERE f.type IN ('video', 'audio')
-        ORDER BY f.created_at DESC, f.id DESC
-        LIMIT ?
-      `).all(limit);
-
-      const ids = idRows.map(r => r.id);
+      const result = await engine.listFiles({ limit, sortBy: 'created_at', sortOrder: 'desc' });
+      const ids = (result.items || []).map((r) => r.id);
       const { deterministicShuffle } = await import('../utils/deterministicShuffle.js');
       const shuffled = deterministicShuffle(ids, seed);
-
-      const placeholders = shuffled.map(() => '?').join(',');
-      items = db.prepare(`
-        SELECT f.id, f.name, f.type, f.ext, f.size, f.mtime, f.has_thumb, f.thumb_cache_path, f.dir_id, f.duration, f.created_at, f.uploaded_at, f.is_favorite,
-               d.path as dir_path
-        FROM files f
-        JOIN folders d ON f.dir_id = d.id
-        WHERE f.id IN (${placeholders})
-      `).all(...shuffled);
+      const batch = await engine.getBatchFiles(shuffled);
+      items = batch.items || batch || [];
+      if (Array.isArray(batch) && !batch.items) items = batch;
     }
 
     const shapedItems = items.map((item) => ({
@@ -334,10 +265,12 @@ router.get('/shuffle', async (req, res) => {
       for (let i = 0; i < pregenLimit; i++) {
         const item = shapedItems[i];
         if (item.has_thumb) continue;
-        const file = getFileWithRelPath(item.id);
-        if (file && file.fullPath) {
-          ensureThumbnailForFile(file).catch(() => {});
-        }
+        try {
+          const resolved = await engine.resolve(item.id);
+          if (resolved && resolved.fullPath) {
+            ensureThumbnailForFile(resolved).catch(() => {});
+          }
+        } catch {}
       }
     }
 
@@ -348,25 +281,21 @@ router.get('/shuffle', async (req, res) => {
   }
 });
 
-// POST /api/refresh - trigger incremental sync + orphan cleanup
 router.post('/refresh', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
-    const { runIncrementalScan } = await import('../utils/watcher.js');
-    await runIncrementalScan();
-
-    // Also run orphan cleanup
+    await globalThis.mediaScanner?.scan();
     const { cleanupOrphanEntries } = await import('../utils/maintenance.js');
     const deleted = cleanupOrphanEntries();
-
-    const total = stmts.countTotalFiles.get();
-    res.json({ message: 'Sync complete', total: total.total, deleted });
+    const stats = await engine.getStats();
+    res.json({ message: 'Sync complete', total: stats.totalFiles ?? stats.total ?? 0, deleted });
   } catch (err) {
     console.error('[files/refresh] Error:', err);
     res.status(500).json({ error: 'Sync failed' });
   }
 });
 
-// POST /api/files/cleanup - remove orphan entries
 router.post('/cleanup', async (req, res) => {
   try {
     const { cleanupOrphanEntries } = await import('../utils/maintenance.js');
@@ -378,45 +307,57 @@ router.post('/cleanup', async (req, res) => {
   }
 });
 
-// GET /api/files/stats - quick file type stats
 router.get('/stats', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
-    const stats = stmts.countFilesByType.all();
-    const total = stmts.countTotalFiles.get();
-
+    const stats = await engine.getStats();
     res.json({
-      total: total.total,
-      videos: stats.find((s) => s.type === 'video')?.count || 0,
-      audio: stats.find((s) => s.type === 'audio')?.count || 0,
-      images: stats.find((s) => s.type === 'image')?.count || 0,
+      total: stats.totalFiles ?? stats.total ?? 0,
+      videos: stats.byType?.video ?? stats.videos ?? 0,
+      audio: stats.byType?.audio ?? stats.audio ?? 0,
+      images: stats.byType?.image ?? stats.images ?? 0,
     });
   } catch (err) {
+    console.error('[files/stats] Error:', err);
     res.status(500).json({ error: 'Failed to get stats' });
   }
 });
 
-// GET /api/folders/:id - resolve folder ID to path
 router.get('/folders/:id', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
-    const folder = db.prepare('SELECT id, path, parent_id, depth, file_count, total_size FROM folders WHERE id = ?').get(req.params.id);
+    const folder = await engine.getFolder(req.params.id);
     if (!folder) {
       return res.status(404).json({ error: 'Folder not found' });
     }
-    res.json(folder);
+    res.json({
+      id: folder.id,
+      path: folder.path,
+      parent_id: folder.parentId ?? folder.parent_id ?? null,
+      depth: folder.depth,
+      file_count: folder.fileCount ?? folder.file_count ?? 0,
+      total_size: folder.totalSize ?? folder.total_size ?? 0,
+      last_updated: folder.lastUpdated ?? folder.last_updated ?? null,
+      recursive_file_count: folder.recursiveFileCount ?? folder.recursive_file_count ?? null,
+      recursive_total_size: folder.recursiveTotalSize ?? folder.recursive_total_size ?? null,
+    });
   } catch (err) {
     console.error('[folders/:id] Error:', err);
     res.status(500).json({ error: 'Failed to fetch folder' });
   }
 });
 
-// GET /api/folders/:id/index - ordered ID index (binary) for a folder
-router.get('/folders/:id/index', (req, res) => {
+router.get('/folders/:id/index', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
     const folderId = parseInt(req.params.id, 10);
     if (isNaN(folderId)) {
       return res.status(400).json({ error: 'Invalid folder ID' });
     }
-    const folder = stmts.getFolder.get(folderId);
+    const folder = await engine.getFolder(folderId);
     if (!folder) {
       return res.status(404).json({ error: 'Folder not found' });
     }
@@ -427,18 +368,14 @@ router.get('/folders/:id/index', (req, res) => {
     const favoriteOnly = req.query.favoriteOnly;
 
     const rows = queryIndex(folderId, sortBy, sortOrder, type, favoriteOnly);
-    const generationRow = stmts.getFolderGeneration.get(folderId);
-    const generation = generationRow?.generation || 0;
+    const generation = await engine.getFolderGeneration(folderId);
 
-    // ETag-style conditional revalidation: client can HEAD/GET with If-None-Match
-    // and only re-download the body when the folder's generation changed.
     const etag = `W/"${folderId}:${generation}:${sortBy}:${sortOrder}:${type || 'all'}:${favoriteOnly ? 'fav' : '0'}"`;
     if ((req.headers['if-none-match'] || '').trim() === etag) {
       res.status(304).end();
       return;
     }
 
-    // 32-char hex id -> 16 raw bytes, concatenated.
     const buf = Buffer.alloc(rows.length * ID_BYTES);
     for (let i = 0; i < rows.length; i++) {
       Buffer.from(rows[i].id, 'hex').copy(buf, i * ID_BYTES);
@@ -459,8 +396,9 @@ router.get('/folders/:id/index', (req, res) => {
   }
 });
 
-// POST /api/files/batch - hydrate full objects for a set of IDs (preserves order)
-router.post('/batch', (req, res) => {
+router.post('/batch', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
     const idsParam = req.body?.ids;
     if (!Array.isArray(idsParam) || idsParam.length === 0) {
@@ -468,95 +406,61 @@ router.post('/batch', (req, res) => {
     }
     const ids = [...new Set(idsParam)].slice(0, 100);
 
-    const rows = stmts.getFilesBatch.all(JSON.stringify(ids));
-    const byId = new Map();
-    for (const item of rows) {
-      byId.set(item.id, {
-        id: item.id,
-        name: item.name,
-        type: item.type,
-        ext: item.ext,
-        size: item.size,
-        mtime: item.mtime,
-        created_at: item.created_at,
-        has_thumb: item.has_thumb,
-        dir_path: item.dir_path,
-        duration: item.duration || 0,
-        bitrate: item.duration > 0 ? Math.round(item.size / item.duration) : 0,
-        uploaded_at: item.uploaded_at || null,
-        is_favorite: item.is_favorite || 0,
-      });
+    const result = await engine.getBatchFiles(ids);
+    if (result && result.items && result.missingIds) {
+      return res.json(result);
     }
-    const items = ids.filter(id => byId.has(id)).map(id => byId.get(id));
-    const missingIds = ids.filter(id => !byId.has(id));
-
-    res.json({ items, missingIds });
+    const items = Array.isArray(result) ? result : (result.items || []);
+    const byId = new Map(items.map((it) => [it.id, it]));
+    const ordered = ids.filter((id) => byId.has(id)).map((id) => byId.get(id));
+    const missingIds = ids.filter((id) => !byId.has(id));
+    res.json({ items: ordered, missingIds });
   } catch (err) {
     console.error('[files/batch] Error:', err);
     res.status(500).json({ error: 'Failed to batch fetch' });
   }
 });
 
-// GET /api/folders/:id/previews - get a few preview file IDs for a folder
 router.get('/:id/previews', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
     const folderId = parseInt(req.params.id, 10);
     if (isNaN(folderId)) {
       return res.status(400).json({ error: 'Invalid folder ID' });
     }
-    const previewFiles = stmts.getPreviewFilesForFolder.all(folderId, 4); // Get up to 4 previews
-    return res.json(previewFiles.map(f => ({ id: f.id, type: f.type, has_thumb: f.has_thumb })));
+    const previewFiles = await engine.getPreviewFilesForFolder(folderId, 4);
+    return res.json(previewFiles.map((f) => ({ id: f.id, type: f.type, has_thumb: f.has_thumb })));
   } catch (err) {
     console.error('[folders/:id/previews] Error:', err);
     return res.status(500).json({ error: 'Failed to fetch folder previews' });
   }
 });
 
-// GET /api/search?q=&scope=&folder_id=&type=&sort=&limit=
 router.get('/search', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
     const { q, scope = 'all', folder_id, type = 'all', sort = 'name_asc', limit = 100 } = req.query;
-    
+
     if (!q || q.trim().length < 2) {
       return res.json({ folders: [], files: [], total: 0 });
     }
 
     const query = q.trim();
     const limitNum = Math.min(parseInt(limit, 10) || 100, 200);
-    
-    // Escape FTS special chars
-    const ftsQuery = query.replace(/['"]/g, '').split(/\s+/).map(w => `"${w}"*`).join(' ');
-    
+    const folderId = folder_id ? parseInt(folder_id, 10) : null;
+
     let folders = [];
     let files = [];
-    
-    // === Search Folders (always via LIKE for folders) ===
-    const folderLikeQuery = `%${query}%`;
-    
-    if (scope === 'current' && folder_id) {
-      // Search in current folder + direct subfolders
-      folders = stmts.searchFoldersScoped.all(folderLikeQuery, parseInt(folder_id), parseInt(folder_id), limitNum);
-    } else {
-      // Global search - all folders
-      folders = stmts.searchFolders.all(folderLikeQuery, limitNum);
-    }
-    
-    // === Search Files (FTS for speed) ===
+
+    folders = await engine.searchFolders(query, { scope, folderId, limit: limitNum });
+
     if (type === 'folder') {
       files = [];
     } else {
-      const ftsResults = scope === 'current' && folder_id
-        ? stmts.searchFilesFTSScoped.all(ftsQuery, parseInt(folder_id), limitNum)
-        : stmts.searchFilesFTS.all(ftsQuery, limitNum);
-      
-      // Filter by type if needed
-      if (type && type !== 'all') {
-        files = ftsResults.filter(f => f.type === type);
-      } else {
-        files = ftsResults;
-      }
-      
-      // Additional sort if needed
+      files = await engine.searchFiles(query, { type: type === 'all' ? null : type, limit: limitNum, scope, folderId });
+
       if (sort === 'name_asc') {
         files.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
       } else if (sort === 'name_desc') {
@@ -571,31 +475,30 @@ router.get('/search', async (req, res) => {
         files.sort((a, b) => a.size - b.size);
       }
     }
-    
-    // Shape output
-    const shapedFolders = folders.map(f => ({
+
+    const shapedFolders = folders.map((f) => ({
       id: f.id,
       path: f.path,
       name: f.path.split('/').pop(),
       type: 'folder',
-      file_count: f.file_count,
-      total_size: f.total_size,
-      subfolder_count: f.subfolder_count,
+      file_count: f.file_count ?? f.fileCount ?? 0,
+      total_size: f.total_size ?? f.totalSize ?? 0,
+      subfolder_count: f.subfolder_count ?? f.subfolderCount ?? 0,
     }));
-    
-    const shapedFiles = files.map(f => ({
+
+    const shapedFiles = files.map((f) => ({
       id: f.id,
       name: f.name,
       type: f.type,
       ext: f.ext,
       size: f.size,
       mtime: f.mtime,
-      created_at: f.created_at,
-      uploaded_at: f.uploaded_at || null,
-      has_thumb: f.has_thumb,
-      dir_path: f.dir_path || '',
+      created_at: f.created_at ?? f.createdAt ?? 0,
+      uploaded_at: f.uploaded_at ?? f.uploadedAt ?? null,
+      has_thumb: f.has_thumb ?? f.hasThumb ?? 0,
+      dir_path: f.dir_path ?? f.dirPath ?? '',
     }));
-    
+
     res.json({
       folders: shapedFolders,
       files: shapedFiles,
@@ -607,35 +510,32 @@ router.get('/search', async (req, res) => {
   }
 });
 
-// GET /api/search/suggest?q= - quick suggestions for autocomplete
 router.get('/search/suggest', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
     const { q } = req.query;
     if (!q || q.trim().length < 2) {
       return res.json({ suggestions: [] });
     }
-    
-    const query = `%${q.trim()}%`;
-    const suggestions = db.prepare(`
-      SELECT DISTINCT name FROM files 
-      WHERE name LIKE ? 
-      ORDER BY name 
-      LIMIT 10
-    `).all(query);
-    
-    res.json({ suggestions: suggestions.map(s => s.name) });
+
+    const suggestions = await engine.getSearchSuggestions(q.trim());
+
+    res.json({ suggestions });
   } catch (err) {
+    console.error('[search/suggest] Error:', err);
     res.status(500).json({ error: 'Suggestions failed' });
   }
 });
 
-// PATCH /api/files/:id/lock — toggle item lock (prevents sending)
-router.patch('/:id/lock', (req, res) => {
+router.patch('/:id/lock', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
-    const file = stmts.getFile.get(req.params.id);
-    if (!file) return res.status(404).json({ error: 'File not found' });
-    const newVal = file.is_locked ? 0 : 1;
-    db.prepare('UPDATE files SET is_locked = ? WHERE id = ?').run(newVal, req.params.id);
+    const meta = await engine.getFileMetadata(req.params.id);
+    if (!meta) return res.status(404).json({ error: 'File not found' });
+    const newVal = meta.isLocked ?? meta.is_locked ? 0 : 1;
+    await engine.updateMetadata(req.params.id, { isLocked: newVal });
     res.json({ id: req.params.id, is_locked: newVal });
   } catch (err) {
     console.error('[files/lock] Error:', err);
@@ -643,25 +543,27 @@ router.patch('/:id/lock', (req, res) => {
   }
 });
 
-// GET /api/files/:id/lock — current lock state
-router.get('/:id/lock', (req, res) => {
+router.get('/:id/lock', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
-    const file = stmts.getFile.get(req.params.id);
-    if (!file) return res.status(404).json({ error: 'File not found' });
-    res.json({ id: req.params.id, is_locked: file.is_locked || 0 });
+    const meta = await engine.getFileMetadata(req.params.id);
+    if (!meta) return res.status(404).json({ error: 'File not found' });
+    res.json({ id: req.params.id, is_locked: meta.isLocked ?? meta.is_locked ? 1 : 0 });
   } catch (err) {
     console.error('[files/lock] Error:', err);
     res.status(500).json({ error: 'Failed to read lock' });
   }
 });
 
-// PATCH /api/files/:id/favorite — toggle favorite
-router.patch('/:id/favorite', (req, res) => {
+router.patch('/:id/favorite', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
-    const file = stmts.getFile.get(req.params.id);
-    if (!file) return res.status(404).json({ error: 'File not found' });
-    const newVal = file.is_favorite ? 0 : 1;
-    db.prepare('UPDATE files SET is_favorite = ? WHERE id = ?').run(newVal, req.params.id);
+    const meta = await engine.getFileMetadata(req.params.id);
+    if (!meta) return res.status(404).json({ error: 'File not found' });
+    const newVal = meta.isFavorite ?? meta.is_favorite ? 0 : 1;
+    await engine.updateMetadata(req.params.id, { isFavorite: newVal });
     res.json({ id: req.params.id, is_favorite: newVal });
   } catch (err) {
     console.error('[files/favorite] Error:', err);
@@ -669,31 +571,27 @@ router.patch('/:id/favorite', (req, res) => {
   }
 });
 
-// GET /api/files/favorites - all loved (favorited) audio files
-// Returns track-shaped objects so the client can reuse its playlist track rendering.
-router.get('/favorites', (req, res) => {
+router.get('/favorites', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
-    const rows = db.prepare(`
-      SELECT f.id, f.name, f.ext, f.size, f.mtime, f.type, f.duration, f.created_at,
-             f.has_thumb, fo.path as dir_path
-      FROM files f
-      JOIN folders fo ON f.dir_id = fo.id
-      WHERE f.is_favorite = 1 AND f.type = 'audio'
-      ORDER BY f.created_at DESC
-    `).all();
-    const files = rows.map((f) => {
+    if (engine.listFavorites) {
+      const files = await engine.listFavorites();
+      return res.json({ files, total: files.length });
+    }
+    const rows = await engine.listFiles({ favoriteOnly: true, type: 'audio', limit: 10000, sortBy: 'created_at', sortOrder: 'desc' });
+    const files = (rows.items || []).map((f) => {
       const name = f.name || '';
       const displayName = name.replace(/\.[^/.]+$/, '') || name;
-      const resolved = f.dir_path ? `${f.dir_path}/${name}` : name;
       return {
         id: f.id,
         file_id: f.id,
         display_name: displayName,
-        resolved_path: resolved,
+        resolved_path: f.dir_path ? `${f.dir_path}/${name}` : name,
         location: `/file/${f.id}`,
         title: displayName,
-        artist: '',
-        album: '',
+        artist: f.artist || '',
+        album: f.album || '',
         duration: f.duration || 0,
         track_num: 0,
         exists: true,
@@ -713,17 +611,34 @@ router.get('/favorites', (req, res) => {
   }
 });
 
-// GET /api/files/:id - get single file by ID
 router.get('/:id', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
-    const file = stmts.getFileWithPath.get(req.params.id);
-    if (!file) {
+    const meta = await engine.getFileMetadata(req.params.id);
+    if (!meta) {
       return res.status(404).json({ error: 'File not found' });
     }
+    const size = meta.size ?? 0;
+    const duration = meta.duration ?? 0;
     res.json({
-      ...file,
-      bitrate: file.duration > 0 ? Math.round(file.size / file.duration) : 0,
-      is_favorite: file.is_favorite || 0,
+      id: meta.id,
+      name: meta.name,
+      type: meta.type,
+      ext: meta.ext,
+      size,
+      mtime: meta.mtime,
+      created_at: meta.createdAt ?? meta.created_at ?? 0,
+      uploaded_at: meta.uploadedAt ?? meta.uploaded_at ?? null,
+      has_thumb: meta.hasThumb ?? meta.has_thumb ?? 0,
+      dir_path: meta.dirPath ?? meta.dir_path ?? '',
+      duration,
+      title: meta.title ?? null,
+      artist: meta.artist ?? null,
+      album: meta.album ?? null,
+      is_favorite: meta.isFavorite ?? meta.is_favorite ? 1 : 0,
+      is_locked: meta.isLocked ?? meta.is_locked ? 1 : 0,
+      bitrate: duration > 0 ? Math.round(size / duration) : 0,
     });
   } catch (err) {
     console.error('[files/:id] Error:', err);
@@ -731,20 +646,15 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// POST /api/files/resolve-batch — batch resolve filenames to file IDs
-router.post('/resolve-batch', (req, res) => {
+router.post('/resolve-batch', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
     const { filenames } = req.body;
     if (!Array.isArray(filenames) || filenames.length === 0) {
       return res.status(400).json({ error: 'filenames array required' });
     }
-    const unique = [...new Set(filenames)];
-    const placeholders = unique.map(() => '?').join(',');
-    const rows = db.prepare(`SELECT id, name FROM files WHERE name IN (${placeholders})`).all(...unique);
-    const results = {};
-    for (const row of rows) {
-      results[row.name] = row.id;
-    }
+    const results = await engine.resolveBatchFilenames(filenames);
     res.json({ results });
   } catch (err) {
     console.error('[files/resolve-batch] Error:', err);
@@ -752,22 +662,29 @@ router.post('/resolve-batch', (req, res) => {
   }
 });
 
-// DELETE /api/files/:id — delete file from disk + DB
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
-    const file = getFileWithRelPath(req.params.id);
-    if (!file) return res.status(404).json({ error: 'File not found' });
+    const resolved = await engine.resolve(req.params.id);
+    const meta = await engine.getFileMetadata(req.params.id);
+    if (!resolved && !meta) return res.status(404).json({ error: 'File not found' });
+    if (resolved?.blocked) return res.status(404).json({ error: 'File not found' });
 
     const thumbPath = getThumbPath(req.params.id);
     try { unlinkSync(thumbPath); } catch {}
 
-    if (file.fullPath) {
-      try { unlinkSync(file.fullPath); } catch (err) {
-        console.error('[files/delete] Failed to delete file:', file.fullPath, err.message);
+    const fullPath = resolved?.fullPath || (meta?.path);
+    if (fullPath) {
+      try { unlinkSync(fullPath); } catch (err) {
+        console.error('[files/delete] Failed to delete file:', fullPath, err.message);
       }
     }
 
-    db.prepare('DELETE FROM files WHERE id = ?').run(req.params.id);
+    const db = globalThis.db || engine.repository?.db;
+    if (db) {
+      try { db.prepare('DELETE FROM files WHERE id = ?').run(req.params.id); } catch {}
+    }
     res.json({ ok: true });
   } catch (err) {
     console.error('[files/delete] Error:', err);
@@ -775,8 +692,9 @@ router.delete('/:id', (req, res) => {
   }
 });
 
-// POST /api/files/batch/lock — bulk lock/unlock files
-router.post('/batch/lock', (req, res) => {
+router.post('/batch/lock', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
     const { ids, lock } = req.body;
     if (!Array.isArray(ids) || ids.length === 0) {
@@ -785,37 +703,45 @@ router.post('/batch/lock', (req, res) => {
     if (typeof lock !== 'boolean') {
       return res.status(400).json({ error: 'lock boolean required' });
     }
-    const placeholders = ids.map(() => '?').join(',');
-    const result = db.prepare(`UPDATE files SET is_locked = ? WHERE id IN (${placeholders})`).run(lock ? 1 : 0, ...ids);
-    res.json({ updated: result.changes });
+    let updated = 0;
+    for (const id of ids) {
+      await engine.updateMetadata(id, { isLocked: lock ? 1 : 0 });
+      updated++;
+    }
+    res.json({ updated });
   } catch (err) {
     console.error('[files/batch/lock] Error:', err);
     res.status(500).json({ error: 'Failed to batch lock' });
   }
 });
 
-// POST /api/files/batch/delete — bulk delete files
-router.post('/batch/delete', (req, res) => {
+router.post('/batch/delete', async (req, res) => {
+  const engine = globalThis.mediaEngine;
+  if (!engine) return res.status(500).json({ error: 'Media engine not initialized' });
   try {
     const { ids } = req.body;
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ error: 'ids array required' });
     }
     let deleted = 0;
+    const db = globalThis.db || engine.repository?.db;
     for (const id of ids) {
-      const file = getFileWithRelPath(id);
-      if (!file) continue;
+      let resolved = null;
+      try { resolved = await engine.resolve(id); } catch {}
+      if (!resolved && !(await engine.getFileMetadata(id))) continue;
 
       const thumbPath = getThumbPath(id);
       try { unlinkSync(thumbPath); } catch {}
 
-      if (file.fullPath) {
-        try { unlinkSync(file.fullPath); } catch (err) {
-          console.error('[files/batch/delete] Failed to delete file:', file.fullPath, err.message);
+      if (resolved?.fullPath) {
+        try { unlinkSync(resolved.fullPath); } catch (err) {
+          console.error('[files/batch/delete] Failed to delete file:', resolved.fullPath, err.message);
         }
       }
 
-      db.prepare('DELETE FROM files WHERE id = ?').run(id);
+      if (db) {
+        try { db.prepare('DELETE FROM files WHERE id = ?').run(id); } catch {}
+      }
       deleted++;
     }
     res.json({ deleted });

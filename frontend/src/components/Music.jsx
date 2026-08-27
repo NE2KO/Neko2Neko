@@ -15,7 +15,7 @@ import { useIsFavorite } from '../store/favoritesStore';
 import { applySink, getStoredDevice } from '../utils/audioOutput';
 import { cancelSendQueueItem, retrySendQueueItem, removeSendQueueItem } from '../utils/api';
 import { safeParseTrackFilter, safeParseTrackSearchQuery, applyTrackFilter, applyTrackSearch } from '../utils/trackFilter';
-import { SharedSyncCore } from '../utils/syncCore';
+import { getSharedSyncCore } from '../utils/syncCore';
 
 import { buildSensorSnapshot, validateAndAttach, logSensorSnapshot } from '../utils/sensor';
 import { trackProfileStore } from '../utils/trackProfileStore';
@@ -1262,16 +1262,13 @@ const userSeekPendingRef = useRef(false);
 
 // === ENGINE INSTANCES ===
 // Shared Sync Core — the "brain" shared between MV and BG engines.
-// Created once, passed to both engines for cooperative statistics.
-const syncCoreRef = useRef(null);
-if (!syncCoreRef.current) {
-  syncCoreRef.current = new SharedSyncCore(() => {
-    const audio = audioRef.current;
-    if (!audio) return 0;
-    return (audio.currentTime || 0) + (videoOffsetRef.current || 0);
-  });
-}
-const syncCore = syncCoreRef.current;
+// App-wide singleton: the full player, MiniPlayer background, and NowPlaying
+// panel all share this instance so every surface follows one master clock.
+const syncCore = getSharedSyncCore(() => {
+  const audio = audioRef.current;
+  if (!audio) return 0;
+  return (audio.currentTime || 0) + (videoOffsetRef.current || 0);
+});
 
 // MV master PID sync engine (non-looping). Controls only the main MV.
 const mvEngine = useMemo(() => createVideoSyncEngine({

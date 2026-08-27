@@ -1,10 +1,8 @@
 import { Router } from 'express';
-import db, { stmts } from '../db.js';
 import { readMetadata, extractCover, embedCover } from '../utils/metadataWriter.js';
 import { searchCoverAllSources } from '../utils/coverSources.js';
 import { searchLyricsCombined } from '../utils/lyricsSources.js';
 import { parseLRC, buildLRC } from '../utils/lrcParser.js';
-import { resolveFullPath } from '../utils/fileScanner.js';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeFile, readFile, mkdir } from 'node:fs/promises';
@@ -50,10 +48,13 @@ router.get('/lyrics/search', async (req, res) => {
 // GET /api/metadata/:id — read metadata from file + DB
 router.get('/:id', async (req, res) => {
   try {
-    const file = stmts.getFileWithPath.get(req.params.id);
-    if (!file) return res.status(404).json({ error: 'File not found' });
+    const engine = globalThis.mediaEngine;
+    const resolved = await engine.resolve(req.params.id);
+    if (!resolved || resolved.blocked) return res.status(404).json({ error: 'File not found' });
+    const meta = await engine.getFileMetadata(req.params.id);
+    if (!meta) return res.status(404).json({ error: 'File not found' });
 
-    const filePath = resolveFullPath(join(file.dir_path, file.name));
+    const filePath = resolved.fullPath;
     
     // Read embedded metadata
     let embedded = null;
@@ -63,26 +64,26 @@ router.get('/:id', async (req, res) => {
       // File might not be accessible
     }
 
-    // Get DB overrides
+    // Get DB overrides via engine metadata
     const dbMeta = {
-      title: file.title,
-      artist: file.artist,
-      album: file.album,
-      genre: file.genre,
-      lyrics: file.lyrics,
-      lyrics_synced: file.lyrics_synced,
-      cover_source: file.cover_source,
-      youtube_id: file.youtube_id,
-      video_offset: file.video_offset,
+      title: meta.title,
+      artist: meta.artist,
+      album: meta.album,
+      genre: meta.genre,
+      lyrics: meta.lyrics,
+      lyrics_synced: meta.lyricsSynced ?? meta.lyrics_synced,
+      cover_source: meta.coverSource ?? meta.cover_source,
+      youtube_id: meta.youtube_id ?? meta.youtubeId,
+      video_offset: meta.video_offset ?? meta.videoOffset,
     };
 
     // Merge: DB overrides embedded
     const metadata = {
-      id: file.id,
-      name: file.name,
-      type: file.type,
-      ext: file.ext,
-      duration: file.duration,
+      id: resolved.id,
+      name: resolved.name,
+      type: resolved.type,
+      ext: resolved.ext,
+      duration: resolved.duration,
       ...embedded,
       ...Object.fromEntries(Object.entries(dbMeta).filter(([_, v]) => v != null && v !== '')),
     };
@@ -97,27 +98,27 @@ router.get('/:id', async (req, res) => {
 // PUT /api/metadata/:id — update metadata
 router.put('/:id', async (req, res) => {
   try {
-    const file = stmts.getFileWithPath.get(req.params.id);
-    if (!file) return res.status(404).json({ error: 'File not found' });
+    const engine = globalThis.mediaEngine;
+    const resolved = await engine.resolve(req.params.id);
+    if (!resolved || resolved.blocked) return res.status(404).json({ error: 'File not found' });
 
     const { title, artist, album, genre, youtube_id, video_offset } = req.body;
 
-    // Update DB
-    db.prepare(`
-      UPDATE files SET 
-        title = COALESCE(?, title),
-        artist = COALESCE(?, artist),
-        album = COALESCE(?, album),
-        genre = COALESCE(?, genre),
-        youtube_id = COALESCE(?, youtube_id),
-        video_offset = COALESCE(?, video_offset)
-      WHERE id = ?
-    `).run(title, artist, album, genre, youtube_id || null, video_offset ?? null, req.params.id);
+    const updates = {};
+    if (title !== undefined) updates.title = title;
+    if (artist !== undefined) updates.artist = artist;
+    if (album !== undefined) updates.album = album;
+    if (genre !== undefined) updates.genre = genre;
+    if (youtube_id !== undefined) updates.youtube_id = youtube_id;
+    if (video_offset !== undefined) updates.video_offset = video_offset;
+
+    if (Object.keys(updates).length > 0) {
+      await engine.updateMetadata(req.params.id, updates);
+    }
 
     // Try to write to file
-    const filePath = resolveFullPath(join(file.dir_path, file.name));
     try {
-      await writeMetadata(filePath, { title, artist, album, genre });
+      await writeMetadata(resolved.fullPath, { title, artist, album, genre });
     } catch (err) {
       console.warn('[metadata] Could not write to file:', err.message);
     }
@@ -132,8 +133,9 @@ router.put('/:id', async (req, res) => {
 // PUT /api/metadata/:id/cover — embed cover art from URL or base64 data
 router.put('/:id/cover', async (req, res) => {
   try {
-    const file = stmts.getFileWithPath.get(req.params.id);
-    if (!file) return res.status(404).json({ error: 'File not found' });
+    const engine = globalThis.mediaEngine;
+    const resolved = await engine.resolve(req.params.id);
+    if (!resolved || resolved.blocked) return res.status(404).json({ error: 'File not found' });
 
     const { imageUrl, imageData, source } = req.body;
     if (!imageUrl && !imageData) return res.status(400).json({ error: 'imageUrl or imageData required' });
@@ -156,18 +158,17 @@ router.put('/:id/cover', async (req, res) => {
     }
 
     // Embed into file
-    const filePath = resolveFullPath(join(file.dir_path, file.name));
-    await embedCover(filePath, buffer, contentType);
+    await embedCover(resolved.fullPath, buffer, contentType);
 
-    // Update DB
-    db.prepare('UPDATE files SET cover_source = ? WHERE id = ?').run(source || 'external', req.params.id);
+    // Update DB via engine
+    await engine.updateMetadata(req.params.id, { cover_source: source || 'external' });
 
     // Regenerate thumbnail — save directly from buffer
     try {
       const { THUMBNAIL_DIR } = await import('../routes/thumbnails.js');
       const { mkdirSync } = await import('node:fs');
       mkdirSync(THUMBNAIL_DIR, { recursive: true });
-      const thumbPath = join(THUMBNAIL_DIR, `${file.id}.jpg`);
+      const thumbPath = join(THUMBNAIL_DIR, `${resolved.id}.jpg`);
       await writeFile(thumbPath, buffer);
     } catch (err) {
       console.warn('[metadata] Could not save thumbnail:', err.message);
@@ -181,10 +182,13 @@ router.put('/:id/cover', async (req, res) => {
 });
 
 // PUT /api/metadata/:id/cover/upload — upload cover as multipart (from CropTool)
-router.put('/:id/cover/upload', (req, res) => {
+router.put('/:id/cover/upload', async (req, res) => {
   try {
-    const file = stmts.getFileWithPath.get(req.params.id);
-    if (!file) return res.status(404).json({ error: 'File not found' });
+    const engine = globalThis.mediaEngine;
+    // Need to check existence early — but busboy is streaming, so defer file check until finish
+    // Do a quick resolve to validate id exists
+    const preview = await engine.resolve(req.params.id);
+    if (!preview || preview.blocked) return res.status(404).json({ error: 'File not found' });
 
     let busboy;
     try {
@@ -205,17 +209,19 @@ router.put('/:id/cover/upload', (req, res) => {
       try {
         const buffer = Buffer.concat(chunks);
 
-        const filePath = resolveFullPath(join(file.dir_path, file.name));
-        await embedCover(filePath, buffer, contentType);
+        const resolved = await engine.resolve(req.params.id);
+        if (!resolved || resolved.blocked) return res.status(404).json({ error: 'File not found' });
 
-        db.prepare('UPDATE files SET cover_source = ? WHERE id = ?').run('youtube-cropped', req.params.id);
+        await embedCover(resolved.fullPath, buffer, contentType);
+
+        await engine.updateMetadata(req.params.id, { cover_source: 'youtube-cropped' });
 
         // Save thumbnail
         try {
           const { THUMBNAIL_DIR } = await import('../routes/thumbnails.js');
           const { mkdirSync } = await import('node:fs');
           mkdirSync(THUMBNAIL_DIR, { recursive: true });
-          const thumbPath = join(THUMBNAIL_DIR, `${file.id}.jpg`);
+          const thumbPath = join(THUMBNAIL_DIR, `${resolved.id}.jpg`);
           await writeFile(thumbPath, buffer);
         } catch (err) {
           console.warn('[metadata] Could not save thumbnail:', err.message);
@@ -224,32 +230,33 @@ router.put('/:id/cover/upload', (req, res) => {
         res.json({ success: true });
       } catch (err) {
         console.error('[metadata] cover upload error:', err);
-        res.status(500).json({ error: 'Failed to embed cover art' });
+        if (!res.headersSent) res.status(500).json({ error: 'Failed to embed cover art' });
       }
     });
 
     busboy.on('error', (err) => {
       console.error('[metadata] busboy error:', err.message);
-      res.status(400).json({ error: 'Upload failed' });
+      if (!res.headersSent) res.status(400).json({ error: 'Upload failed' });
     });
 
     req.pipe(busboy);
   } catch (err) {
     console.error('[metadata] cover upload setup error:', err);
-    res.status(500).json({ error: 'Failed to process upload' });
+    if (!res.headersSent) res.status(500).json({ error: 'Failed to process upload' });
   }
 });
 
 // GET /api/metadata/:id/lyrics — get lyrics
-router.get('/:id/lyrics', (req, res) => {
+router.get('/:id/lyrics', async (req, res) => {
   try {
-    const file = stmts.getFile.get(req.params.id);
-    if (!file) return res.status(404).json({ error: 'File not found' });
+    const engine = globalThis.mediaEngine;
+    const meta = await engine.getFileMetadata(req.params.id);
+    if (!meta) return res.status(404).json({ error: 'File not found' });
 
     res.json({
-      plainLyrics: file.lyrics || null,
-      syncedLyrics: file.lyrics_synced || null,
-      romajiLyrics: file.lyrics_romaji || null,
+      plainLyrics: meta.lyrics || null,
+      syncedLyrics: meta.lyricsSynced ?? meta.lyrics_synced ?? null,
+      romajiLyrics: meta.lyrics_romaji ?? meta.lyricsRomaji ?? null,
     });
   } catch (err) {
     console.error('[metadata] GET lyrics error:', err);
@@ -260,20 +267,27 @@ router.get('/:id/lyrics', (req, res) => {
 // PUT /api/metadata/:id/lyrics — save lyrics
 router.put('/:id/lyrics', async (req, res) => {
   try {
-    const file = stmts.getFileWithPath.get(req.params.id);
-    if (!file) return res.status(404).json({ error: 'File not found' });
+    const engine = globalThis.mediaEngine;
+    const resolved = await engine.resolve(req.params.id);
+    if (!resolved || resolved.blocked) return res.status(404).json({ error: 'File not found' });
 
     const { plainLyrics, syncedLyrics, romajiLyrics } = req.body;
 
-    // Save to DB
-    db.prepare('UPDATE files SET lyrics = ?, lyrics_synced = ?, lyrics_romaji = ? WHERE id = ?')
-      .run(plainLyrics || null, syncedLyrics || null, romajiLyrics || null, req.params.id);
+    // Save to DB via engine
+    await engine.updateMetadata(req.params.id, {
+      lyrics: plainLyrics || null,
+      lyrics_synced: syncedLyrics || null,
+      lyrics_romaji: romajiLyrics || null,
+    });
 
     // Export .lrc file to same directory
     if (syncedLyrics) {
-      const lrcPath = resolveFullPath(join(file.dir_path, file.name.replace(/\.[^.]+$/, '.lrc')));
+      const lrcPath = join(resolved.dirPath || '', resolved.name.replace(/\.[^.]+$/, '.lrc'));
+      // Resolve full LRC path via engine's mediaRoots
+      const { resolveFullPath } = await import('@homelab/media-engine');
+      const fullLrcPath = resolveFullPath(lrcPath, globalThis.mediaEngine.mediaRoots);
       try {
-        await writeFile(lrcPath, syncedLyrics, 'utf-8');
+        await writeFile(fullLrcPath, syncedLyrics, 'utf-8');
       } catch (err) {
         console.warn('[metadata] Could not write .lrc file:', err.message);
       }

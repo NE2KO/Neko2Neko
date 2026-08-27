@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import db from '../db.js';
 import { sendFileToTelegram, getBot } from '../utils/telegramBot.js';
-import { getFileWithRelPath } from '../utils/fileResolver.js';
 import { getWaSendPath } from '../utils/waCompat.js';
 import { incrementTelegramCount, incrementWhatsAppCount, isSeparatorNeeded } from '../utils/sendCounter.js';
 import { canSendNow, recordSend, enqueueSend,   getActiveOrRecentSend, markSendDone, cancelSend, retrySend, removeSend, clearHistory, getStatusCounts, getQueueByStatus, getSendSettings, setSendSettings, clearHolds, clearDebugHistory, buildQueueTimeline, getPerDay, getPendingSends, getAllPendingSends, getRateState, setQueueCaption, reorderQueueItem, rescheduleQueueItem, initScheduleIntegrity, claimPending, requeueForRetry, waPermanentMediaError, backfillDailySlots, compactScheduleAfterFailure, findExistingSendRow } from '../utils/sendRateLimit.js';
@@ -126,8 +125,10 @@ async function performSend(fileId, target, qid, caption = '') {
     return { target: 'telegram', results: { telegram: 'sent' } };
   }
 
-  const file = getFileWithRelPath(fileId);
-  if (!file) throw new Error('File not found');
+  const engine = globalThis.mediaEngine;
+  if (!engine) throw new Error('Media engine not ready');
+  const file = await engine.resolve(fileId);
+  if (!file || file.blocked) throw new Error('File not found');
 
   const results = { telegram: null, whatsapp_channel: null, whatsapp_status: null };
 

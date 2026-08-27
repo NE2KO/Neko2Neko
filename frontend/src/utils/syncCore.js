@@ -1663,3 +1663,16 @@ export class SyncReplay {
     };
   }
 }
+
+// ── App-wide singleton core ────────────────────────────────────────────────
+// One SharedSyncCore shared by every A/V surface (full player MV/BG, MiniPlayer
+// background, NowPlaying panel). All surfaces must pass an equivalent
+// masterTimeFn reading the SAME shared audio element, so whichever surface
+// creates the instance first yields identical behavior for the others.
+let _sharedCoreInstance = null;
+export function getSharedSyncCore(masterTimeFn) {
+  if (!_sharedCoreInstance) {
+    _sharedCoreInstance = new SharedSyncCore(masterTimeFn || (() => 0));
+  }
+  return _sharedCoreInstance;
+}

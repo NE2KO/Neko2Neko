@@ -22,6 +22,7 @@ import playlistsRouter from './routes/playlists.js';
 import metadataRouter from './routes/metadata.js';
 import scrcpyRouter from './routes/scrcpy.js';
 import sendRouter, { startSendScheduler } from './routes/send.js';
+import syncVerifyRouter from './routes/syncVerify.js';
 import { initTelegramInbound } from './utils/telegramBot.js';
 import { initTelegramAudioBot } from './utils/telegramAudioBot.js';
 import videoCacheRouter from './routes/videoCache.js';
@@ -36,16 +37,20 @@ import db, { stmts, setupFTS, deferredDbInit } from './db.js';
 globalThis.db = db;
 globalThis.stmts = stmts;
 
-import { startWatcher, addSseClient, runIncrementalScan } from './utils/watcher.js';
+import { addSseClient, broadcastStats, broadcastFolderUpdate } from './utils/sseManager.js';
 import { startMaintenanceScheduler } from './utils/maintenance.js';
 import { startAdaptiveController } from './utils/adaptiveController.js';
 import { get } from './utils/runtimeSettings.js';
 import { getSnapshot as getResourceSnapshot } from './utils/resourceManager.js';
 import { sessionMiddleware } from './utils/sessionTracker.js';
+import { SqliteMediaRepository } from './repository/sqliteMediaRepository.js';
+import { MediaScanner, MediaEngine } from '@homelab/media-engine';
 import { PATHS, SETTINGS } from './config/paths.js';
 import { createLogger } from './utils/logger.js';
 import servicesRouter, { registerAllServices } from './routes/services.js';
 import { requireService } from './middleware/serviceGuard.js';
+import { addFile as thumbAddFile, buildThumbCache } from './utils/thumbnailQueue.js';
+import { recordMemoryUsage } from './utils/resourceManager.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -64,6 +69,31 @@ export const MEDIA_ROOT = [
 ].flatMap(r => r.split(':'))
 .map(r => r.trim())
 .filter(Boolean);
+
+// Media layer — single repository + scanner + engine
+const mediaRepository = new SqliteMediaRepository(db, stmts);
+const mediaEngine = new MediaEngine({ repository: mediaRepository, mediaRoots: MEDIA_ROOT, webId: process.env.MEDIA_WEB_ID || 'default' });
+globalThis.mediaEngine = mediaEngine;
+const mediaScanner = new MediaScanner({
+  repository: mediaRepository,
+  mediaRoots: MEDIA_ROOT,
+  callbacks: {
+    onNewFile: (fullPath, type) => thumbAddFile(fullPath, type),
+    onFileUpdated: () => { try { buildThumbCache(); } catch {} },
+    onFileDeleted: () => {},
+    getBatchSize: () => Math.max(100, (get('scan.workers', 4) || 4) * 250),
+    shouldCompareByHash: () => get('scan.compareByHash', false),
+    recordMemoryUsage,
+    buildThumbCache: () => { try { buildThumbCache(); } catch {} },
+    broadcastStats,
+    broadcastFolderUpdate,
+  },
+  config: {
+    workers: get('scan.workers', 4) || 4,
+    compareByHash: get('scan.compareByHash', false),
+  },
+});
+globalThis.mediaScanner = mediaScanner;
 
 app.use(cors());
 app.use(compression({ threshold: 1024 }));
@@ -116,15 +146,14 @@ app.use('/api/debug/resources', (req, res) => {
 
 app.get('/api/debug/stress/scanner', async (req, res) => {
   try {
-    const { runIncrementalScan } = await import('./utils/watcher.js');
     res.json({ status: 'started', message: 'Incremental scan triggered' });
-    runIncrementalScan().catch(() => {});
+    globalThis.mediaScanner?.scan().catch(() => {});
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get('/api/debug/stress/folders', (req, res) => {
+app.use('/api/debug/stress/folders', (req, res) => {
   try {
     const count = stmts.countFolders.get().cnt;
     res.json({ folders: count });
@@ -133,18 +162,20 @@ app.get('/api/debug/stress/folders', (req, res) => {
   }
 });
 
+app.use('/api/sync-verify', syncVerifyRouter);
+
 setupWhatsAppRoutes(app);
 
 try { initTelegramInbound(); } catch (e) { console.warn('[startup] telegram inbound init failed:', e.message); }
 try { initTelegramAudioBot(); } catch (e) { console.warn('[startup] telegram audio bot init failed:', e.message); }
 try { startSendScheduler(); } catch (e) { console.warn('[startup] send scheduler init failed:', e.message); }
 
-// Folder lookup (used by frontend fetchFolderById)
-app.get('/api/folders/:id', (req, res) => {
+// Folder lookup (used by frontend fetchFolderById) — via MediaEngine
+app.get('/api/folders/:id', async (req, res) => {
   try {
-    const folder = stmts.getFolder.get(req.params.id);
+    const folder = await globalThis.mediaEngine.getFolder(req.params.id);
     if (!folder) return res.status(404).json({ error: 'Folder not found' });
-    res.json({ id: folder.id, path: folder.path, parent_id: folder.parent_id, depth: folder.depth, file_count: folder.file_count, total_size: folder.total_size });
+    res.json({ id: folder.id, path: folder.path, parent_id: folder.parentId ?? folder.parent_id, depth: folder.depth, file_count: folder.fileCount ?? folder.file_count, total_size: folder.totalSize ?? folder.total_size });
   } catch (err) {
     console.error('[/api/folders/:id] Error:', err);
     res.status(500).json({ error: 'Failed to fetch folder' });
@@ -326,7 +357,7 @@ async function handleShutdown(signal) {
   log.info({ msg: `Received ${signal} — shutting down gracefully` });
 
   log.info({ msg: 'Stopping watcher...' });
-  try { const { stopWatcher } = await import('./utils/watcher.js'); stopWatcher(); } catch (e) { log.warn({ msg: 'watcher stop failed', error: e.message }); }
+  try { if (globalThis.mediaScanner) globalThis.mediaScanner.stopWatcher(); } catch (e) { log.warn({ msg: 'watcher stop failed', error: e.message }); }
 
   log.info({ msg: 'Stopping maintenance...' });
   try { const { stopMaintenanceScheduler } = await import('./utils/maintenance.js'); stopMaintenanceScheduler(); } catch (e) { log.warn({ msg: 'maintenance stop failed', error: e.message }); }
@@ -406,7 +437,7 @@ function startServerWithPortFallback() {
       startEngine(server);
 
       // Watcher + maintenance — lightweight, can start immediately
-      startWatcher();
+      mediaScanner.startWatcher();
       startMaintenanceScheduler();
       startAdaptiveController();
 
@@ -433,6 +464,7 @@ function startServerWithPortFallback() {
       }, 5000);
 
       // Incremental scan — 20s (after FTS rebuild completes to avoid SQLite lock)
+      // Uses new MediaScanner from @homelab/media-engine
       setTimeout(async () => {
         const { existsSync, readFileSync } = await import('node:fs');
         const { join } = await import('node:path');
@@ -457,9 +489,9 @@ function startServerWithPortFallback() {
           return;
         }
 
-        console.log('[server] Starting initial scan (cold or stale DB)...');
+        console.log('[server] Starting initial scan via MediaScanner (cold or stale DB)...');
         try {
-          const result = await runIncrementalScan();
+          const result = await mediaScanner.scan();
           if (result) console.log('[server] Initial sync:', result);
         } catch (err) {
           console.error('[server] Initial scan failed:', err);

@@ -28,6 +28,29 @@ export function registerRecordingState(ref) { _recordingStateRef = ref || _recor
 export function registerAnalyzerEvidence(ref) { _analyzerEvidenceRef = ref || _analyzerEvidenceRef; }
 export function registerDecisionOutput(ref) { _decisionOutputRef = ref || _decisionOutputRef; }
 
+// ── Read-only surface registry accessors ────────────────────────────────────
+// Other A/V surfaces (MiniPlayer BG, right-panel MV) feed these REAL counter-
+// part timestamps into the triangle math instead of fabricated zeros. NaN when
+// no counterpart is currently registered → engine reports hasTriangle:false.
+// Registry entries are React ref objects (.current), matching Music.jsx usage:
+// MV = CachedVideoPlayer handle (getCurrentTime), BG/audio = raw elements.
+export function getRegisteredMvTime() {
+  const v = _mvRef?.current ?? null;
+  if (!v) return NaN;
+  const t = v.getCurrentTime?.();
+  if (Number.isFinite(t)) return t;
+  const fb = v.currentTime;
+  return Number.isFinite(fb) ? fb : NaN;
+}
+export function getRegisteredBgTime() {
+  const v = _bgRef?.current ?? null;
+  if (!v) return NaN;
+  const t = v.currentTime;
+  return Number.isFinite(t) ? t : NaN;
+}
+export function isRegisteredMv(ref) { return ref != null && _mvRef === ref; }
+export function isRegisteredBg(ref) { return ref != null && _bgRef === ref; }
+
 function driftColor(ms) {
   if (ms == null || !isFinite(ms)) return 'var(--so-text-muted)';
   const abs = Math.abs(ms);

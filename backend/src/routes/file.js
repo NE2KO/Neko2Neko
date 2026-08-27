@@ -1,25 +1,24 @@
 import { Router } from 'express';
-import { stat } from 'node:fs/promises';
-import { getFileWithRelPath } from '../utils/fileResolver.js';
 
 const router = Router();
 
 router.get('/:id', async (req, res) => {
   try {
-    const file = getFileWithRelPath(req.params.id);
-    if (!file) {
+    const engine = globalThis.mediaEngine;
+    if (!engine) return res.status(500).json({ error: 'Media engine not ready' });
+    const target = await engine.getServeTarget(req.params.id);
+    if (target.error === 'not_found' || target.error === 'file_missing') {
+      return res.status(404).json({ error: 'File not found' });
+    }
+    if (target.error === 'not_available') {
       return res.status(404).json({ error: 'File not found' });
     }
 
-    await stat(file.fullPath);
-
-    res.sendFile(file.fullPath, {
+    res.sendFile(target.path, {
       maxAge: '1d',
       acceptRanges: true,
       lastModified: true,
-      headers: {
-        'Cache-Control': 'public, max-age=86400, immutable',
-      },
+      headers: target.headers,
       root: '/',
       dotfiles: 'ignore',
     });

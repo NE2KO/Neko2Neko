@@ -258,9 +258,10 @@ export function setupWhatsAppRoutes(app) {
         return res.json({ ok: true, kind: 'text', result: out });
       }
       if (fileId) {
-        const { getFileWithRelPath } = await import('../utils/fileResolver.js');
-        const file = getFileWithRelPath(fileId);
-        if (!file) return res.status(404).json({ error: 'File not found' });
+        const engine = globalThis.mediaEngine;
+        if (!engine) return res.status(500).json({ error: 'Media engine not ready' });
+        const file = await engine.resolve(fileId);
+        if (!file || file.blocked) return res.status(404).json({ error: 'File not found' });
         const out = await sendMediaToStatus(file.fullPath);
         return res.json({ ok: true, kind: 'media', result: out });
       }

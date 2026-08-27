@@ -398,7 +398,12 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
   const showSidebar = containerWidth >= 760;
 
   const [leftSidebarWidth, setLeftSidebarWidth] = useState(260);
-  const [rightSidebarWidth, setRightSidebarWidth] = useState(300);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(() => {
+    if (typeof window === 'undefined') return 300;
+    const stored = parseInt(localStorage.getItem('playlist_rightSidebarWidth'), 10);
+    return Number.isFinite(stored) ? Math.min(360, Math.max(200, stored)) : 300;
+  });
+  useEffect(() => { localStorage.setItem('playlist_rightSidebarWidth', String(rightSidebarWidth)); }, [rightSidebarWidth]);
   const dragRef = useRef(null); // { side: 'left'|'right', startX, startWidth }
   const [isResizing, setIsResizing] = useState(false);
   const PEEK_WIDTH = 64;
@@ -408,6 +413,22 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
 
   const leftReveal = leftSidebarOpen ? leftSidebarWidth : leftHovered ? PEEK_WIDTH : 0;
   const rightPeeking = rightHovered && !rightSidebarOpen;
+  // Right edge-bar width: idle 28 → expands to 40 on hover → collapses to 0
+  // once the sidebar is fully open so the panel content sits flush.
+  const barW = rightSidebarOpen ? 0 : rightHovered ? 40 : BAR_WIDTH;
+
+  // Keep the right panel content mounted through the exit animation —
+  // unmounting it synchronously would make the fade-out look instant.
+  const [previewMounted, setPreviewMounted] = useState(rightSidebarOpen);
+  useEffect(() => {
+    if (rightSidebarOpen || rightPeeking) {
+      setPreviewMounted(true);
+      return undefined;
+    }
+    const t = setTimeout(() => setPreviewMounted(false), 320); // ≥ slide (300ms) + fade (250ms)
+    return () => clearTimeout(t);
+  }, [rightSidebarOpen, rightPeeking]);
+
   const [leftResizeHover, setLeftResizeHover] = useState(false);
   const [rightResizeHover, setRightResizeHover] = useState(false);
 
@@ -1634,7 +1655,7 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
            display: 'flex',
            flexDirection: 'column',
             marginLeft: (leftSidebarOpen ? BAR_WIDTH + leftSidebarWidth : BAR_WIDTH + (leftHovered ? PEEK_WIDTH : 0)) + PANEL_GAP,
-            marginRight: (rightSidebarOpen ? BAR_WIDTH + rightSidebarWidth : BAR_WIDTH + (rightHovered ? RIGHT_PEEK_WIDTH : 0)) + PANEL_GAP,
+            marginRight: (rightSidebarOpen ? rightSidebarWidth : barW + (rightHovered ? RIGHT_PEEK_WIDTH : 0)) + PANEL_GAP,
            transition: isResizing ? 'none' : 'margin 0.3s ease',
          }}>
             <PlaylistMiddleModule
@@ -1711,18 +1732,18 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
             />
         </div>
 
-        {/* ── Right sidebar assembly (ONE coupled surface: bar at LEFT edge, preview to its right, grows leftward via translate) ── */}
+        {/* ── Right sidebar assembly (ONE seamless surface: expandable bar at LEFT edge, preview fades in beside it, grows leftward via translate) ── */}
         <div
           style={{
             position: 'absolute', right: 0, top: 0, bottom: 0,
-            width: BAR_WIDTH + rightSidebarWidth,
+            width: barW + rightSidebarWidth,
             display: 'flex',
             transform: rightSidebarOpen
               ? 'translateX(0)'
               : rightPeeking
                 ? `translateX(${rightSidebarWidth - RIGHT_PEEK_WIDTH}px)`
                 : `translateX(${rightSidebarWidth}px)`,
-            transition: 'transform 0.3s ease',
+            transition: isResizing ? 'none' : 'transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1), width 0.2s ease',
             zIndex: 10,
             background: '#121212',
             borderRadius: 12,
@@ -1730,28 +1751,39 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
             pointerEvents: rightSidebarOpen || rightHovered ? 'auto' : 'none',
           }}
         >
-          {/* Edge bar + chevron — coupled, at the assembly's LEFT edge (moves left as assembly grows) */}
+          {/* Edge bar + chevron — expands slightly on hover, collapses when fully open */}
           <div style={{
-            width: BAR_WIDTH,
+            width: barW,
             flexShrink: 0,
             background: '#121212',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             opacity: rightSidebarOpen ? 0 : 1,
-            transition: 'opacity 0.15s ease',
+            transition: isResizing ? 'none' : 'width 0.2s ease, opacity 0.15s ease',
+            overflow: 'hidden',
             pointerEvents: 'none',
           }}>
-            <ChevronLeft size={16} strokeWidth={2.5} style={{ color: '#fff', opacity: 0.45 }} />
+            <ChevronLeft
+              size={16}
+              strokeWidth={2.5}
+              style={{ color: '#fff', opacity: rightHovered ? 1 : 0.45, transition: 'opacity 0.2s ease', flexShrink: 0 }}
+            />
           </div>
-          {/* Preview content */}
-          <div style={{ width: rightSidebarWidth, flexShrink: 0, height: '100%', overflow: 'hidden' }}>
+          {/* Preview content — fades in parallel with the slide so it feels like one surface */}
+          <div style={{
+            flex: 1,
+            minWidth: 0,
+            height: '100%',
+            overflow: 'hidden',
+            background: '#121212',
+            opacity: rightSidebarOpen || rightPeeking ? 1 : 0,
+            transition: isResizing ? 'none' : 'opacity 0.25s ease',
+          }}>
             <PlaylistRightModule
-              open={rightSidebarOpen}
-              peeking={rightPeeking}
-              sidebarWidth={rightSidebarWidth}
+              open={previewMounted}
+              width={rightSidebarWidth}
               mode={rightSidebarMode}
               onModeChange={setRightSidebarMode}
               onClose={() => { userClosedSidebarRef.current = true; setRightSidebarOpen(false); }}
-              onOpen={() => { userClosedSidebarRef.current = false; setRightSidebarMode(hasActivePlayback ? 'nowplaying' : 'leaderboard'); setRightSidebarOpen(true); }}
               hasActivePlayback={hasActivePlayback}
               queue={queue}
               currentTrackIndex={currentTrackIndex}
@@ -1814,7 +1846,7 @@ export default function PlaylistView({ onMenuOpen, onPlayPlaylist, onPlayTrack, 
             onMouseLeave={() => setRightResizeHover(false)}
             style={{
               position: 'absolute', top: 0, bottom: 0,
-              right: (BAR_WIDTH + rightSidebarWidth) - 6,
+              right: (barW + rightSidebarWidth) - 6,
               width: 12,
               zIndex: 20,
               cursor: 'col-resize',

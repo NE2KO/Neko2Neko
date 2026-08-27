@@ -68,8 +68,8 @@ router.post('/config', (req, res) => {
 });
 
 router.post('/start', (req, res) => {
-  const { url, category, quality, formatId, audioExtract, audioFormat, audioBitrate, twitterMode, twitterAccount, imageMode, twitterCookiesPath, youtubeCookiesPath, customOutput, customTitle, embedCover } = req.body;
-  const result = createTask(url, { category, quality, formatId, audioExtract, audioFormat, audioBitrate, twitterMode, twitterAccount, imageMode, twitterCookiesPath, youtubeCookiesPath, customOutput, customTitle, embedCover });
+  const { url, category, quality, formatId, audioExtract, audioFormat, audioBitrate, twitterMode, twitterAccount, imageMode, twitterCookiesPath, youtubeCookiesPath, customOutput, customTitle, embedCover, botMode } = req.body;
+  const result = createTask(url, { category, quality, formatId, audioExtract, audioFormat, audioBitrate, twitterMode, twitterAccount, imageMode, twitterCookiesPath, youtubeCookiesPath, customOutput, customTitle, embedCover, viaBot: !!botMode });
   if (result.error) return res.status(400).json(result);
   res.json(result);
 });

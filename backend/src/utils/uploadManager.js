@@ -6,9 +6,8 @@ import Busboy from 'busboy';
 import db, { stmts } from '../db.js';
 import { PATHS } from '../config/paths.js';
 import { get } from './runtimeSettings.js';
-import { detectType, getFileId, ensureFolder } from './fileScanner.js';
+import { detectType, getFileId } from '@homelab/media-engine';
 import { addFile } from './thumbnailQueue.js';
-import { startScan } from './scannerClient.js';
 import { createLogger } from './logger.js';
 
 const log = createLogger('upload');
@@ -65,7 +64,7 @@ export function handleUpload(req, res) {
     if (get('upload.autoScan', true)) {
       setImmediate(async () => {
         try {
-          await startScan('upload');
+          if (globalThis.mediaScanner) await globalThis.mediaScanner.scan();
         } catch (e) {
           log.error({ msg: 'auto-scan error', error: e.message });
         }
@@ -93,7 +92,7 @@ export function handleUpload(req, res) {
     const relPath = targetFolder ? join(targetFolder, safeName) : safeName;
     const fullPath = join(MEDIA_ROOTS[0], relPath);
     const existingId = getFileId(relPath);
-    const existing = db.prepare('SELECT id FROM files WHERE id = ?').get(existingId);
+    const existing = globalThis.mediaEngine?.repository?.getFileById(existingId) || db.prepare('SELECT id FROM files WHERE id = ?').get(existingId);
 
     let finalPath = fullPath;
     let finalName = safeName;
@@ -213,14 +212,27 @@ export function handleUpload(req, res) {
         const indexedAt = Date.now();
         const fileId = getFileId(finalRelPath);
 
-        stmts.upsertFile.run({
-          id: fileId, dir_id: ensureFolder(targetFolder), name: finalName,
-          type, ext: ext.replace('.', ''), size: upload.size, mtime: fsMtime,
-          duration, has_thumb: 0, thumb_cache_path: null,
-          last_accessed: indexedAt, access_count: 0, last_verified: indexedAt,
-          created_at: origTs || indexedAt, created_at_embedded: embeddedCreatedAt,
-          modified_at_fs: fsMtime, uploaded_at: uploadedAt, metadata_source: metadataSource,
-        });
+        const dirId = globalThis.mediaEngine?.repository?.ensureFolder(targetFolder) ?? globalThis.mediaScanner?.ensureFolder(targetFolder);
+        const repo = globalThis.mediaEngine?.repository;
+        if (repo?.upsertFile) {
+          repo.upsertFile({
+            id: fileId, dir_id: dirId, name: finalName,
+            type, ext: ext.replace('.', ''), size: upload.size, mtime: fsMtime,
+            duration, has_thumb: 0, thumb_cache_path: null,
+            last_accessed: indexedAt, access_count: 0, last_verified: indexedAt,
+            created_at: origTs || indexedAt, created_at_embedded: embeddedCreatedAt,
+            modified_at_fs: fsMtime, uploaded_at: uploadedAt, metadata_source: metadataSource,
+          });
+        } else {
+          stmts.upsertFile.run({
+            id: fileId, dir_id: dirId, name: finalName,
+            type, ext: ext.replace('.', ''), size: upload.size, mtime: fsMtime,
+            duration, has_thumb: 0, thumb_cache_path: null,
+            last_accessed: indexedAt, access_count: 0, last_verified: indexedAt,
+            created_at: origTs || indexedAt, created_at_embedded: embeddedCreatedAt,
+            modified_at_fs: fsMtime, uploaded_at: uploadedAt, metadata_source: metadataSource,
+          });
+        }
 
         db.prepare(`INSERT INTO uploads (id, filename, target_path, size, status, uploaded, checksum, type, ext, started_at, completed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .run(id, finalName, finalRelPath, upload.size, 'completed', upload.uploaded, checksum, type, ext, upload.startedAt, Date.now(), Date.now());
@@ -383,9 +395,16 @@ export async function repairMetadata(limit = 100) {
 
   for (const file of files) {
     try {
-      const { resolveFullPath } = await import('./fileScanner.js');
-      const fullPath = resolveFullPath(file.name);
-      if (!existsSync(fullPath)) { skipped++; continue; }
+      const engine = globalThis.mediaEngine;
+      let fullPath = null;
+      if (engine) {
+        try { const r = await engine.resolve(file.id); fullPath = r?.fullPath || null; } catch {}
+      }
+      if (!fullPath) {
+        const { resolveFullPath: rfp } = await import('@homelab/media-engine');
+        fullPath = rfp(file.name, engine?.mediaRoots || MEDIA_ROOTS);
+      }
+      if (!fullPath || !existsSync(fullPath)) { skipped++; continue; }
 
       const meta = await extractFileMetadata(fullPath);
       if (meta.creationTime) {
@@ -424,14 +443,22 @@ export async function repairDurations(limit = 100, type = 'audio') {
     LIMIT ?
   `).all(...typeList, limit);
 
-  const { getDuration, resolveFullPath } = await import('./fileScanner.js');
+  const { getDuration } = await import('@homelab/media-engine');
   let repaired = 0, errors = 0, skipped = 0;
 
   for (const file of files) {
     try {
-      const relPath = file.folder_path ? join(file.folder_path, file.name) : file.name;
-      const fullPath = resolveFullPath(relPath);
-      if (!existsSync(fullPath)) { skipped++; continue; }
+      const engine = globalThis.mediaEngine;
+      let fullPath = null;
+      if (engine) {
+        try { const r = await engine.resolve(file.id); fullPath = r?.fullPath || null; } catch {}
+      }
+      if (!fullPath) {
+        const relPath = file.folder_path ? join(file.folder_path, file.name) : file.name;
+        const { resolveFullPath: rfp } = await import('@homelab/media-engine');
+        fullPath = rfp(relPath, engine?.mediaRoots || MEDIA_ROOTS);
+      }
+      if (!fullPath || !existsSync(fullPath)) { skipped++; continue; }
       const dur = await getDuration(fullPath);
       if (Math.round(dur) > 0) {
         db.prepare('UPDATE files SET duration = ? WHERE id = ?').run(Math.round(dur), file.id);

@@ -19,6 +19,15 @@ const COLORS = {
   accent: '#0ea5e9',
 };
 
+const EXT_COLORS = {
+  flac: { bg: 'rgba(123,180,235,0.3)', fg: '#000000' },
+  aac:  { bg: 'rgba(239,68,68,0.2)',   fg: '#ef4444' },
+  m4a:  { bg: 'rgba(255,165,0,0.2)',   fg: '#b45309' },
+  mp3:  { bg: 'rgba(168,139,250,0.2)', fg: '#7c3aed' },
+  opus: { bg: 'rgba(159,197,232,0.2)', fg: '#0369a1' },
+  webm: { bg: 'rgba(255,165,0,0.2)',   fg: '#b45309' },
+};
+
 const LIST_ROW_STYLE = `
   .playlist-list-row {
     display: flex;
@@ -133,6 +142,7 @@ const PlaylistListRow = memo(({ index, style, data }) => {
 
   const ext = track.resolved_path ? track.resolved_path.split('.').pop()?.toLowerCase() : '';
   const extLabel = ext.toUpperCase();
+  const extColor = EXT_COLORS[ext] || { bg: 'rgba(100,150,200,0.2)', fg: COLORS.text.tertiary };
   const isSelected = selectedForDelete?.has(track.id);
   const isDeleting = deletingTrackIds?.has(track.id);
   const trackId = track.id ?? track.file_id;
@@ -142,6 +152,7 @@ const PlaylistListRow = memo(({ index, style, data }) => {
   const isPlaying = !!(playingFileId && track.file_id && String(track.file_id) === String(playingFileId));
   const eqActive = isPlaying && isPlayingActive;
   const eqPaused = isPlaying && !isPlayingActive;
+  const hasMv = !!track.youtube_id;
 
   // Phase machine for the EQ slide in/out, recycle-safe: react-window reuses row
   // instances across different tracks, so reset the phase when track.file_id changes.
@@ -234,15 +245,6 @@ const PlaylistListRow = memo(({ index, style, data }) => {
           {track.display_name}
         </h4>
         <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
-          {ext && (
-            <span style={{
-              fontSize: '10px', fontWeight: 600, padding: '2px 6px',
-              borderRadius: '4px', background: 'rgba(100,150,200,0.2)',
-              color: COLORS.text.tertiary,
-            }}>
-              {extLabel}
-            </span>
-          )}
           {track.size > 0 && (
             <span style={{ fontSize: '11px', color: COLORS.text.tertiary }}>
               {formatSize(track.size)}
@@ -251,8 +253,26 @@ const PlaylistListRow = memo(({ index, style, data }) => {
         </div>
       </div>
       {track.duration > 0 && (
-        <div style={{ fontSize: '12px', color: COLORS.text.secondary, whiteSpace: 'nowrap' }}>
-          {formatDuration(track.duration)}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {hasMv && (
+            <span style={{
+              fontSize: '9px', fontWeight: 700, letterSpacing: '0.5px', padding: '1px 6px',
+              borderRadius: '4px', background: 'rgba(255,192,203,0.2)', color: '#d63384', flexShrink: 0,
+            }}>
+              MV
+            </span>
+          )}
+          {ext && (
+            <span style={{
+              fontSize: '9px', fontWeight: 700, letterSpacing: '0.5px', padding: '1px 6px',
+              borderRadius: '4px', background: extColor.bg, color: extColor.fg, flexShrink: 0,
+            }}>
+              {extLabel}
+            </span>
+          )}
+          <span style={{ fontSize: '9px', color: COLORS.text.secondary, flexShrink: 0 }}>
+            {formatDuration(track.duration)}
+          </span>
         </div>
       )}
       {deleteMode ? (

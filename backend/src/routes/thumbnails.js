@@ -1,9 +1,6 @@
 import { Router } from 'express';
 import { existsSync, createReadStream, rmSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { getFileWithRelPath } from '../utils/fileResolver.js';
-import db from '../db.js';
-import { stmts } from '../db.js';
 import { spawn } from 'node:child_process';
 import { hasEmbeddedCover, extractEmbeddedThumbnail, extractFrameThumbnail, generateImageThumbnail, THUMBNAIL_DIR, getThumbPath } from '../utils/thumbnailUtils.js';
 import { get } from '../utils/runtimeSettings.js';
@@ -129,20 +126,13 @@ async function ensureThumbnailForFile(file) {
 }
 
 async function getFolderPreviewFiles(folderId) {
-  const files = db.prepare(`
-    SELECT f.id, f.name, f.type, f.ext, f.mtime
-    FROM files f
-    WHERE f.dir_id = ?
-    ORDER BY f.mtime DESC
-    LIMIT 4
-  `).all(folderId);
-
-  if (files.length === 0) return [];
-
+  const engine = globalThis.mediaEngine;
+  const previews = await engine.getPreviewFilesForFolder(folderId, 4);
+  if (previews.length === 0) return [];
   const result = [];
-  for (const f of files) {
-    const full = getFileWithRelPath(f.id);
-    if (full) result.push(full);
+  for (const f of previews) {
+    const full = await engine.resolve(f.id);
+    if (full && !full.blocked) result.push(full);
   }
   return result;
 }
@@ -158,7 +148,8 @@ async function generateDefaultFolderThumb(outPath) {
 }
 
 async function generateFolderPreview(folderId) {
-  const folder = stmts.getFolderById.get(folderId);
+  const engine = globalThis.mediaEngine;
+  const folder = await engine.getFolder(folderId);
   if (!folder) return false;
 
   const outPath = join(THUMBNAIL_DIR, `folder_${folderId}.jpg`);
@@ -243,8 +234,9 @@ router.get('/:id.jpg', async (req, res) => {
     return res.status(404).json({ error: 'Thumbnail generation failed' });
   }
 
-  const file = getFileWithRelPath(id);
-  if (!file || !file.fullPath) {
+  const engine = globalThis.mediaEngine;
+  const file = await engine.resolve(id);
+  if (!file || file.blocked || !file.fullPath) {
     return res.status(404).json({ error: 'File not found' });
   }
 

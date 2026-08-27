@@ -19,12 +19,6 @@ export function getConstraints(derivedMetrics) {
     violated.push({ code: DecisionReasonCode.PIPELINE_NOT_READY, reason: 'Pipeline NOT READY', forbidden: [ActionType.SEEK, ActionType.SET_RATE, ActionType.HOLD] });
   }
   if (!derivedMetrics.schedulerStable && derivedMetrics.schedulerQuality < 0.5) {
-    // Under load we still allow SET_RATE: a rate ramp is invisible on muted
-    // video and low-risk (it only nudges playback speed). Only SEEK is
-    // forbidden here — a seek under scheduler load fights the browser and
-    // causes frame repeats / strobe loops. Blocking SET_RATE entirely is what
-    // made corrections feel "late" on a RAM-full laptop: the judge could see
-    // the drift but was forbidden from doing anything about it.
     violated.push({ code: DecisionReasonCode.SCHEDULER_OVERLOADED, reason: 'Scheduler overloaded', forbidden: [ActionType.SEEK] });
   }
   if (!derivedMetrics.decoderHealthy && derivedMetrics.decoderQuality < 0.3) {
@@ -55,10 +49,13 @@ export function getConstraints(derivedMetrics) {
     }
   }
 
-  if (allowedActions.length === 0) {
+  // NOOP must always be available as a safe fallback
+  if (!allowedActions.includes(ActionType.NOOP)) {
     allowedActions = [ActionType.NOOP, ActionType.HOLD];
-    reasonCode = DecisionReasonCode.PIPELINE_NOT_READY;
-    reason = 'All actions forbidden by constraints';
+    if (!reasonCode) {
+      reasonCode = DecisionReasonCode.NOOP_SAFETY;
+      reason = 'System blocked - safe state: NOOP';
+    }
   }
 
   return {

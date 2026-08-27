@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import db, { stmts } from '../db.js';
-import { getFileWithRelPath } from '../utils/fileResolver.js';
 import { ensureThumbnailForFile } from './thumbnails.js';
 import { parseXSPF, isValidXSPF, getPlaylistSummary } from '../utils/xspfParser.js';
 import { MEDIA_ROOT } from '../server.js';
@@ -221,15 +220,19 @@ router.get('/:id', (req, res) => {
     // missing thumbs can't spawn a burst of ffmpeg that saturates CPU/IO,
     // which would stall audio streaming (lingering player spinner) and slow
     // other playlist loads. Never blocks the response.
-    setImmediate(() => {
+    setImmediate(async () => {
       const seenThumbIds = new Set();
+      const engine = globalThis.mediaEngine;
+      if (!engine) return;
       for (const t of trackList) {
         if (!t.file_id || t.has_thumb || seenThumbIds.has(t.file_id)) continue;
         seenThumbIds.add(t.file_id);
-        const file = getFileWithRelPath(t.file_id);
-        if (file && file.fullPath) {
-          ensureThumbnailForFile(file).catch(() => {});
-        }
+        try {
+          const file = await engine.resolve(t.file_id);
+          if (file && !file.blocked && file.fullPath) {
+            ensureThumbnailForFile(file).catch(() => {});
+          }
+        } catch {}
       }
     });
   } catch (err) {

@@ -1,6 +1,5 @@
 import { rmSync, promises as fsPromises } from 'node:fs';
 import { join } from 'node:path';
-import { resolveFullPath, enrichDurationsBatch, enrichMetadataBatch } from './fileScanner.js';
 import { THUMBNAIL_DIR } from './thumbnailUtils.js';
 import db, { stmts } from '../db.js';
 import { cleanupOldMetrics } from '../monitor/historical.js';
@@ -40,11 +39,21 @@ async function cleanupOrphanEntries() {
           orphanIds.push({ id: file.id, size: file.size, dir_id: file.dir_id });
           return;
         }
-        const relPath = folder.path ? join(folder.path, file.name) : file.name;
-        const fullPath = resolveFullPath(relPath);
-        try {
-          await fsPromises.access(fullPath);
-        } catch {
+        const engine = globalThis.mediaEngine;
+        let exists = false;
+        if (engine) {
+          try {
+            const resolved = await engine.resolve(file.id);
+            exists = !!(resolved && !resolved.blocked && resolved.exists);
+          } catch { exists = false; }
+        } else {
+          // Fallback to direct fs if engine not ready
+          const relPath = folder.path ? join(folder.path, file.name) : file.name;
+          const { resolveFullPath: rfp } = await import('@homelab/media-engine');
+          const fullPath = rfp(relPath, globalThis.mediaEngine?.mediaRoots || [process.env.MEDIA_ROOT || '/home/CATIAA/homelab']);
+          try { await fsPromises.access(fullPath); exists = true; } catch { exists = false; }
+        }
+        if (!exists) {
           orphanIds.push({ id: file.id, size: file.size, dir_id: file.dir_id });
         }
       }));
@@ -149,18 +158,25 @@ function startMaintenanceScheduler() {
 
   metadataInterval = setInterval(async () => {
     try {
-      await enrichDurationsBatch();
+      const scanner = globalThis.mediaScanner;
+      if (!scanner) return;
+      await scanner.enrichDurations();
       await new Promise(r => setImmediate(r));
-      await enrichMetadataBatch();
+      await scanner.enrichMetadata();
     } catch (err) {
       log.error({ msg: 'Metadata enrichment failed', error: err.message });
     }
   }, 10 * 60 * 1000);
 
-  setTimeout(() => {
-    metadataInterval && enrichDurationsBatch()
-      .then(() => enrichMetadataBatch())
-      .catch(e => log.error({ msg: 'Initial enrichment failed', error: e.message }));
+  setTimeout(async () => {
+    try {
+      const scanner = globalThis.mediaScanner;
+      if (!scanner) return;
+      await scanner.enrichDurations();
+      await scanner.enrichMetadata();
+    } catch (e) {
+      log.error({ msg: 'Initial enrichment failed', error: e.message });
+    }
   }, 30 * 1000);
 
   analyzeInterval = setInterval(() => {

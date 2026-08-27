@@ -1,5 +1,4 @@
 import TelegramBotApi from 'node-telegram-bot-api';
-import { getFileWithRelPath } from './fileResolver.js';
 import path from 'node:path';
 import db from '../db.js';
 import { extractUrls, createBulkTasks, onTaskFinished, getTaskList } from '../downloader/manager.js';
@@ -56,8 +55,10 @@ export async function sendFileToTelegram(fileId, captionPrefix = '') {
   const b = getBot();
   if (!b) throw new Error('TELEGRAM_BOT_TOKEN not configured');
 
-  const file = getFileWithRelPath(fileId);
-  if (!file) throw new Error('File not found');
+  const engine = globalThis.mediaEngine;
+  if (!engine) throw new Error('Media engine not ready');
+  const file = await engine.resolve(fileId);
+  if (!file || file.blocked) throw new Error('File not found');
 
   const caption = captionPrefix || '';
 

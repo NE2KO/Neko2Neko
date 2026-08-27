@@ -34,19 +34,23 @@ export function startAdaptiveController(intervalMs = 2000) {
       STATE.memoryPaused = true;
       setPaused('scanner', true);
       setPaused('thumbnail', true);
+      if (globalThis.mediaScanner) globalThis.mediaScanner.pause();
     } else if (STATE.memoryPaused && memRatio > HYSTERESIS.memoryResumeThreshold) {
       STATE.memoryPaused = false;
       setPaused('scanner', false);
       setPaused('thumbnail', false);
+      if (globalThis.mediaScanner) globalThis.mediaScanner.resume();
     }
 
     // CPU hysteresis
     if (!STATE.cpuThrottled && cpuRatio > HYSTERESIS.cpuPauseThreshold) {
       STATE.cpuThrottled = true;
       setPaused('scanner', true);
+      if (globalThis.mediaScanner) globalThis.mediaScanner.pause();
     } else if (STATE.cpuThrottled && cpuRatio < HYSTERESIS.cpuResumeThreshold) {
       STATE.cpuThrottled = false;
       setPaused('scanner', false);
+      if (globalThis.mediaScanner) globalThis.mediaScanner.resume();
     }
   }, intervalMs);
 }

@@ -14,7 +14,6 @@ import { cache } from '../monitor/monitoringCache.js';
 import { existsSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { scanForMissing, getQueueStatus, pauseQueue, resumeQueue, clearQueue, stopQueue, startQueue } from '../utils/thumbnailQueue.js';
-import { getScannerStatus } from '../utils/fileScanner.js';
 import { getActiveSessions, getSessionStats, disconnectSession } from '../utils/sessionTracker.js';
 import { getUploadStats } from '../utils/uploadManager.js';
 import { randomUUID } from 'node:crypto';
@@ -420,7 +419,7 @@ router.post('/restart/frontend', (req, res) => {
 // Queue Status
 router.get('/queues', (req, res) => {
   res.json({
-    queues: [getQueueStatus(), getScannerStatus()],
+    queues: [getQueueStatus(), { type: 'scan', running: globalThis.mediaScanner?.getStatus()?.isScanning || false, pendingRescan: globalThis.mediaScanner?.getStatus()?.pendingRescan || false }],
   });
 });
 

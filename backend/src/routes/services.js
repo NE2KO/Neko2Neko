@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { registerService, setStatus, getAllStatus, getStatus, startService, stopService, restartService, restartAll } from '../services/registry.js';
-import { startWatcher, stopWatcher, isWatcherRunning } from '../utils/watcher.js';
 import { startMaintenanceScheduler, stopMaintenanceScheduler, isMaintenanceRunning } from '../utils/maintenance.js';
 import { stopQueue, startQueue, isQueueStopped, getQueueStatus } from '../utils/thumbnailQueue.js';
 import { enableManager, disableManager, isManagerEnabled, getManagerStatus } from '../downloader/manager.js';
@@ -74,7 +73,7 @@ function refreshStatuses() {
   // Media Vault
   const mvStatus = getStatus('mediaVault');
   if (mvStatus) {
-    const watcherRunning = isWatcherRunning();
+    const watcherRunning = globalThis.mediaScanner?.getStatus()?.isWatcherRunning || false;
     const maintenanceRunning = isMaintenanceRunning();
     const thumbStopped = isQueueStopped();
     const actuallyRunning = watcherRunning || maintenanceRunning || !thumbStopped;
@@ -135,17 +134,17 @@ export function registerAllServices() {
   // Media Vault
   registerServiceWithHandlers('mediaVault', {
     start: async () => {
-      startWatcher();
+      if (globalThis.mediaScanner) globalThis.mediaScanner.startWatcher();
       startMaintenanceScheduler();
       startQueue();
     },
     stop: async () => {
-      stopWatcher();
+      if (globalThis.mediaScanner) globalThis.mediaScanner.stopWatcher();
       stopMaintenanceScheduler();
       stopQueue();
     },
     getStatus: async () => ({
-      watcher: isWatcherRunning(),
+      watcher: globalThis.mediaScanner?.getStatus()?.isWatcherRunning || false,
       maintenance: isMaintenanceRunning(),
       thumbnails: !isQueueStopped(),
       thumbPending: getQueueStatus().pending,

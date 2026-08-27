@@ -1,9 +1,7 @@
 import { Router } from 'express';
 import { stat } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
-import { getFileWithRelPath } from '../utils/fileResolver.js';
 import { getHLSLatestPlaylist, startHLSGeneration, getSegment, getHLSSegmentCount, isHLSReady } from '../utils/hlsGenerator.js';
 import { getPlaybackDecision, getHlsDecision, getCacheStats } from '../utils/playbackEngine.js';
 import { get } from '../utils/runtimeSettings.js';
@@ -35,8 +33,9 @@ const MIME_CACHE = {
 
 router.get('/video/:id/playback-info', async (req, res) => {
   try {
-    const file = getFileWithRelPath(req.params.id);
-    if (!file || file.type !== 'video') return res.status(404).json({ error: 'Video not found' });
+    const engine = globalThis.mediaEngine;
+    const file = await engine.resolve(req.params.id);
+    if (!file || file.blocked || file.type !== 'video') return res.status(404).json({ error: 'Video not found' });
 
     const decision = await getPlaybackDecision(file);
     const userAgent = req.headers['user-agent'] || '';
@@ -64,8 +63,9 @@ router.get('/video/:id/playback-info', async (req, res) => {
 
 router.get('/video/:id', async (req, res) => {
   try {
-    const file = getFileWithRelPath(req.params.id);
-    if (!file || file.type !== 'video') {
+    const engine = globalThis.mediaEngine;
+    const file = await engine.resolve(req.params.id);
+    if (!file || file.blocked || file.type !== 'video') {
       return res.status(404).json({ error: 'Video not found' });
     }
 
@@ -95,8 +95,9 @@ router.get('/video/:id', async (req, res) => {
 
 router.get('/audio/:id', async (req, res) => {
   try {
-    const file = getFileWithRelPath(req.params.id);
-    if (!file || file.type !== 'audio') return res.status(404).json({ error: 'Audio not found' });
+    const engine = globalThis.mediaEngine;
+    const file = await engine.resolve(req.params.id);
+    if (!file || file.blocked || file.type !== 'audio') return res.status(404).json({ error: 'Audio not found' });
 
     res.set('Content-Type', MIME_CACHE[file.ext] || 'audio/mpeg');
 
@@ -116,8 +117,9 @@ router.get('/audio/:id', async (req, res) => {
 
 router.get('/video/:id/hls/playlist.m3u8', async (req, res) => {
   try {
-    const file = getFileWithRelPath(req.params.id);
-    if (!file || file.type !== 'video') return res.status(404).json({ error: 'Video not found' });
+    const engine = globalThis.mediaEngine;
+    const file = await engine.resolve(req.params.id);
+    if (!file || file.blocked || file.type !== 'video') return res.status(404).json({ error: 'Video not found' });
 
     // HLS requires re-encoding for incompatible codecs — only offer it when
     // transcoding is enabled, otherwise fall back to the raw direct stream.
@@ -163,8 +165,9 @@ router.get('/video/:id/hls/playlist.m3u8', async (req, res) => {
 
 router.get('/video/:id/hls/segment-:segment(\\d+).ts', async (req, res) => {
   try {
-    const file = getFileWithRelPath(req.params.id);
-    if (!file || file.type !== 'video') return res.status(404).json({ error: 'Video not found' });
+    const engine = globalThis.mediaEngine;
+    const file = await engine.resolve(req.params.id);
+    if (!file || file.blocked || file.type !== 'video') return res.status(404).json({ error: 'Video not found' });
 
     const segmentIdx = parseInt(req.params.segment, 10);
     const segPath = await getSegment(file.id, file.fullPath, file.mtime, segmentIdx);
@@ -183,8 +186,9 @@ router.get('/video/:id/hls/segment-:segment(\\d+).ts', async (req, res) => {
 
 router.get('/video/:id/compatibility', async (req, res) => {
   try {
-    const file = getFileWithRelPath(req.params.id);
-    if (!file || file.type !== 'video') return res.status(404).json({ error: 'Video not found' });
+    const engine = globalThis.mediaEngine;
+    const file = await engine.resolve(req.params.id);
+    if (!file || file.blocked || file.type !== 'video') return res.status(404).json({ error: 'Video not found' });
 
     const decision = await getPlaybackDecision(file);
     const ext = file.ext?.toLowerCase();
@@ -235,8 +239,9 @@ const WEBM_CACHE = new Map();
 
 router.get('/video/:id/webm', async (req, res) => {
   try {
-    const file = getFileWithRelPath(req.params.id);
-    if (!file || file.type !== 'video') {
+    const engine = globalThis.mediaEngine;
+    const file = await engine.resolve(req.params.id);
+    if (!file || file.blocked || file.type !== 'video') {
       return res.status(404).json({ error: 'Video not found' });
     }
     const sizeMB = file.size / (1024 * 1024);
@@ -277,8 +282,9 @@ const FASTSTART_CACHE = new Map();
 
 router.get('/video/:id/faststart', async (req, res) => {
   try {
-    const file = getFileWithRelPath(req.params.id);
-    if (!file || file.type !== 'video') {
+    const engine = globalThis.mediaEngine;
+    const file = await engine.resolve(req.params.id);
+    if (!file || file.blocked || file.type !== 'video') {
       return res.status(404).json({ error: 'Video not found' });
     }
 

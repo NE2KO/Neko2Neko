@@ -3,7 +3,9 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { debouncedRescan } from '../utils/watcher.js';
+import { VIDEO_EXTS, AUDIO_EXTS, IMAGE_EXTS } from '@homelab/media-engine';
+// Downloader-specific: .webm is treated as video for routing (yt-dlp downloads webm as video)
+const DL_VIDEO_EXTS = new Set([...VIDEO_EXTS, '.webm']);
 import { YTDLP_RESILIENT_ARGS, YTDLP_USER_AGENT } from '../utils/ytdlp.js';
 import { get } from '../utils/runtimeSettings.js';
 import { embedCover } from '../utils/metadataWriter.js';
@@ -36,16 +38,13 @@ for (const route of Object.values(SOURCE_ROUTES)) {
   }
 }
 
-const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
-const AUDIO_EXTS = new Set(['.mp3', '.m4a', '.flac', '.opus', '.wav', '.aac', '.ogg', '.webm']);
-const VIDEO_EXTS = new Set(['.mp4', '.mkv', '.webm', '.mov']);
 const MEDIA_EXT_RE = /\.(jpg|jpeg|png|gif|webp|mp4|mkv|webm|mov|mp3|m4a|flac|opus|wav|aac)$/i;
 const INSTAGRAM_MEDIA_TYPES = new Set(['p', 'reel', 'reels', 'tv']);
 const ACTIVE_TASK_STATUSES = new Set(['queued', 'downloading']);
 
 const NETWORK_ERRORS = ['ETIMEDOUT', 'ECONNRESET', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH',
   'network', 'timed out', 'connection refused', 'connection reset', 'connection aborted',
-  'request error', 'temporary failure'];
+  'request error', 'temporary failure', 'http error 403', 'http error 416', 'unable to rename file'];
 const CONTENT_ERRORS = ['private', 'age-restricted', 'Video unavailable', 'This content is not available',
   'Sign in to confirm', 'cookies', 'format not available', 'No format'];
 
@@ -100,7 +99,7 @@ const BOT_CONCURRENT = 1;
 // best, …) had no codec filter and let yt-dlp pick AV1/HEVC for sub-1080p or
 // vertical sources. If a source genuinely has no avc1 variant the task fails
 // cleanly rather than landing an undeliverable file in the vault.
-const BOT_H264_FORMAT = 'bestvideo[height=1080][fps>=50][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[width=1080][fps>=50][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[width=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[width<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/best[vcodec^=avc1]';
+const BOT_H264_FORMAT = 'bestvideo[height>=720][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height>=720][vcodec!=none]+bestaudio[ext=m4a]/bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[width<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/best[vcodec^=avc1]';
 
 const MAX_AUTO_RETRIES = 3;
 const RETRY_BASE_DELAY = 5000;
@@ -462,7 +461,7 @@ function resolveDownloadedPaths(task) {
   if (existing.length > 0) return existing;
 
   if (task._downloadDir) {
-    const exts = task.category === 'instagram' ? new Set([...IMAGE_EXTS, ...VIDEO_EXTS]) : null;
+    const exts = task.category === 'instagram' ? new Set([...IMAGE_EXTS, ...DL_VIDEO_EXTS]) : null;
     return scanDownloadDir(task._downloadDir, exts, task.category === 'instagram');
   }
 
@@ -480,7 +479,7 @@ function resolveDownloadedPaths(task) {
 
 function getInstagramFinalDir(task, ext) {
   const normalizedExt = ext.toLowerCase();
-  if (VIDEO_EXTS.has(normalizedExt)) return SOURCE_ROUTES[task.category]?.video || task.outputDir;
+  if (DL_VIDEO_EXTS.has(normalizedExt)) return SOURCE_ROUTES[task.category]?.video || task.outputDir;
   if (IMAGE_EXTS.has(normalizedExt)) return task.imageDir || getImageDir(task.category) || task.outputDir;
   return task.outputDir;
 }
@@ -545,7 +544,7 @@ function transcodeInstagramVideoToH264(task, filePath) {
 }
 
 function ensureInstagramVideoCompatible(task, filePath) {
-  if (!VIDEO_EXTS.has(path.extname(filePath).toLowerCase())) return filePath;
+  if (!DL_VIDEO_EXTS.has(path.extname(filePath).toLowerCase())) return filePath;
   const probe = probeVideoFile(filePath);
   if (isInstagramVideoCodecCompatible(probe)) return filePath;
   const codec = probe ? `${probe.codec} ${probe.codecTag}`.trim() : 'unknown';
@@ -555,7 +554,7 @@ function ensureInstagramVideoCompatible(task, filePath) {
 
 function filterInstagramFallbackPaths(paths) {
   const images = paths.filter(p => IMAGE_EXTS.has(path.extname(p).toLowerCase()));
-  const videos = paths.filter(p => VIDEO_EXTS.has(path.extname(p).toLowerCase()));
+  const videos = paths.filter(p => DL_VIDEO_EXTS.has(path.extname(p).toLowerCase()));
   return [...filterCoverArt(images), ...videos];
 }
 
@@ -892,7 +891,7 @@ function getImageDir(category) {
 export function createTask(url, options = {}) {
   const category = (options.category || 'youtube').toLowerCase();
   const quality = options.quality || 'best';
-  const formatId = options.formatId || '';
+  let formatId = options.formatId || '';
   const audioExtract = !!options.audioExtract;
   const audioFormat = options.audioFormat ? options.audioFormat.toLowerCase() : '';
   const audioBitrate = options.audioBitrate || 'best';
@@ -904,10 +903,12 @@ export function createTask(url, options = {}) {
   const customOutput = !!options.customOutput;
   const customTitle = (options.customTitle || '').trim();
   const embedCover = !!options.embedCover;
+  const viaBot = !!options.botMode;
 
   if (!VALID_CATEGORIES.includes(category)) return { error: `Kategori "${category}" tidak dikenal` };
 
   const validQ = QUALITY_MAP[category];
+  if (viaBot && !audioExtract && !formatId) formatId = BOT_H264_FORMAT;
   if (!formatId && !validQ.includes(quality)) return { error: `Kualitas "${quality}" tidak valid` };
   if (audioExtract && audioFormat && !AUDIO_EXTRACT_FORMATS.includes(audioFormat)) return { error: `Format audio "${audioFormat}" tidak valid` };
   if (audioExtract && embedCover && audioFormat && !['mp3', 'm4a', 'opus', 'ogg', 'flac'].includes(audioFormat)) return { error: `Embed cover tidak didukung untuk format audio ${audioFormat}. Gunakan mp3, m4a, opus, ogg, atau flac.` };
@@ -1669,7 +1670,7 @@ async function finishTask(task, status, errorMsg) {
     recordDownloaded(task.url, task.category);
     postProcessTask(task);
     cleanupDownloadWorkDir(task);
-    debouncedRescan();
+    if (globalThis.mediaScanner) globalThis.mediaScanner.scan().catch(() => {});
   } else if (status === 'failed') {
     cleanupDownloadWorkDir(task);
     handleFailedTask(task, errorMsg);
@@ -1845,7 +1846,7 @@ function triggerGalleryDlFallback(task, reason) {
         if (filePath) imgDownloadedPaths.push(filePath);
       }
       const exactPaths = uniqueExistingPaths(imgDownloadedPaths);
-      const rawPaths = exactPaths.length > 0 ? exactPaths : scanDownloadDir(imgDownloadDir, new Set([...IMAGE_EXTS, ...VIDEO_EXTS]), true);
+      const rawPaths = exactPaths.length > 0 ? exactPaths : scanDownloadDir(imgDownloadDir, new Set([...IMAGE_EXTS, ...DL_VIDEO_EXTS]), true);
       const fallbackPaths = filterInstagramFallbackPaths(rawPaths);
 
       addLog(task, `Instagram fallback completed, files found: ${fallbackPaths.length}`);
@@ -1881,7 +1882,6 @@ function spawnYtdlp(task) {
   const args = ['--newline', '--no-warnings', '--no-playlist', '--concurrent-fragments', '4'];
   args.push(...YTDLP_RESILIENT_ARGS);
   args.push('--replace-in-metadata', 'title', '[#]', '');
-  args.push('--replace-in-metadata', 'title', '^[^A-Za-z0-9]+', '');
   const downloadDir = task.category === 'instagram' ? createDownloadWorkDir(task.outputDir, task) : task.outputDir;
 
   if (task.category === 'instagram') {
@@ -1892,9 +1892,20 @@ function spawnYtdlp(task) {
     args.push('--print', 'after_move:__DOWNLOADED_FILE__%(filepath)s');
   }
 
-  const cookies = resolveCookiesForTask(task);
-  if (cookies) {
-    args.push('--cookies', cookies);
+  // For YouTube we need the live logged-in Chromium session (--cookies-from-browser)
+  // so the web_safari client can serve full 1080p HLS formats (SABR/PoToken gating).
+  // The static cookie file alone is capped at 360p.
+  if (task.category === 'youtube') {
+    args.push('--cookies-from-browser', 'chromium:Default');
+    const staticCookies = resolveCookiesForTask(task);
+    if (staticCookies) {
+      args.push('--cookies', staticCookies);
+    }
+  } else {
+    const cookies = resolveCookiesForTask(task);
+    if (cookies) {
+      args.push('--cookies', cookies);
+    }
   }
 
   if (task.formatId) {
@@ -1992,6 +2003,9 @@ const outputTemplate = task.customTitle
       const sp = SPEED_RE.exec(c); if (sp) task.speed = `${sp[1]} ${sp[2]}`;
       const et = ETA_RE.exec(c); task.eta = (et && et[1] !== '--') ? et[1] : '';
       const sz = SIZE_RE.exec(c); if (sz) task.totalSize = `${sz[1]} ${sz[2]}`;
+      if (c.includes('[info]') && c.includes('Destination:')) {
+        addLog(task, `yt-dlp format: ${c.trim()}`);
+      }
     }
   };
 

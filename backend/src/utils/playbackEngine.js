@@ -15,6 +15,7 @@ let shutdownRequested = false;
 
 const H264_RE = /(^|\s)(avc1|h264)(\s|$)/;
 const HEVC_RE = /(^|\s)(hev1|hvc1|hevc)(\s|$)/;
+const AV1_RE = /(^|\s)(av1|libaom|libsvtav1|librav1e)(\s|$)/;
 const OPUS_RE = /\bopus\b/;
 const BROWSER_CONTAINERS = ['.mp4', '.m4v', '.mov'];
 const ISO_BMFF_EXT = new Set(['.mp4', '.m4v', '.mov']);
@@ -399,8 +400,9 @@ export async function getPlaybackDecision(file) {
   const isBrowserContainer = BROWSER_CONTAINERS.includes(ext);
   const isH264 = H264_RE.test(codec);
   const isHevc = HEVC_RE.test(codec);
+  const isAv1 = AV1_RE.test(codec);
   const hasOpus = OPUS_RE.test(audioCodec);
-  const videoCompatible = isBrowserContainer && (isH264 || isHevc);
+  const videoCompatible = isBrowserContainer && (isH264 || isHevc || isAv1);
 
   if (videoCompatible && !hasOpus) {
     const faststartState = await resolveFaststartState(file, ext);

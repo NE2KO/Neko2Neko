@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { Play, Pause, SkipBack, SkipForward, Maximize2, Heart, Shuffle, Repeat, Volume2, VolumeX } from 'lucide-react';
 import usePlaybackStore from '../store/playbackStore';
 import { useIsFavorite } from '../store/favoritesStore';
@@ -6,6 +6,10 @@ import { fetchBlob, getCached } from '../utils/thumbCache';
 import { listeningTracker } from '../utils/listeningTracker.js';
 import NetworkImage from './NetworkImage';
 import { cancelAutoPlayPending, isAutoPlayPendingCanceled, resetAutoPlayPending } from '../utils/autoPlayPending';
+import { createVideoSyncEngine } from '../utils/videoSyncEngine';
+import { getSharedSyncCore } from '../utils/syncCore';
+import { trackProfileStore } from '../utils/trackProfileStore.js';
+import { registerBgRef, registerDecisionOutput, registerAnalyzerEvidence, isRegisteredBg, getRegisteredMvTime } from './SyncOverlay';
 
 function formatTime(seconds) {
   if (!seconds || isNaN(seconds)) return '0:00';
@@ -18,7 +22,6 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [coverUrl, setCoverUrl] = useState(null);
-  const [mvReady, setMvReady] = useState(false);
   const [mvError, setMvError] = useState(false);
   const [audioPlaying, setAudioPlaying] = useState(false);
   const [volume, setVolume] = useState(() => {
@@ -31,6 +34,13 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
   });
   const bgVideoRef = useRef(null);
   const volumeWrapRef = useRef(null);
+  const reloadResumeAtRef = useRef(Number(sessionStorage.getItem('audioReloadResumeAt')) || 0);
+  // Re-read on each render so the gate stays accurate even if the event listener
+  // hasn't been registered yet when the resume event fires.
+  if (reloadResumeAtRef.current > 0) {
+    const stored = Number(sessionStorage.getItem('audioReloadResumeAt')) || 0;
+    reloadResumeAtRef.current = stored;
+  }
 
   const [autoPlayPending, setAutoPlayPending] = useState(false);
   const [userInteracted, setUserInteracted] = useState(false);
@@ -53,7 +63,39 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
   const prevFileIdRef = sharedPrevFileIdRef || { current: null };
   const currentTrack = queue?.[currentTrackIndex];
   const fileId = currentTrack?.file_id;
-  const mvId = currentTrack?.youtube_id;
+  const youtubeIdQueue = currentTrack?.youtube_id || null;
+
+  // ── MV background state ─────────────────────────────────────────────────
+  // BG shows the MV (blurred + dimmed) whenever the track has one — fully
+  // independent of what the NowPlaying panel is displaying. #000000 remains
+  // only as the base layer.
+  const mvOffsetRef = useRef(0);
+
+  // Queue data doesn't always carry youtube_id — resolve via the metadata
+  // API once per track (same fallback as NowPlayingPanel / full player).
+  const [resolvedYtId, setResolvedYtId] = useState(null);
+  const ytMetaCacheRef = useRef(new Map());
+  useEffect(() => {
+    setResolvedYtId(null);
+    if (!fileId || youtubeIdQueue) return undefined;
+    if (ytMetaCacheRef.current.has(fileId)) {
+      setResolvedYtId(ytMetaCacheRef.current.get(fileId));
+      return undefined;
+    }
+    let cancelled = false;
+    fetch(`/api/metadata/${fileId}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        const yid = data?.youtube_id || null;
+        ytMetaCacheRef.current.set(fileId, yid);
+        if (!cancelled) setResolvedYtId(yid);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [fileId, youtubeIdQueue]);
+
+  const mvId = youtubeIdQueue || resolvedYtId;
+  const showMvBg = !!mvId && !mvError;
 
   const isFav = useIsFavorite(fileId, currentTrack?.is_favorite ? 1 : 0);
   const handleToggleFavorite = useCallback(() => {
@@ -85,51 +127,207 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
     return cleanup;
   }, [fileId, loadCover]);
 
+  // Reset the error fallback when the track (and thus its video) changes.
   useEffect(() => {
-    setMvReady(false);
     setMvError(false);
   }, [mvId]);
 
+  // Stream errored = video not cached (yet). Poll the cache progress and
+  // revive the BG the moment the download completes — same recovery as the
+  // full player's background, instead of falling back to cover permanently.
   useEffect(() => {
-    const audio = audioRef?.current;
-    const video = bgVideoRef.current;
-    if (!audio || !video || !audioReady) return;
+    if (!mvError || !mvId) return undefined;
+    let cancelled = false;
+    let timer = null;
+    const poll = async () => {
+      try {
+        const r = await fetch(`/api/video-cache/progress/${mvId}`);
+        if (r.ok) {
+          const d = await r.json();
+          if (!cancelled && d?.status === 'cached') {
+            setMvError(false);
+            try { bgVideoRef.current?.load?.(); } catch {}
+            return;
+          }
+        }
+      } catch {}
+      if (!cancelled) timer = setTimeout(poll, 1000);
+    };
+    poll();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [mvError, mvId]);
 
-    const offset = Number(currentTrack?.video_offset) || 0;
-    const syncPosition = () => {
-      const dur = video.duration;
-      if (!Number.isFinite(dur) || dur <= 0) return;
-      const target = ((audio.currentTime || 0) + offset) % dur;
-      if (Math.abs((video.currentTime || 0) - target) > 1.0) {
-        try { video.currentTime = target; } catch {}
+  // ── Shared sync core (app-wide singleton) ──────────────────────────────
+  // Same master clock as the full player and the NowPlaying panel: shared
+  // audio element + per-track video offset. Whoever creates the singleton
+  // first, all surfaces compute identical targets.
+  mvOffsetRef.current = Number(currentTrack?.video_offset) || 0;
+  const trackChangeTimeRef = useRef(0);
+  const analyzerEvidenceRef = useRef({ mv: [], bg: [] });
+  const decisionOutputRef = useRef({ mv: null, bg: null });
+  // Seek-guard state — mirrors the full player's BG engine so a waiting/stalled
+  // video can't trigger seek storms (which showed up as random play/pause).
+  const bgSeekInProgressRef = useRef(false);
+  const bgSeekStartedAtRef = useRef(0);
+  const bgPendingForceSeekRef = useRef(null);
+  const syncCore = useMemo(() => getSharedSyncCore(() => {
+    const audio = audioRef?.current;
+    return (audio?.currentTime || 0) + (mvOffsetRef.current || 0);
+  }), []);
+
+  // ── BG sync engine (drives the blurred MV background) ──────────────────
+  // Options mirror the full player's bgEngine (Music.jsx) so this decorative
+  // layer is just as resilient: seek-guard, no pause-on-stall, same thresholds.
+  const bgEngine = useMemo(() => createVideoSyncEngine({
+    getCurrentTime: () => bgVideoRef.current?.currentTime ?? 0,
+    getDuration: () => bgVideoRef.current?.duration ?? Infinity,
+    getPaused: () => bgVideoRef.current?.paused ?? true,
+    getSeeking: () => bgVideoRef.current?.seeking ?? false,
+    getReadyState: () => bgVideoRef.current?.readyState ?? 0,
+    seek: (t) => {
+      const bg = bgVideoRef.current;
+      if (!bg || !isFinite(bg.duration) || bg.duration <= 0) return;
+      const target = ((t % bg.duration) + bg.duration) % bg.duration;
+      const cur = bg.currentTime || 0;
+      const gap = Math.abs(cur - target);
+      if (gap < 0.001) {
+        bgSeekInProgressRef.current = false;
+        bgSeekStartedAtRef.current = 0;
+        return;
+      }
+      if (bgSeekInProgressRef.current) {
+        if (performance.now() - bgSeekStartedAtRef.current > 2000) {
+          bgSeekInProgressRef.current = false;
+        } else {
+          // Coalesce: remember the newest target and chase it on seeked.
+          bgPendingForceSeekRef.current = target;
+          return;
+        }
+      }
+      bg.currentTime = target;
+      bgSeekInProgressRef.current = true;
+      bgSeekStartedAtRef.current = performance.now();
+    },
+    play: () => { bgVideoRef.current?.play?.().catch?.(() => {}); return Promise.resolve(); },
+    pause: () => { try { bgVideoRef.current?.pause?.(); } catch {} return Promise.resolve(); },
+    setRate: (r) => { if (bgVideoRef.current) { try { bgVideoRef.current.playbackRate = r; } catch {} } },
+    getIsPlaying: () => usePlaybackStore.getState().isPlaying,
+    looping: true,
+    hardSeekThreshold: 0.25,
+    jumpSeekThreshold: 1.0,
+    rateMin: 0.003,
+    rateGain: 0.8,
+    seekCooldown: 500,
+    stallTimeout: 2000,
+    gracePeriod: 10,
+    pauseOnStall: false,
+    pauseIfFarFromTarget: false,
+    farThreshold: 0.5,
+    adaptiveThreshold: true,
+    getAdaptiveThresholds: () => syncCore.getAdaptiveThresholds('bg'),
+    getNetworkState: () => bgVideoRef.current?.networkState || 0,
+    getWaiting: () => bgVideoRef.current?.waiting || false,
+    getStalled: () => bgVideoRef.current?.stalled || false,
+    getRvfcStatus: () => 'UNSUPPORTED',
+    getDroppedFrames: () => 0,
+    getDecodeLatencyMs: () => 0,
+    getAudioCurrentTime: () => audioRef?.current?.currentTime || 0,
+    getVideoPlaybackRate: () => bgVideoRef.current?.playbackRate || 1,
+    getBgPlaybackRate: () => 1,
+    getVideoOffset: () => mvOffsetRef.current || 0,
+    // REAL counterpart time from the surface registry (right-panel MV when it
+    // is active). NaN when absent → engine reports hasTriangle:false honestly.
+    getMvCurrentTime: () => getRegisteredMvTime(),
+    getBgCurrentTime: () => bgVideoRef.current?.currentTime ?? 0,
+    log: () => {},
+    trackChangeTimeRef,
+    syncCore,
+    profileStore: trackProfileStore,
+    engineName: 'bg',
+    analyzerEvidenceRef,
+    decisionOutputRef,
+  }), [syncCore]);
+
+  // Tick loop — drives the BG video from the shared audio clock while the
+  // surface is active (has MV, not errored, not gated by the panel MV) AND
+  // playback is actually running. Pausing the music freezes/stops the BG
+  // decode entirely; resuming re-anchors to the current audio position.
+  useEffect(() => {
+    if (!showMvBg || !audioReady || !isPlaying) return undefined;
+    if (reloadResumeAtRef.current > Date.now()) return undefined;
+    const audio = audioRef?.current;
+    if (!audio) return undefined;
+    const lastTick = { current: performance.now() };
+    const id = setInterval(() => {
+      const now = performance.now();
+      const tickDelta = now - lastTick.current;
+      lastTick.current = now;
+      const audioTarget = (audio.currentTime || 0) + (mvOffsetRef.current || 0);
+      try { bgEngine.tick(audioTarget, tickDelta); } catch {}
+    }, 40);
+    bgEngine.anchor({
+      play: !audio.paused,
+      target: (audio.currentTime || 0) + (mvOffsetRef.current || 0),
+    });
+    return () => {
+      clearInterval(id);
+      bgEngine.pause();
+    };
+  }, [showMvBg, audioReady, isPlaying, audioRef, bgEngine]);
+
+  // Re-anchor when the track changes so the new BG starts at the right spot.
+  useEffect(() => {
+    if (!showMvBg) return;
+    if (reloadResumeAtRef.current > Date.now()) return;
+    const audio = audioRef?.current;
+    if (!audio) return;
+    bgVideoRef.current?.load?.();
+    bgEngine.anchor({
+      play: !audio.paused,
+      target: (audio.currentTime || 0) + (Number(currentTrack?.video_offset) || 0),
+    });
+  }, [mvId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Surface registry: claim 'bg' while this BG is active ────────────────
+  // Makes THIS video element the triangle/overlay's BG time source and exposes
+  // this engine's decision/analyzer evidence to the sync overlay. Ownership
+  // check on cleanup — never clear a registry entry owned by another surface
+  // (e.g. the full player, which registers on mount in the audio view).
+  useEffect(() => {
+    if (!showMvBg) return undefined;
+    registerBgRef(bgVideoRef);
+    registerDecisionOutput(decisionOutputRef.current);
+    registerAnalyzerEvidence(analyzerEvidenceRef.current);
+    return () => {
+      if (isRegisteredBg(bgVideoRef)) {
+        registerBgRef(null);
       }
     };
-    const onPlay = () => { video.play().catch(() => {}); };
-    const onPause = () => { video.pause(); };
-    const onCanPlay = () => {
-      if (!audio.paused) video.play().catch(() => {});
-      syncPosition();
+  }, [showMvBg]);
+
+  // ── Audio seeked → immediate re-anchor (Music.jsx pattern) ──────────────
+  // Single source of truth for seek-driven re-anchor: without this, the BG
+  // only corrects via drift after pause/resume re-runs the tick effect.
+  useEffect(() => {
+    const audio = audioRef?.current;
+    if (!audio || !showMvBg) return undefined;
+    const onSeeked = () => {
+      const playing = usePlaybackStore.getState().isPlaying;
+      bgEngine.anchor({
+        play: playing,
+        target: (audio.currentTime || 0) + (mvOffsetRef.current || 0),
+      });
     };
+    audio.addEventListener('seeked', onSeeked);
+    return () => audio.removeEventListener('seeked', onSeeked);
+  }, [showMvBg, audioRef, bgEngine]);
 
-    audio.addEventListener('play', onPlay);
-    audio.addEventListener('pause', onPause);
-    audio.addEventListener('seeked', syncPosition);
-    audio.addEventListener('timeupdate', syncPosition);
-    video.addEventListener('loadedmetadata', syncPosition);
-    video.addEventListener('canplay', onCanPlay);
-
-    if (audio.paused) video.pause(); else video.play().catch(() => {});
-    syncPosition();
-
-    return () => {
-      audio.removeEventListener('play', onPlay);
-      audio.removeEventListener('pause', onPause);
-      audio.removeEventListener('seeked', syncPosition);
-      audio.removeEventListener('timeupdate', syncPosition);
-      video.removeEventListener('loadedmetadata', syncPosition);
-      video.removeEventListener('canplay', onCanPlay);
-    };
-  }, [audioRef, audioReady, mvId, currentTrack?.video_offset]);
+  // Clear the reload grace-period gate once Music.jsx fires the resume event.
+  useEffect(() => {
+    const onReloadResume = () => { reloadResumeAtRef.current = 0; };
+    window.addEventListener('audio-reload-resume', onReloadResume);
+    return () => window.removeEventListener('audio-reload-resume', onReloadResume);
+  }, []);
 
   useEffect(() => {
     const onOnline = () => loadCover(fileId);
@@ -166,7 +364,7 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
 
     const handleCanPlay = () => {
       setDuration(audio.duration || 0);
-      if (usePlaybackStore.getState().isPlaying) {
+      if (usePlaybackStore.getState().isPlaying && reloadResumeAtRef.current <= Date.now()) {
         audio.play().catch(() => {});
       }
     };
@@ -203,6 +401,7 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
     const audio = audioRef?.current;
     if (!audio || !audioReady) return;
     if (isPlaying && audio.paused) {
+      if (reloadResumeAtRef.current > Date.now()) return;
       audio.play().catch((err) => {
         if (err?.name === 'NotAllowedError') {
           setAutoPlayPending(true);
@@ -408,6 +607,80 @@ export default function MiniPlayer({ onExpand, onClose, sharedAudioRef, sharedPr
         data-debug-type="floating"
         className="w-full flex-shrink-0 bg-black relative overflow-hidden"
       >
+        {/* ── Background layer (z-0): MV blurred+dimmed when available.
+            NO cover fallback by design — without a video the layer stays
+            empty and the container's #000 base shows through. ── */}
+        {showMvBg && (
+          <video
+            key={mvId}
+            ref={bgVideoRef}
+            className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+            style={{
+              filter: `blur(12px) saturate(1.4) brightness(${isPlaying ? 0.5 : 0.32})`,
+              zIndex: 0,
+              opacity: 1,
+              transition: 'opacity 500ms ease, filter 400ms ease',
+              maskImage: 'linear-gradient(to bottom, black 55%, rgba(0,0,0,0.4))',
+              WebkitMaskImage: 'linear-gradient(to bottom, black 55%, rgba(0,0,0,0.4))',
+            }}
+            src={`/api/video-cache/stream/${mvId}`}
+            muted
+            playsInline
+            preload="auto"
+            onLoadStart={() => {
+              const bg = bgVideoRef.current;
+              if (syncCore && bg) {
+                syncCore.setVideoSrc('bg', bg.src || bg.currentSrc);
+                syncCore.recordVideoLifecycleEvent('bg', 'loadstart', bg);
+              }
+            }}
+            onLoadedData={() => {
+              const bg = bgVideoRef.current;
+              if (syncCore && bg) syncCore.recordVideoLifecycleEvent('bg', 'loadeddata', bg);
+            }}
+            onLoadedMetadata={() => {
+              const bg = bgVideoRef.current;
+              if (syncCore && bg) {
+                syncCore.setVideoSrc('bg', bg.src || bg.currentSrc);
+                syncCore.recordVideoLifecycleEvent('bg', 'loadedmetadata', bg);
+              }
+            }}
+            onWaiting={() => { try { bgEngine.onWaiting(); } catch {} }}
+            onStalled={() => { try { bgEngine.onStalled(); } catch {} }}
+            onPlaying={() => {
+              const bg = bgVideoRef.current;
+              if (syncCore && bg) syncCore.recordVideoLifecycleEvent('bg', 'playing', bg);
+              try { bgEngine.onPlaying(); } catch {}
+            }}
+            onSeeked={() => {
+              const bg = bgVideoRef.current;
+              if (syncCore && bg) syncCore.recordVideoLifecycleEvent('bg', 'seeked', bg);
+              // Chase a coalesced seek target if one arrived while seeking.
+              const pendingForce = bgPendingForceSeekRef.current;
+              bgSeekInProgressRef.current = false;
+              bgSeekStartedAtRef.current = 0;
+              bgPendingForceSeekRef.current = null;
+              if (pendingForce != null && bg && Math.abs((bg.currentTime || 0) - pendingForce) > 0.05) {
+                try { bg.currentTime = pendingForce; } catch {}
+              }
+              try { bgEngine.onSeeked(); } catch {}
+            }}
+            onPause={() => {
+              const bg = bgVideoRef.current;
+              if (syncCore && bg) syncCore.recordVideoLifecycleEvent('bg', 'pause', bg);
+            }}
+            onEnded={() => {
+              const bg = bgVideoRef.current;
+              if (syncCore && bg) syncCore.recordVideoLifecycleEvent('bg', 'ended', bg);
+              // Loop the decorative BG back onto the audio clock if audio
+              // is still playing (same behavior as the full player's BG).
+              if (!usePlaybackStore.getState().isPlaying) return;
+              const audioTarget = (audioRef?.current?.currentTime || 0) + (mvOffsetRef.current || 0);
+              try { bgEngine.anchor({ play: true, target: audioTarget }); } catch {}
+            }}
+            onError={() => setMvError(true)}
+          />
+        )}
         <div className="relative z-10 flex items-center gap-4 p-3">
           {/* KIRI - Cover + Track Info */}
           <div className="w-72 flex-shrink-0 flex items-center gap-3">

@@ -21,6 +21,7 @@ db.pragma('temp_store = MEMORY');
 db.pragma('cache_size = -80000'); // ~80MB cache — sufficient for 112K files
 db.pragma('mmap_size = 4294967296'); // 4GB — prevents kernel over-mapping
 db.pragma('page_size = 32768'); // Larger page size for better sequential I/O
+db.pragma('busy_timeout = 5000'); // Wait up to 5s on concurrent writers (scanner worker) instead of erroring
 
 // Schema - Clean rebuild with deterministic sorting
 db.exec(`

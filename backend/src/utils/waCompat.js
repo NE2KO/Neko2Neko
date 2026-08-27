@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, statSync, readdirSync, utimesSync } from 'node:f
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import db from '../db.js';
-import { getFileWithRelPath } from './fileResolver.js';
 
 // Canonical codec vocabulary — kept in sync with backend/src/utils/fileScanner.js.
 // The WhatsApp contract is whole-media: H.264 video AND (when present) AAC audio.
@@ -127,8 +126,10 @@ function runFfmpeg(args) {
 // Throws with a "Media gagal diproses WA:" message for permanently unfixable media
 // (matched by isPermanentMediaError so it is NOT retried forever).
 export async function getWaSendPath(fileId) {
-  const file = getFileWithRelPath(fileId);
-  if (!file || !file.fullPath) throw new Error('File not found');
+  const engine = globalThis.mediaEngine;
+  if (!engine) throw new Error('Media engine not ready');
+  const file = await engine.resolve(fileId);
+  if (!file || file.blocked || !file.fullPath) throw new Error('File not found');
   const src = file.fullPath;
   if (!existsSync(src)) throw new Error(`File tidak ditemukan di disk: ${src}`);
 

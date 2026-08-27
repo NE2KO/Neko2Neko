@@ -78,7 +78,6 @@ const QueueItem = memo(({ track, index, isActive, onSelect, onToggleFavorite, is
   const isPlaying = usePlaybackStore(s => s.isPlaying);
   const eqActive = isActive && isPlaying;
   const eqPaused = isActive && !isPlaying;
-  const eqPaused = isActive && !isPlaying;
   const dirRef = useRef(slideDir);
   if (dirRef.current !== slideDir) dirRef.current = slideDir;
   const entrySide = dirRef.current === 'left' ? -1 : 1;

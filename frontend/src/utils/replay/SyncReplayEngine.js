@@ -70,7 +70,8 @@ export class SyncReplayEngine {
 
     const rawDriftMs = Number(data.driftMs || 0);
     mem.drift.pushDrift(rawDriftMs);
-    mem.drift.setBiasMs(0);
+    // NOTE: bias is updated via updateProfileFromLive() in videoSyncEngine,
+    // not reset per-frame. This preserves realistic bias evolution for replay.
     mem.pipeline.setCptMs(Number(data.cptMs || 0));
     mem.scheduler.pushTickDelta(Number(data.tickDelta || 0));
     mem.scheduler.setCpuOverloaded(Boolean(data.cpuOverloaded));
