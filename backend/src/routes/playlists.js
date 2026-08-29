@@ -32,6 +32,7 @@ router.get('/', (req, res) => {
         has_image: !!p.image,
         last_scanned: p.last_scanned,
         last_updated: p.last_updated,
+        created_at: p.created_at,
       })),
       total: playlists.length,
     });
@@ -906,8 +907,12 @@ router.get('/:id/available-tracks', (req, res) => {
     const conditions = ["f.type = 'audio'"];
     const params = [];
 
-    // Only include files inside the Music folder (and its subfolders)
-    conditions.push("(d.path = 'Music' OR d.path LIKE 'Music/%')");
+    // Music root is direct (opsi A): MUSIC_ROOT env, not hardcoded via homelab symlink
+    // Vault stays homelab, Music directly to MUSIC_ROOT basename
+    const musicRootRaw = (process.env.MUSIC_ROOT || globalThis.MUSIC_ROOT?.[0] || '/home/CATIAA/Music');
+    const musicBase = musicRootRaw.split(':')[0].trim().split('/').filter(Boolean).pop() || 'Music';
+    conditions.push("(d.path = ? OR d.path LIKE ?)");
+    params.push(musicBase, `${musicBase}/%`);
 
     // We will filter out already-added tracks in JS using normalized path comparison
     const existingTracks = stmts.getPlaylistTrackPaths.all(playlistId);
@@ -945,7 +950,7 @@ router.get('/:id/available-tracks', (req, res) => {
       FROM files f
       JOIN folders d ON f.dir_id = d.id
       ${where}
-      GROUP BY d.path, f.name
+      GROUP BY f.id
       ORDER BY ${sortCol} ${sortDir}, f.id ASC
       LIMIT ${queryLimit}
     `;
