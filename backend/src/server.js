@@ -1,7 +1,7 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { accessSync, constants, existsSync, readFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync, lstatSync, readlinkSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import express from 'express';
@@ -23,6 +23,7 @@ import metadataRouter from './routes/metadata.js';
 import scrcpyRouter from './routes/scrcpy.js';
 import sendRouter, { startSendScheduler } from './routes/send.js';
 import syncVerifyRouter from './routes/syncVerify.js';
+import listeningRouter from './routes/listening.js';
 import { initTelegramInbound } from './utils/telegramBot.js';
 import { initTelegramAudioBot } from './utils/telegramAudioBot.js';
 import videoCacheRouter from './routes/videoCache.js';
@@ -64,16 +65,42 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // MEDIA ROOT CONFIG (multiple roots)
+// Vault = homelab tree, Music = direct Music folder (opsi A)
 export const MEDIA_ROOT = [
   process.env.MEDIA_ROOT || '/home/CATIAA/homelab'
 ].flatMap(r => r.split(':'))
 .map(r => r.trim())
 .filter(Boolean);
 
+export const MUSIC_ROOT = [
+  process.env.MUSIC_ROOT || '/home/CATIAA/Music'
+].flatMap(r => r.split(':'))
+.map(r => r.trim())
+.filter(Boolean);
+
+// Combined roots for scanning: vault + music (dedup, keep order)
+export const SCAN_ROOTS = [...new Set([...MEDIA_ROOT, ...MUSIC_ROOT])];
+
+// Warn if vault still contains symlink to Music (legacy, now redundant)
+for (const vaultRoot of MEDIA_ROOT) {
+  const linkPath = join(vaultRoot, MUSIC_ROOT[0]?.split('/').pop() || 'Music');
+  try {
+    const st = lstatSync(linkPath);
+    if (st.isSymbolicLink()) {
+      const target = readlinkSync(linkPath);
+      console.warn(`[server] Legacy symlink detected: ${linkPath} -> ${target}. Music now scanned via MUSIC_ROOT=${MUSIC_ROOT.join(':')}; consider removing the symlink.`);
+    }
+  } catch {}
+}
+
 // Media layer — single repository + scanner + engine
+// Scanner stays vault-only for DB compatibility (keeps 'Music/...' prefix), engine resolves via both roots so direct Music works after symlink removal
 const mediaRepository = new SqliteMediaRepository(db, stmts);
-const mediaEngine = new MediaEngine({ repository: mediaRepository, mediaRoots: MEDIA_ROOT, webId: process.env.MEDIA_WEB_ID || 'default' });
+const mediaEngine = new MediaEngine({ repository: mediaRepository, mediaRoots: SCAN_ROOTS, webId: process.env.MEDIA_WEB_ID || 'default' });
 globalThis.mediaEngine = mediaEngine;
+globalThis.MEDIA_ROOT = MEDIA_ROOT;
+globalThis.MUSIC_ROOT = MUSIC_ROOT;
+globalThis.SCAN_ROOTS = SCAN_ROOTS;
 const mediaScanner = new MediaScanner({
   repository: mediaRepository,
   mediaRoots: MEDIA_ROOT,
@@ -135,6 +162,7 @@ app.use('/api/metadata', requireService('mediaVault'), metadataRouter);
 app.use('/api/scrcpy', scrcpyRouter);
 app.use('/api/send', sendRouter);
 app.use('/api/video-cache', videoCacheRouter);
+app.use('/api/listening', listeningRouter);
 app.use('/api/debug/resources', (req, res) => {
   try {
     res.json(getResourceSnapshot());
@@ -405,7 +433,7 @@ function startServerWithPortFallback() {
   const attemptStart = () => {
     server.listen(currentPort, '0.0.0.0', () => {
       console.log(`[server] Running: ${tlsCredentials ? 'https' : 'http'}://0.0.0.0:${currentPort}`);
-      console.log(`[server] Media root: ${MEDIA_ROOT.join(', ')}`);
+      console.log(`[server] Media roots: ${SCAN_ROOTS.join(', ')} (vault=${MEDIA_ROOT.join(', ')} music=${MUSIC_ROOT.join(', ')})`);
       console.log(`[server] DB: ${join(__dirname, '../../data/media.db')}`);
 
       // Register all services for service control
