@@ -4,17 +4,18 @@ import CropTool from './CropTool';
 
 export default function CoverArtSearch({ fileId, currentMetadata, onApplied }) {
   const [query, setQuery] = useState(() => {
+    const fromName = parseFilenameToSearchTerms(currentMetadata?.name || '');
+    if (fromName.artist || fromName.track) return fromName;
     const fromMeta = {
       track: currentMetadata?.display_name || currentMetadata?.title || '',
       artist: currentMetadata?.artist || '',
       album: currentMetadata?.album || '',
     };
-    if (fromMeta.track || fromMeta.artist) return fromMeta;
-    return parseFilenameToSearchTerms(currentMetadata?.name || '');
+    return fromMeta;
   });
-  // Free-text "search by name" — pre-filled with the song title so the user
-  // never has to type it manually. Still editable.
   const [freeQuery, setFreeQuery] = useState(() => {
+    const fromName = currentMetadata?.name ? currentMetadata.name.replace(/\.[^.]+$/, '') : '';
+    if (fromName) return fromName;
     const title = currentMetadata?.title || currentMetadata?.display_name || '';
     if (title) return title;
     return parseFilenameToSearchTerms(currentMetadata?.name || '').track || '';
