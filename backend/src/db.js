@@ -893,6 +893,30 @@ db.exec(`
   )
 `);
 
+// ─── Listening stats (MiniContinuity + 5s DB checkpoint, progression truth) ───
+db.exec(`
+  CREATE TABLE IF NOT EXISTS listening_stats (
+    trackId TEXT PRIMARY KEY,
+    playCount INTEGER NOT NULL DEFAULT 0,
+    listenedSeconds INTEGER NOT NULL DEFAULT 0,
+    lastPlayedAt INTEGER,
+    displayName TEXT,
+    updatedAt INTEGER
+  )
+`);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS listening_sessions (
+    sessionId TEXT PRIMARY KEY,
+    trackId TEXT NOT NULL,
+    playDelta INTEGER NOT NULL DEFAULT 0,
+    listenedDelta INTEGER NOT NULL DEFAULT 0,
+    createdAt INTEGER NOT NULL
+  )
+`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_listening_stats_updated ON listening_stats(updatedAt DESC)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_listening_stats_plays ON listening_stats(playCount DESC)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_listening_stats_listened ON listening_stats(listenedSeconds DESC)');
+
 // Prepared Statements
 const stmts = {
   // Playlists

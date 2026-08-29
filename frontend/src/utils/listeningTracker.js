@@ -19,9 +19,12 @@
  *     double counting.
  */
 
+import { MiniContinuity } from './miniContinuity.js';
+
 const MIN_PLAY_SECONDS = 30;
 const PERSIST_DEBOUNCE_MS = 2000;
 const STORAGE_KEY = 'musicListeningStats';
+const DB_INTERVAL_MS = 5000;
 
 function getStorage() {
   try {
@@ -83,6 +86,10 @@ export class ListeningTracker {
     this._onEnded = this._onEnded.bind(this);
     this._onTimeUpdate = this._onTimeUpdate.bind(this);
     this._onLoadedMetadata = this._onLoadedMetadata.bind(this);
+    // MiniContinuity sensor: progression truth, wall only anomaly signal, 0.5s tolerance, not ticking when paused
+    this.mini = new MiniContinuity();
+    this.dbIntervalId = null;
+    this.lastWallTime = null;
   }
 
   getActiveSessionSeconds() {
@@ -173,6 +180,9 @@ export class ListeningTracker {
   attach(audio, trackId, displayName) {
     if (!audio || !trackId) return;
     const wasAttached = this._attachCount > 0;
+    // Restore miniContinuity baseline if this is a reload with same track
+    const restored = this.mini.restore();
+    const isReloadSameTrack = restored && String(restored.trackId) === String(trackId);
     this._audio = audio;
     this.currentTrackId = trackId;
     if (displayName && (!this.stats[trackId] || !this.stats[trackId].displayName)) {
@@ -196,11 +206,24 @@ export class ListeningTracker {
       this.sessionAccumulated = 0;
       this.sessionPlayCounted = false;
     }
-    this.lastAudioTime = null;
+    this.lastAudioTime = audio.currentTime || 0;
     this.lastTick = null;
+    // For reload same track, keep old wallTime for gap detection (wallDelta = now - old)
+    this.lastWallTime = isReloadSameTrack && restored.lastWallTime ? restored.lastWallTime : Date.now();
+    this._isReload = !!isReloadSameTrack;
+    // Establish mini baseline only if not reloading same track with existing baseline, otherwise keep restored
+    if (!isReloadSameTrack) {
+      this.mini.establishBaseline(trackId, this.lastAudioTime, Date.now(), !audio.paused);
+    } else {
+      // Reload same track: keep restored lastPosition/lastWallTime for gap detection
+      this.mini.trackId = trackId;
+      if (!audio.paused) this.mini.wasPlaying = true;
+      // Ensure this.lastAudioTime is old for progression calc? Keep new for reference, mini holds old
+    }
     this._attachCount += 1;
     if (!wasAttached) {
       this._attach();
+      this._startDbInterval();
       if (!this._migrationAttempted) {
         this._migrationAttempted = true;
         this.migrateLegacyStats().catch(() => {});
@@ -217,17 +240,20 @@ export class ListeningTracker {
     if (this._attachCount <= 0) {
       this._detach();
       this._stopTick();
+      this._stopDbInterval();
       this._finalizeSession();
       this._prevTrackId = this.currentTrackId;
       this._audio = null;
       this.currentTrackId = null;
       this._attachCount = 0;
+      this.lastWallTime = null;
     }
   }
 
   onTrackChange(newTrackId) {
     if (this.currentTrackId && this.currentTrackId !== newTrackId) {
       this._finalizeSession();
+      this.mini.clear();
     }
     if (newTrackId && this._audio && !this._audio.paused) {
       this.currentTrackId = newTrackId;
@@ -237,8 +263,10 @@ export class ListeningTracker {
       this.sessionPlayCounted = false;
       this._sessionPersisted = false;
       this.sessionThreshold = computePlayThreshold(this._audio.duration);
-      this.lastAudioTime = null;
+      this.lastAudioTime = this._audio.currentTime || 0;
       this.lastTick = null;
+      this.lastWallTime = Date.now();
+      this.mini.establishBaseline(newTrackId, this.lastAudioTime, this.lastWallTime, true);
       this._startSession();
     } else if (newTrackId) {
       this.currentTrackId = newTrackId;
@@ -248,19 +276,52 @@ export class ListeningTracker {
       this.sessionPlayCounted = false;
       this._sessionPersisted = false;
       this.sessionThreshold = computePlayThreshold(this._audio?.duration);
-      this.lastAudioTime = null;
+      this.lastAudioTime = this._audio?.currentTime || 0;
       this.lastTick = null;
+      this.lastWallTime = Date.now();
+      this.mini.establishBaseline(newTrackId, this.lastAudioTime, this.lastWallTime, false);
     }
   }
 
   _startSession() {
     if (!this.currentTrackId || !this._audio) return;
     this.sessionStart = performance.now();
-    this.lastAudioTime = this._audio.currentTime || 0;
+    const pos = this._audio.currentTime || 0;
+    const wall = Date.now();
+    // If this is a reload with existing mini baseline, don't overwrite progression truth
+    const isReload = this._isReload && this.mini.trackId === this.currentTrackId && this.mini.lastPosition != null;
+    this.lastAudioTime = pos;
     this.lastTick = this.sessionStart;
+    this.lastWallTime = isReload ? this.mini.lastWallTime : wall;
     this._currentSessionId = this._generateSessionId();
     this._sessionPersisted = false;
+    if (!isReload) {
+      this.mini.establishBaseline(this.currentTrackId, pos, wall, true);
+    }
+    this._isReload = false;
     this._startTick();
+  }
+
+  _startDbInterval() {
+    this._stopDbInterval();
+    this.dbIntervalId = setInterval(() => {
+      this._intervalPersist();
+    }, DB_INTERVAL_MS);
+  }
+
+  _stopDbInterval() {
+    if (this.dbIntervalId) {
+      clearInterval(this.dbIntervalId);
+      this.dbIntervalId = null;
+    }
+  }
+
+  _intervalPersist() {
+    if (!this.currentTrackId || this._audio?.paused) return;
+    // Flush current sessionListened delta to localStorage + DB without resetting sessionAccumulated (play threshold guard stays)
+    if (this.sessionListened > 0.5) {
+      this._finalizeSessionInterval(true);
+    }
   }
 
   _generateSessionId() {
@@ -291,11 +352,19 @@ export class ListeningTracker {
       return;
     }
     const now = performance.now();
-    if (this.lastTick != null) {
-      const dt = (now - this.lastTick) / 1000;
-      if (dt > 0) {
-        this.sessionListened += dt;
-        this.sessionAccumulated += dt;
+    const nowWall = Date.now();
+    const currentPos = this._audio.currentTime || 0;
+    const wallDelta = this.lastWallTime != null ? (nowWall - this.lastWallTime) / 1000 : 0;
+    const buffering = this._audio.readyState < 3 || this._audio.seeking;
+    const rate = this._audio.playbackRate || 1;
+
+    // MiniContinuity sensor: progression is truth, wall only anomaly signal, 0.5s tolerance
+    const result = this.mini.check(currentPos, wallDelta, buffering, rate);
+    if (result.valid) {
+      const prog = result.progression;
+      if (prog > 0) {
+        this.sessionListened += prog;
+        this.sessionAccumulated += prog;
         if (!this.sessionPlayCounted && this.sessionAccumulated >= this.sessionThreshold) {
           this.sessionPlayCounted = true;
           const stats = this.getTrackStats(this.currentTrackId);
@@ -305,8 +374,28 @@ export class ListeningTracker {
           this._schedulePersist();
         }
       }
+      // Advance mini baseline only when valid (or tiny progression)
+      this.mini.advance(currentPos, nowWall, true);
+      this.lastAudioTime = currentPos;
+    } else {
+      // Invalid progression (reload_gap, buffering, seek, etc.) -> do not add
+      if (result.reason === 'reload_gap' || result.reason === 'anomaly') {
+        // Gap detected: establish new baseline at current position, don't count gap
+        this.mini.advance(currentPos, nowWall, true);
+        this.lastAudioTime = currentPos;
+      } else if (result.reason === 'buffering') {
+        // Buffering: advance wallTime only, keep position for next valid progression
+        this.mini.lastWallTime = nowWall;
+        try { localStorage.setItem('miniContinuity', JSON.stringify({ trackId: this.mini.trackId, lastPosition: this.mini.lastPosition, lastWallTime: this.mini.lastWallTime, wasPlaying: this.mini.wasPlaying, invalidated: this.mini.invalidated })); } catch {}
+      } else {
+        // For tiny/invalidated/paused, advance wall only
+        this.mini.lastWallTime = nowWall;
+        try { localStorage.setItem('miniContinuity', JSON.stringify({ trackId: this.mini.trackId, lastPosition: this.mini.lastPosition, lastWallTime: this.mini.lastWallTime, wasPlaying: this.mini.wasPlaying, invalidated: this.mini.invalidated })); } catch {}
+      }
     }
+
     this.lastTick = now;
+    this.lastWallTime = nowWall;
     if (this._audio && !this._audio.paused) {
       this.rafId = requestAnimationFrame(this._boundTick);
     } else {
@@ -317,11 +406,16 @@ export class ListeningTracker {
   _onPlay() {
     if (!this.currentTrackId) return;
     this._paused = false;
+    const pos = this._audio?.currentTime || 0;
+    const wall = Date.now();
+    // Resume: establish new baseline, wasPlaying=true
+    this.mini.resume(this.currentTrackId, pos, wall);
     if (this.sessionStart == null) {
       this._startSession();
     } else {
       this.lastTick = performance.now();
-      this.lastAudioTime = this._audio?.currentTime || 0;
+      this.lastAudioTime = pos;
+      this.lastWallTime = wall;
       this._startTick();
     }
   }
@@ -329,14 +423,22 @@ export class ListeningTracker {
   _onPause() {
     if (!this.currentTrackId) return;
     this._paused = true;
+    const pos = this._audio?.currentTime || 0;
+    this.mini.commitPause(pos, Date.now());
     this._finalizeSessionInterval();
     this._stopTick();
   }
 
   _onSeeked() {
     if (!this.currentTrackId || !this._audio) return;
-    this.lastAudioTime = this._audio.currentTime || 0;
+    const pos = this._audio.currentTime || 0;
+    const wall = Date.now();
+    this.lastAudioTime = pos;
     this.lastTick = performance.now();
+    this.lastWallTime = wall;
+    // Seek -> invalidate current interval, establish new baseline
+    this.mini.invalidate('seek');
+    this.mini.establishBaseline(this.currentTrackId, pos, wall, !this._audio.paused);
     if (!this._audio.paused) {
       this._startTick();
     }
@@ -344,6 +446,7 @@ export class ListeningTracker {
 
   _onEnded() {
     if (!this.currentTrackId) return;
+    this.mini.invalidate('ended');
     this._finalizeSession();
     this._stopTick();
   }
@@ -355,12 +458,13 @@ export class ListeningTracker {
     }
   }
 
-  _finalizeSessionInterval() {
+  _finalizeSessionInterval(isInterval = false) {
     if (!this.currentTrackId) return;
     const listenDelta = Math.round(this.sessionListened || 0);
     const playDelta = (!this.sessionPlayCounted && this.sessionAccumulated >= this.sessionThreshold) ? 1 : 0;
     if (listenDelta === 0 && playDelta === 0) {
       this.lastTick = null;
+      if (!isInterval) this.lastWallTime = null;
       return;
     }
     const stats = this.getTrackStats(this.currentTrackId);
@@ -379,7 +483,10 @@ export class ListeningTracker {
     this.lastTick = null;
     // Sync to DB. Only update lastSyncedSeconds on success so
     // recoverUnsyncedData() can re-send failed deltas on next load.
-    this.syncToBackend(this._currentSessionId, this.currentTrackId, playDelta, listenDelta)
+    // For interval, generate new sessionId for idempotency (same sessionId would dedup)
+    const sid = isInterval ? this._generateSessionId() : this._currentSessionId;
+    const displayName = stats.displayName || null;
+    this.syncToBackend(sid, this.currentTrackId, playDelta, listenDelta, displayName)
       .then((ok) => {
         if (ok) {
           stats.lastSyncedSeconds = stats.listenedSeconds;
@@ -390,7 +497,7 @@ export class ListeningTracker {
   }
 
   _finalizeSession() {
-    this._finalizeSessionInterval();
+    this._finalizeSessionInterval(false);
     this.sessionStart = null;
     this.sessionAccumulated = 0;
     this.sessionPlayCounted = false;
@@ -398,18 +505,19 @@ export class ListeningTracker {
     setStorage(this.stats);
   }
 
-  syncToBackend(sessionId, trackId, playCountDelta, listenedSecondsDelta) {
+  syncToBackend(sessionId, trackId, playCountDelta, listenedSecondsDelta, displayName) {
     const sid = sessionId || this._currentSessionId;
     const tid = trackId || this.currentTrackId;
 
     if (!sid || !tid) return Promise.resolve();
-    if (playCountDelta === 0 && listenedSecondsDelta === 0) return Promise.resolve();
+    if (playCountDelta === 0 && listenedSecondsDelta === 0 && !displayName) return Promise.resolve();
 
     const payload = JSON.stringify({
       sessionId: sid,
       trackId: tid,
       playCountDelta,
       listenedSecondsDelta,
+      displayName: displayName || this.stats[tid]?.displayName || null,
     });
 
     try {

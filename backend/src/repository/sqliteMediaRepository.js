@@ -349,6 +349,8 @@ export class SqliteMediaRepository {
       id: row.id,
       name: row.name,
       path: row.dir_path ? `${row.dir_path}/${row.name}` : row.name,
+      dirPath: row.dir_path || '',
+      dir_path: row.dir_path || '',
       type: row.type,
       ext: row.ext,
       size: row.size,
