@@ -56,6 +56,10 @@ const TYPE_OPTIONS = [
   { key: 'm4a', label: 'M4A' },
   { key: 'opus', label: 'OPUS' },
   { key: 'aac', label: 'AAC' },
+  { key: 'wav', label: 'WAV' },
+  { key: 'ogg', label: 'OGG' },
+  { key: 'wma', label: 'WMA' },
+  { key: 'webm', label: 'WEBM' },
 ];
 
 const TYPE_COLORS = {
@@ -65,6 +69,9 @@ const TYPE_COLORS = {
   '.opus': 'text-slate-300 bg-slate-500/15',
   '.aac': 'text-green-400 bg-green-500/15',
   '.wav': 'text-cyan-400 bg-cyan-500/15',
+  '.ogg': 'text-orange-400 bg-orange-500/15',
+  '.wma': 'text-blue-400 bg-blue-500/15',
+  '.webm': 'text-emerald-400 bg-emerald-500/15',
 };
 
 const STORAGE_KEY = 'addMusicPanelPrefs';

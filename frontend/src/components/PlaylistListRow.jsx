@@ -20,7 +20,7 @@ const COLORS = {
 };
 
 const EXT_COLORS = {
-  flac: { bg: 'rgba(123,180,235,0.3)', fg: '#000000' },
+  flac: { bg: 'rgba(123,180,235,0.3)', fg: '#fff' },
   aac:  { bg: 'rgba(239,68,68,0.2)',   fg: '#ef4444' },
   m4a:  { bg: 'rgba(255,165,0,0.2)',   fg: '#b45309' },
   mp3:  { bg: 'rgba(168,139,250,0.2)', fg: '#7c3aed' },
@@ -83,6 +83,20 @@ const LIST_ROW_STYLE = `
   .playlist-list-row:hover .trash-btn {
     opacity: 1;
     pointer-events: auto;
+  }
+  .flac-badge {
+    background: linear-gradient(135deg, #74B1E4, #939CF0, #74B1E4) !important;
+    background-size: 300% 300% !important;
+    animation: flacSlide 3.5s linear infinite !important;
+    color: #fff !important;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.45) !important;
+    font-weight: 800 !important;
+    border: 1px solid rgba(255,255,255,0.2) !important;
+  }
+  @keyframes flacSlide {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
   }
 `;
 
@@ -263,9 +277,10 @@ const PlaylistListRow = memo(({ index, style, data }) => {
             </span>
           )}
           {ext && (
-            <span style={{
+            <span className={ext.toLowerCase() === 'flac' ? 'flac-badge' : undefined} style={{
               fontSize: '9px', fontWeight: 700, letterSpacing: '0.5px', padding: '1px 6px',
-              borderRadius: '4px', background: extColor.bg, color: extColor.fg, flexShrink: 0,
+              borderRadius: '4px', background: ext.toLowerCase() === 'flac' ? undefined : extColor.bg, color: extColor.fg, flexShrink: 0,
+              textShadow: ext.toLowerCase() === 'flac' ? '0 1px 0 rgba(255,255,255,0.6)' : undefined,
             }}>
               {extLabel}
             </span>
