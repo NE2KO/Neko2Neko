@@ -41,10 +41,8 @@ function detectReencodeCodec() {
 const REENCODE_CODEC = detectReencodeCodec();
 const VAAPI_DEVICE = '/dev/dri/renderD128';
 
-// Does any audio file linked to this youtube_id carry a non-zero video offset?
-// Only those videos need a short-GOP re-encode so Chromium doesn't show decode
-// artifacts when seeking to a non-keyframe position. Offset-0 videos keep the
-// cheap copy+faststart path.
+// SGOP is now the final format for all cached videos (user request: cache/videos full sgop).
+// hasNonZeroOffset trigger removed — kept as legacy helper (unused) for reference.
 function hasNonZeroOffset(youtubeId) {
   try {
     const row = db.prepare('SELECT COUNT(*) AS c FROM files WHERE youtube_id = ? AND video_offset > 0').get(youtubeId);
@@ -54,8 +52,6 @@ function hasNonZeroOffset(youtubeId) {
   }
 }
 
-// Are ALL tracks using this youtubeId offset>0? If so, the seek copy is
-// unnecessary and can be deleted to save disk.
 function allTracksOffsetNonZero(youtubeId) {
   try {
     const row = db.prepare('SELECT COUNT(*) AS total FROM files WHERE youtube_id = ?').get(youtubeId);
@@ -66,8 +62,6 @@ function allTracksOffsetNonZero(youtubeId) {
   }
 }
 
-// Are ALL tracks using this youtubeId offset=0? If so, the sgop copy is
-// unnecessary and can be deleted to save disk.
 function allTracksOffsetZero(youtubeId) {
   try {
     const row = db.prepare('SELECT COUNT(*) AS total FROM files WHERE youtube_id = ?').get(youtubeId);
@@ -104,17 +98,9 @@ export function getCachedVideoPath(youtubeId) {
   const seek = join(CACHE_DIR, `${youtubeId}.seek.mp4`);
   const mp4 = join(CACHE_DIR, `${youtubeId}.mp4`);
   const m4a = join(CACHE_DIR, `${youtubeId}.m4a`);
-  // Videos with a non-zero offset are served the short-GOP copy (re-encoded to
-  // land seeks near a keyframe); fall back to the copy+faststart file until the
-  // upgrade exists. Offset-0 videos use the cheap copy+faststart file.
-  const wantSgop = hasNonZeroOffset(youtubeId);
-  if (wantSgop) {
-    if (existsSync(sgop)) return sgop;
-    if (existsSync(seek)) return seek;
-  } else {
-    if (existsSync(seek)) return seek;
-    if (existsSync(sgop)) return sgop;
-  }
+  // SGOP is final format for all videos — always prefer .sgop, fallback to .seek (legacy) then raw.
+  if (existsSync(sgop)) return sgop;
+  if (existsSync(seek)) return seek;
   if (existsSync(mp4)) return mp4;
   if (existsSync(m4a)) return m4a;
   return null;
@@ -202,59 +188,40 @@ async function verifySeekable(filePath) {
   });
 }
 
-// Produce (once) the web-seekable `<id>.seek.mp4` for a cached clip via a
-// copy-only faststart remux (no re-encode). New downloads call this right
-// after yt-dlp; already-cached raw files get it lazily on first stream and
-// proactively on startup (optimizeAllCached). After a successful verify, the
-// raw `<id>.mp4` is removed so storage stays ~1x (the remuxed copy is canonical).
+// Produce (once) the web-seekable `<id>.sgop.mp4` for a cached clip via
+// short-GOP re-encode (VAAPI/CPU). SGOP is final format for all videos.
+// New downloads call this right after yt-dlp; already-cached .seek files get
+// re-encoded to .sgop on next ensureSeekable / optimizeAllCached. After verify,
+// raw .mp4 and legacy .seek are removed so storage stays ~1x and no double files.
 export async function ensureSeekable(youtubeId) {
-  // Defensive: never operate on a mangled id (a bad glob once passed
-  // "<id>.sgop" here, which deleted the real short-GOP file).
   if (!isValidYoutubeId(youtubeId)) return null;
-  // Offset-0 videos keep the cheap copy+faststart file; offset>0 videos get a
-  // short-GOP re-encode so Chromium seeks cleanly. Pick the target up front so
-  // we can early-return when the right copy already exists.
-  const wantSgop = hasNonZeroOffset(youtubeId);
-  const targetPath = join(CACHE_DIR, `${youtubeId}.${wantSgop ? 'sgop' : 'seek'}.mp4`);
+  const targetPath = join(CACHE_DIR, `${youtubeId}.sgop.mp4`);
   if (existsSync(targetPath)) return targetPath;
   if (activeOptimizations.has(youtubeId)) return activeOptimizations.get(youtubeId);
 
   const run = async () => {
     const rawPath = join(CACHE_DIR, `${youtubeId}.mp4`);
-    // Source: the raw download if still present, else the other cached copy
-    // (e.g. re-encode short-GOP from an existing copy+faststart file).
-    let srcPath = existsSync(rawPath) ? rawPath : null;
-    if (!srcPath) {
-      const other = wantSgop
-        ? join(CACHE_DIR, `${youtubeId}.seek.mp4`)
-        : join(CACHE_DIR, `${youtubeId}.sgop.mp4`);
-      srcPath = existsSync(other) ? other : null;
-    }
-    if (!srcPath) return null; // audio-only (.m4a) or nothing
+    const seekPath = join(CACHE_DIR, `${youtubeId}.seek.mp4`);
+    // Source: raw first, else legacy .seek (will be upgraded to sgop)
+    let srcPath = existsSync(rawPath) ? rawPath : (existsSync(seekPath) ? seekPath : null);
+    if (!srcPath) return null;
     try {
-      await remuxForWeb(srcPath, targetPath, wantSgop);
+      await remuxForWeb(srcPath, targetPath, true);
       const ok = await verifySeekable(targetPath);
       if (ok) {
-        // Clean up the unused sibling variant to save disk. A shared YouTube ID
-        // can legitimately need BOTH variants (offset-0 + offset>0 tracks), so
-        // only delete the sibling when ALL tracks agree on offset direction.
-        const sibling = wantSgop
-          ? join(CACHE_DIR, `${youtubeId}.seek.mp4`)
-          : join(CACHE_DIR, `${youtubeId}.sgop.mp4`);
-        const canDeleteSibling = wantSgop ? allTracksOffsetNonZero(youtubeId) : allTracksOffsetZero(youtubeId);
-        if (canDeleteSibling && existsSync(sibling)) {
-          await unlink(sibling).catch(() => {});
-          console.log(`[videoCache] ${youtubeId}: removed unused ${wantSgop ? '.seek' : '.sgop'} copy (all tracks offset-${wantSgop ? '0' : '>0'})`);
+        // SGOP is final — always delete legacy .seek sibling after successful sgop (no double files)
+        if (existsSync(seekPath)) {
+          await unlink(seekPath).catch(() => {});
+          console.log(`[videoCache] ${youtubeId}: removed legacy .seek after sgop re-encode`);
         }
-        // Only drop the raw download (if it still exists) so storage stays ~1x.
         await unlink(rawPath).catch(() => {});
-        console.log(`[videoCache] ${youtubeId}: ${wantSgop ? `re-encoded short-GOP (${REENCODE_CODEC}, offset>0)` : 'remuxed copy+faststart'}`);
+        console.log(`[videoCache] ${youtubeId}: re-encoded short-GOP (${REENCODE_CODEC})`);
       } else {
-        console.warn(`[videoCache] ${youtubeId}: ${wantSgop ? 'short-GOP' : 'copy'} not seekable, keeping fallback`);
+        console.warn(`[videoCache] ${youtubeId}: short-GOP not seekable, keeping fallback`);
         await unlink(targetPath).catch(() => {});
       }
     } catch (e) {
-       console.error(`[videoCache] ${youtubeId}: ${wantSgop ? `short-GOP re-encode (${REENCODE_CODEC})` : 'remux'} failed: ${e.message}`);
+       console.error(`[videoCache] ${youtubeId}: short-GOP re-encode (${REENCODE_CODEC}) failed: ${e.message}`);
       await unlink(targetPath).catch(() => {});
     }
     return existsSync(targetPath) ? targetPath : null;
@@ -265,40 +232,49 @@ export async function ensureSeekable(youtubeId) {
   return promise;
 }
 
-// Proactively remux every cached raw `<id>.mp4` that lacks a `<id>.seek.mp4`.
-// Fire-and-forget on server startup so every play already serves a faststart
-// copy (no green frame, no offset-seek blank wait). Concurrency-limited so the
-// startup sweep never saturates the box. Idempotent: files already having a
-// `.seek.mp4` are skipped, and `ensureSeekable` guards in-flight duplicates.
-// GPU (VAAPI) sessions are cheap; concurrency stays at 2. If GPU contention is
-// observed (frames dropping on multiple simultaneous re-encodes), drop to 1.
+// Proactively ensure every cached video has a `.sgop.mp4` (SGOP final).
+// SGOP is now final for all — re-encode any raw `.mp4` or legacy `.seek.mp4` lacking `.sgop`.
+// Fire-and-forget on startup, concurrency 2 (VAAPI cheap). After sgop verify, legacy .seek is deleted — no double files.
 export async function optimizeAllCached(concurrency = 2) {
   ensureCacheDir();
   let ids;
   try {
     const files = await readdir(CACHE_DIR);
-    // An id is "already optimized" if EITHER a `.seek.mp4` or a `.sgop.mp4`
-    // copy exists. We must strip both suffixes so a short-GOP file
-    // `<id>.sgop.mp4` is never mistaken for a raw `<id>.mp4` download (that bug
-    // produced a bogus id "<id>.sgop", then ensureSeekable deleted the real
-    // short-GOP file → cache miss → unwanted re-download on the next play).
-    const doneIds = new Set();
+    const hasSgop = new Set();
+    const hasSeek = new Set();
     for (const f of files) {
-      if (f.endsWith('.seek.mp4')) doneIds.add(f.slice(0, -'.seek.mp4'.length));
-      else if (f.endsWith('.sgop.mp4')) doneIds.add(f.slice(0, -'.sgop.mp4'.length));
+      if (f.endsWith('.sgop.mp4')) hasSgop.add(f.slice(0, -'.sgop.mp4'.length));
+      else if (f.endsWith('.seek.mp4')) hasSeek.add(f.slice(0, -'.seek.mp4'.length));
     }
-    ids = files
-      // Only genuine raw downloads: `<id>.mp4` (NOT `.seek.mp4`/`.sgop.mp4`),
-      // never `.m4a`/`.part`/`.tmp` siblings.
+    // Raw missing sgop
+    const rawIds = files
       .filter(f => f.endsWith('.mp4') && !f.endsWith('.seek.mp4') && !f.endsWith('.sgop.mp4'))
       .map(f => f.slice(0, -'.mp4'.length))
-      .filter(id => !doneIds.has(id) && isValidYoutubeId(id));
+      .filter(id => !hasSgop.has(id) && isValidYoutubeId(id));
+    // Legacy seek missing sgop -> need re-encode seek->sgop
+    const seekToSgopIds = [...hasSeek].filter(id => !hasSgop.has(id) && isValidYoutubeId(id));
+    ids = [...new Set([...rawIds, ...seekToSgopIds])];
   } catch {
     return;
   }
-  if (!ids.length) return;
+  if (!ids.length) {
+    // Cleanup stray .seek where .sgop already exists (no double files)
+    try {
+      const files = await readdir(CACHE_DIR);
+      for (const f of files) {
+        if (f.endsWith('.seek.mp4')) {
+          const id = f.slice(0, -'.seek.mp4'.length);
+          if (files.includes(`${id}.sgop.mp4`)) {
+            await unlink(join(CACHE_DIR, f)).catch(() => {});
+            console.log(`[videoCache] optimizeAllCached: removed stray ${f} (sgop exists)`);
+          }
+        }
+      }
+    } catch {}
+    return;
+  }
 
-  console.log(`[videoCache] optimizeAllCached: remuxing ${ids.length} cached video(s)...`);
+  console.log(`[videoCache] optimizeAllCached: re-encoding ${ids.length} to sgop (VAAPI ${REENCODE_CODEC})...`);
   let index = 0;
   const worker = async () => {
     while (index < ids.length) {
@@ -311,6 +287,18 @@ export async function optimizeAllCached(concurrency = 2) {
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, ids.length) }, worker));
+  // Final sweep: ensure no double seek+sgop
+  try {
+    const files = await readdir(CACHE_DIR);
+    for (const f of files) {
+      if (f.endsWith('.seek.mp4')) {
+        const id = f.slice(0, -'.seek.mp4'.length);
+        if (files.includes(`${id}.sgop.mp4`)) {
+          await unlink(join(CACHE_DIR, f)).catch(() => {});
+        }
+      }
+    }
+  } catch {}
   console.log('[videoCache] optimizeAllCached: done');
 }
 
@@ -350,6 +338,7 @@ export async function downloadVideo(youtubeId, onProgress, force = false, format
     if (force) {
       await unlink(outputPath).catch(() => {});
       await unlink(join(CACHE_DIR, `${youtubeId}.seek.mp4`)).catch(() => {});
+      await unlink(join(CACHE_DIR, `${youtubeId}.sgop.mp4`)).catch(() => {});
     }
 
     // Cleanup stale partial files from previous failed attempts
@@ -383,7 +372,7 @@ export async function downloadVideo(youtubeId, onProgress, force = false, format
             `https://youtube.com/watch?v=${youtubeId}`,
           ];
 
-          const proc = execFile('yt-dlp', args, { timeout: 600000 }, async (err) => {
+          const proc = execFile('/usr/bin/yt-dlp', args, { timeout: 600000 }, async (err) => {
             if (err) {
               reject(new Error(`Download failed: ${err.message}`));
               return;
@@ -434,7 +423,7 @@ export async function searchVideo(query, count = 5) {
       `--playlist-end=${count}`,
       `ytsearch${count}:${query}`,
     ];
-    execFile('yt-dlp', args, { timeout: 15000 }, (err, stdout) => {
+    execFile('/usr/bin/yt-dlp', args, { timeout: 15000 }, (err, stdout) => {
       if (err) { resolve([]); return; }
       const results = stdout.trim().split('\n').filter(Boolean).map(line => {
         try {

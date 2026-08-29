@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { existsSync, statSync, createReadStream } from 'node:fs';
 import { join, extname } from 'node:path';
 import { searchVideo, downloadVideo, getCachedVideoPath, getCacheInfo, clearCache, getDownloadProgress, deleteVideo, ensureSeekable } from '../utils/videoCache.js';
+import { searchYouTube } from '../utils/youtube.js';
 import { stmts } from '../db.js';
 
 const router = Router();
@@ -10,8 +11,21 @@ router.post('/search', async (req, res) => {
   try {
     const { query } = req.body;
     if (!query) return res.status(400).json({ error: 'query required' });
-    const results = await searchVideo(query);
-    res.json(results);
+    // Scored YouTube search (adaptive, negative evidence, threshold) — strict precision
+    const results = await searchYouTube(query);
+    // Map to frontend expected shape (keep score for UI)
+    const mapped = results.map(r => ({
+      id: r.videoId || r.release?.id,
+      title: r.title || r.release?.title || '',
+      channel: r.channelTitle || r.release?.artist || '',
+      duration: r.duration || 0,
+      thumbnail: r.cover?.thumbnails?.medium || r.cover?.image || `https://i.ytimg.com/vi/${r.videoId}/mqdefault.jpg`,
+      score: r.score,
+      scoreDebug: r.scoreDebug,
+      viewCount: r.viewCount,
+      source: r.source,
+    }));
+    res.json(mapped);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

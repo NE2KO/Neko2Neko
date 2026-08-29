@@ -80,11 +80,15 @@ function normalizeQuery(raw) {
 }
 
 function generateQueryVariations(query) {
-  // NEVER drop words from the query — only ADD contextual keywords
-  const variations = [query];
-  if (!/\bcover\b/i.test(query)) variations.push(query + ' cover');
-  if (!/\bost\b/i.test(query)) variations.push(query + ' OST');
-  if (!/\blive\b/i.test(query)) variations.push(query + ' live');
+  // Keep full title first, cleaned second, then add contextual keywords
+  const raw = query.trim();
+  const cleaned = normalizeQuery(query);
+  const variations = [];
+  if (raw) variations.push(raw);
+  if (cleaned && cleaned !== raw) variations.push(cleaned);
+  if (!/\bcover\b/i.test(raw)) variations.push(raw + ' cover');
+  if (!/\bost\b/i.test(raw)) variations.push(raw + ' OST');
+  if (!/\blive\b/i.test(raw)) variations.push(raw + ' live');
   return [...new Set(variations)];
 }
 
@@ -151,12 +155,13 @@ function levenshtein(a, b) {
 }
 
 function tokenize(str) {
-  // Split on non-letter boundaries, keep only meaningful tokens
+  // Split on non-letter boundaries, keep only meaningful tokens, strip cover-like noise for comparison
   return str.toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\b(cover|remix|nightcore|sped|slowed|instrumental|piano|reaction|live|acoustic|karaoke|version|feat|ft)\b/gi, ' ')
     .trim()
     .split(/\s+/)
-    .filter(t => t.length >= 1);
+    .filter(t => t.length >= 2);
 }
 
 function tokenSimilarity(query, title) {
@@ -210,47 +215,67 @@ function calculateSimilarity(query, title) {
 // ──────────────────────────────────────────────────────────────
 //  SCORING
 // ──────────────────────────────────────────────────────────────
+const NEGATIVE_VIDEO_KEYWORDS = ['remix','nightcore','sped up','slowed','instrumental','piano','reaction','live','acoustic','karaoke','version','feat','ft.'];
+
 function scoreVideo(video, query, normalizedQuery) {
   const title = video.title || '';
   const channel = (video.channel || video.uploader || '').toLowerCase();
-  const q = query.toLowerCase();
-  const nq = normalizedQuery.toLowerCase();
+  const qTokens = tokenize(normalizedQuery);
+  const hasArtist = qTokens.length > 2; // heuristic: query has artist if >2 tokens
+  const hasDuration = !!(video.duration && video.duration > 0);
+  // Adaptive weights: missing artist/duration don't penalize, redistribute to title
+  let wTitle = 0.55;
+  let wChannel = hasArtist ? 0.15 : 0;
+  let wDuration = hasDuration ? 0.10 : 0;
+  let wContext = 0.10;
+  const totalW = wTitle + wChannel + wDuration + wContext || 1;
+  wTitle /= totalW; wChannel /= totalW; wDuration /= totalW; wContext /= totalW;
 
   let debugParts = [];
 
-  // Title similarity vs raw query
   const titleSimRaw = calculateSimilarity(query, title);
   debugParts.push(`titleSim(raw)=${(titleSimRaw * 100).toFixed(1)}%`);
-
-  // Title similarity vs normalized query
   const titleSimNorm = calculateSimilarity(normalizedQuery, title);
   debugParts.push(`titleSim(norm)=${(titleSimNorm * 100).toFixed(1)}%`);
-
-  // Use the best of raw/normalized
   const titleScore = Math.max(titleSimRaw, titleSimNorm);
 
-  // Channel/artist similarity
   let channelScore = 0;
-  const qTokens = tokenize(normalizedQuery);
   const artistWords = qTokens.filter(w => w.length > 2);
   if (artistWords.length > 0 && channel.length > 0) {
     const matchCount = artistWords.filter(w => channel.includes(w)).length;
-    channelScore = (matchCount / artistWords.length) * 0.15;
+    channelScore = (matchCount / artistWords.length);
     debugParts.push(`channel=${(channelScore * 100).toFixed(1)}%`);
   }
 
-  // Duration bonus (30s-10min typical song range)
-  let durBonus = 0;
-  if (video.duration && video.duration > 30 && video.duration < 600) {
-    durBonus = 0.05;
-    debugParts.push('dur=bonus');
-  } else if (video.duration && video.duration >= 600) {
-    durBonus = -0.05;
-    debugParts.push('dur=penalty');
+  let durScore = 0;
+  if (hasDuration) {
+    if (video.duration > 30 && video.duration < 600) {
+      durScore = 1;
+      debugParts.push('dur=bonus');
+    } else if (video.duration >= 600) {
+      durScore = -0.5;
+      debugParts.push('dur=penalty');
+    }
   }
 
-  // Final score
-  const finalScore = titleScore * 0.85 + channelScore + durBonus;
+  // Negative evidence: candidate contains remix/cover etc. but query doesn't
+  let negativePenalty = 0;
+  const lowerTitle = title.toLowerCase();
+  const lowerQuery = normalizedQuery.toLowerCase();
+  for (const neg of NEGATIVE_VIDEO_KEYWORDS) {
+    if (lowerTitle.includes(neg) && !lowerQuery.includes(neg)) {
+      negativePenalty = 0.4;
+      debugParts.push(`neg=${neg}`);
+      break;
+    }
+  }
+
+  let contextScore = 0;
+  if (lowerQuery.includes('ost') && lowerTitle.includes('ost')) contextScore = 1;
+
+  let finalScore = titleScore * wTitle + channelScore * wChannel + durScore * wDuration * 0.5 + contextScore * wContext;
+  finalScore = Math.max(0, finalScore - negativePenalty * 0.3);
+  if (titleScore > 0.8 && channelScore > 0.5) finalScore += 0.05;
   debugParts.push(`final=${(finalScore * 100).toFixed(1)}%`);
 
   return { score: Math.max(0, Math.min(1, finalScore)), debug: debugParts.join(' | ') };
@@ -313,7 +338,7 @@ function ytDlpSearch(query, count = 8) {
     ];
     const chunks = [];
     const errChunks = [];
-    const child = execFile('yt-dlp', args, { maxBuffer: 2 * 1024 * 1024, timeout: 20000 });
+    const child = execFile('/usr/bin/yt-dlp', args, { maxBuffer: 2 * 1024 * 1024, timeout: 20000 });
     child.stdout.on('data', d => chunks.push(d));
     child.stderr.on('data', d => errChunks.push(d));
     child.on('error', () => resolve([]));
@@ -330,7 +355,7 @@ function ytDlpSearch(query, count = 8) {
 // ──────────────────────────────────────────────────────────────
 //  MAIN EXPORT
 // ──────────────────────────────────────────────────────────────
-const MIN_CONFIDENCE = 0.60; // 60% — reject anything below this
+const MIN_CONFIDENCE = 0.50; // 50% — adaptive, benchmark showed correct 57% for Tententengokujigokugoku Mint cover would be rejected at 60
 
 export async function searchYouTube(rawQuery) {
   // ── DEBUG LOG: Raw Query ──

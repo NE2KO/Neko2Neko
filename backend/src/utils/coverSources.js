@@ -25,42 +25,85 @@ function artistsRelated(a, b) {
   return false;
 }
 
+const NEGATIVE_KEYWORDS = ['remix','nightcore','sped up','slowed','instrumental','piano','reaction','live','acoustic','karaoke','version','feat','ft.'];
+
 function scoreResult(result, artist, album, track) {
   const resultArtist = (result.release?.artist || '').toLowerCase();
   const resultTitle = (result.release?.title || '').toLowerCase();
-  const queryParts = [track, artist, album].filter(Boolean).join(' ').toLowerCase();
-  const qTokens = tokenize(queryParts);
-  if (qTokens.length === 0) return 50;
+  const hasArtist = !!(artist && artist.trim());
+  const hasAlbum = !!(album && album.trim());
+  const hasTrack = !!(track && track.trim());
+  if (!hasArtist && !hasAlbum && !hasTrack) return 50;
+
+  // Track always dominant, artist bonus but not at expense of track
+  let wArtist = hasArtist ? 0.15 : 0;
+  let wAlbum = hasAlbum ? 0.10 : 0;
+  let wTrack = hasTrack ? 0.60 : 0;
+  let wExact = hasArtist ? 0.15 : 0;
+  if (!hasArtist && !hasAlbum && hasTrack) {
+    wTrack = 0.80;
+    wExact = 0.05;
+  } else if (!hasArtist && hasTrack) {
+    wTrack = 0.70;
+    wExact = 0.05;
+  }
+  const totalW = wArtist + wAlbum + wTrack + wExact || 1;
+  wArtist /= totalW; wAlbum /= totalW; wTrack /= totalW; wExact /= totalW;
 
   let score = 0;
+  const qTrackTokens = hasTrack ? tokenize(track) : [];
+  const qArtistTokens = hasArtist ? tokenize(artist) : [];
+  const qAlbumTokens = hasAlbum ? tokenize(album) : [];
 
-  // Artist match (40% weight)
-  if (resultArtist) {
-    const aTokens = tokenize(resultArtist);
-    const matched = qTokens.filter(qt => aTokens.some(at => at.includes(qt) || qt.includes(at))).length;
-    score += (matched / qTokens.length) * 40;
-  }
-
-  // Title/album match (40% weight)
-  if (resultTitle) {
+  // Track/title match (adaptive)
+  if (hasTrack && resultTitle) {
     const tTokens = tokenize(resultTitle);
-    const matched = qTokens.filter(qt => tTokens.some(tt => tt.includes(qt) || qt.includes(tt))).length;
-    score += (matched / qTokens.length) * 40;
+    const matched = qTrackTokens.filter(qt => tTokens.some(tt => tt.includes(qt) || qt.includes(tt))).length;
+    const ratio = qTrackTokens.length ? matched / qTrackTokens.length : 0;
+    score += ratio * wTrack * 100;
+  } else if (hasTrack && !resultTitle) {
+    // No title in result, don't penalize heavily, just no add
   }
 
-  // Exact artist bonus (20%)
-  if (artist && resultArtist) {
+  // Artist match (adaptive)
+  if (hasArtist && resultArtist) {
+    const aTokens = tokenize(resultArtist);
+    const matched = qArtistTokens.filter(qt => aTokens.some(at => at.includes(qt) || qt.includes(at))).length;
+    const ratio = qArtistTokens.length ? matched / qArtistTokens.length : 0;
+    score += ratio * wArtist * 100;
+  }
+
+  // Album match (adaptive)
+  if (hasAlbum && resultTitle) {
+    const alTokens = tokenize(album);
+    const tTokens = tokenize(resultTitle);
+    const matched = alTokens.filter(qt => tTokens.some(tt => tt.includes(qt) || qt.includes(tt))).length;
+    const ratio = alTokens.length ? matched / alTokens.length : 0;
+    score += ratio * wAlbum * 100;
+  }
+
+  // Exact artist bonus (adaptive wExact)
+  if (hasArtist && resultArtist) {
     const aNorm = artist.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
     const rNorm = resultArtist.replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
     if (aNorm === rNorm || rNorm.includes(aNorm) || aNorm.includes(rNorm)) {
-      score += 20;
+      score += wExact * 100;
     }
   }
 
-  // Penalize results whose artist clearly isn't the reference artist (e.g. a
-  // different group's "After School" EP showing up for Weeekly's "After School").
-  if (artist && resultArtist && !artistsRelated(artist, resultArtist)) {
+  // Penalize if artist clearly unrelated (different group's same title)
+  if (hasArtist && resultArtist && !artistsRelated(artist, resultArtist)) {
     score = score * 0.3;
+  }
+
+  // Negative evidence: candidate contains remix/cover etc. but query doesn't
+  const lowerResultTitle = resultTitle;
+  const lowerQueryTrack = (track || '').toLowerCase();
+  for (const neg of NEGATIVE_KEYWORDS) {
+    if (lowerResultTitle.includes(neg) && !lowerQueryTrack.includes(neg)) {
+      score = score * 0.6; // penalize 40%
+      break;
+    }
   }
 
   return Math.min(100, Math.round(score));
@@ -204,9 +247,12 @@ function cleanQuery(query) {
 }
 
 function generateQueryVariations(query) {
+  const raw = query.trim();
   const cleaned = cleanQuery(query);
+  const variations = [];
+  if (raw) variations.push(raw);
+  if (cleaned && cleaned !== raw) variations.push(cleaned);
   const words = cleaned.split(/\s+/).filter(Boolean);
-  const variations = [cleaned];
 
   // Add "OST" suffix for game/anime music
   if (!/ost/i.test(cleaned)) {
@@ -301,12 +347,14 @@ export async function searchCoverAllSources(artist, album, track, query) {
   };
 
   // Structured metadata search (most accurate when artist/track are known).
-  // Run all sources in parallel with a timeout for speed.
+  // Include YouTube with artist+track for Japanese titles like Tententengokujigokugoku
   if (hasMeta) {
+    const structuredQuery = [cleanA, cleanT].filter(Boolean).join(' ').trim();
     const structuredSources = await Promise.allSettled([
       searchMusicBrainz(cleanA, cleanAl, cleanT).then(r => r.map(x => ({ ...x, source: 'MusicBrainz' }))).catch(() => []),
       deezerSearch(cleanA, cleanAl, cleanT).catch(() => []),
       itunesSearch(cleanA, cleanAl, cleanT).catch(() => []),
+      (structuredQuery ? searchYouTube(structuredQuery).catch(() => []) : Promise.resolve([])),
     ]);
     for (const r of structuredSources) {
       if (r.status === 'fulfilled') pushResults(r.value);
@@ -339,20 +387,42 @@ export async function searchCoverAllSources(artist, album, track, query) {
   }
 
   if (results.length > 0) {
-    const scoreTrack = cleanT || (hasQuery ? cleanQuery(query) : '');
-    return scoreAndSort(results.slice(0, 30), cleanA, cleanAl, scoreTrack);
-  }
-
-  // Last resort: YouTube with whatever we have.
-  const lastResort = cleanT || cleanAl || cleanA || (hasQuery ? query : '');
-  if (lastResort) {
-    try {
-      const ytResults = await searchYouTube(lastResort);
-      return scoreAndSort(ytResults, cleanA, cleanAl, cleanT);
-    } catch {
-      return [];
+    // Use full query for scoring when available, otherwise cleanT
+    // For Tententengokujigokugoku case, track alone gives 0 but full query with artist gives 67 — need to score with best of track / query
+    const scoreTrack = hasQuery ? cleanQuery(query) : cleanT;
+    const scoreArtist = hasQuery && cleanA ? cleanA : cleanA;
+    // Also try scoring with full query as track for YouTube results that need artist
+    const scored = scoreAndSort(results.slice(0, 30), scoreArtist, cleanAl, scoreTrack);
+    // If free query exists, also score with query as track for comparison and keep best
+    if (hasQuery && hasMeta) {
+      const altScored = scoreAndSort(results.slice(0, 30), cleanA, cleanAl, cleanQuery(query));
+      // Merge best scores: keep max per URL
+      const bestByUrl = new Map();
+      for (const r of [...scored, ...altScored]) {
+        const url = r.cover?.image;
+        const existing = bestByUrl.get(url);
+        if (!existing || r.score > existing.score) bestByUrl.set(url, r);
+      }
+      return [...bestByUrl.values()].sort((a,b)=>b.score-a.score);
     }
+    return scored;
   }
 
+  // Last resort: YouTube with best fallback — prefer artist+track, then track, then query
+  const lastResortCandidates = [];
+  if (hasQuery) lastResortCandidates.push(query);
+  const artistTrack = [cleanA, cleanT].filter(Boolean).join(' ').trim();
+  if (artistTrack && !lastResortCandidates.includes(artistTrack)) lastResortCandidates.push(artistTrack);
+  if (cleanT && !lastResortCandidates.includes(cleanT)) lastResortCandidates.push(cleanT);
+  if (cleanA && !lastResortCandidates.includes(cleanA)) lastResortCandidates.push(cleanA);
+  for (const cand of lastResortCandidates) {
+    try {
+      const ytResults = await searchYouTube(cand);
+      if (ytResults.length) {
+        const scoreT = hasQuery ? cleanQuery(query) : cleanT;
+        return scoreAndSort(ytResults, cleanA, cleanAl, scoreT);
+      }
+    } catch {}
+  }
   return [];
 }
