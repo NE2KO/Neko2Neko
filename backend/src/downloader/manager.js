@@ -93,13 +93,11 @@ const SOURCE_FORMAT_PREFERENCE = {
 };
 
 const BOT_CONCURRENT = 1;
-// Telegram video bot: MUST produce H.264 (avc1) so the result is streamable by
-// WhatsApp. Every branch below constrains vcodec to avc1 — unlike the old
-// BOT_H264_FORMAT whose fallback branches (bestvideo[height<=1080]+bestaudio,
-// best, …) had no codec filter and let yt-dlp pick AV1/HEVC for sub-1080p or
-// vertical sources. If a source genuinely has no avc1 variant the task fails
-// cleanly rather than landing an undeliverable file in the vault.
-const BOT_H264_FORMAT = 'bestvideo[height>=720][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height>=720][vcodec!=none]+bestaudio[ext=m4a]/bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[width<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/best[vcodec^=avc1]';
+// Telegram video bot: use yt-dlp best format.
+// High-quality source is preferred, but we do not force a codec family
+// anymore; if YouTube blocks a high-res stream, yt-dlp will fall back
+// automatically instead of being forced into 360p/720p.
+const BOT_H264_FORMAT = 'bestvideo+bestaudio[ext=m4a]/bestvideo+bestaudio/best';
 
 const MAX_AUTO_RETRIES = 3;
 const RETRY_BASE_DELAY = 5000;
@@ -831,6 +829,7 @@ export function getTask(id) {
 export { enableManager, disableManager, isManagerEnabled, getManagerStatus };
 export function getMaxConcurrent() { return maxConcurrent; }
 export function setMaxConcurrent(n) { maxConcurrent = Math.max(1, Math.min(10, n)); try { fs.writeFileSync(CONFIG_FILE, JSON.stringify({ maxConcurrent }), 'utf-8'); } catch {} }
+export { buildExpectedFilename, sanitizeForFs, extractYoutubeId };
 
 function sanitize(t) {
   return {
@@ -1146,7 +1145,7 @@ export function getAvailableFormats(url, category = 'youtube', options = {}) {
     ];
     if (ytCookies) args.push('--cookies', ytCookies);
     args.push(url);
-    const out = execFileSync('yt-dlp', args, {
+    const out = execFileSync('/usr/bin/yt-dlp', args, {
       timeout: 30000, maxBuffer: 5 * 1024 * 1024, encoding: 'utf-8',
     });
     const info = JSON.parse(out);
@@ -1262,7 +1261,7 @@ export function getPlaylistInfo(url, cookiesPath = '') {
 
     let proc;
     try {
-      proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      proc = spawn('/usr/bin/yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (e) {
       clearTimeout(timeoutId);
       return resolve({ error: `Gagal menjalankan yt-dlp: ${e.message}` });
@@ -1641,6 +1640,63 @@ async function finishTask(task, status, errorMsg) {
         const audioPath = downloadedPaths.find(p => AUDIO_EXTS.has(path.extname(p).toLowerCase()) && fs.existsSync(p));
         if (audioPath) primary = audioPath;
       }
+      // Preserve original title (with " / "), sanitize only filesystem: " / " -> " - " if yt-dlp created subfolder due to slash
+      try {
+        const dir = path.dirname(primary);
+        const base = path.basename(primary);
+        // If file is in subfolder due to title slash (e.g. downloadDir/Tetoris/Kasane Teto SV.mp3 -> Tetoris / Kasane Teto SV)
+        if (dir !== task.outputDir && dir.startsWith(task.outputDir) && base) {
+          const subfolder = path.basename(dir);
+          const baseNameNoExt = base.replace(/\.[^/.]+$/, '');
+          // Reconstruct original title with " / " and sanitize to " - " for FS
+          const reconstructed = `${subfolder} / ${baseNameNoExt}`;
+          const sanitizedBase = sanitizeForFs(reconstructed) + path.extname(base);
+          const newPath = path.join(task.outputDir, sanitizedBase);
+          if (!fs.existsSync(newPath) && fs.existsSync(primary)) {
+            fs.mkdirSync(path.dirname(newPath), { recursive: true });
+            fs.renameSync(primary, newPath);
+            try { fs.rmdirSync(dir); } catch {}
+            primary = newPath;
+            addLog(task, `Sanitized slash filename: ${subfolder}/${base} -> ${sanitizedBase} (original title preserved)`);
+            // Preserve original title for DB (with " / ") - will be picked up via ffprobe or via task.originalTitle
+            if (!task.originalTitle || task.originalTitle === baseNameNoExt) {
+              task.originalTitle = reconstructed;
+            }
+          }
+        } else if (/[\/\\:*?"<>|]/.test(base)) {
+          const sanitizedBase = sanitizeForFs(base.replace(/\.[^/.]+$/, '')) + path.extname(base);
+          if (sanitizedBase !== base) {
+            const newPath = path.join(dir, sanitizedBase);
+            if (!fs.existsSync(newPath)) {
+              fs.renameSync(primary, newPath);
+              primary = newPath;
+              addLog(task, `Sanitized filename: ${base} -> ${sanitizedBase}`);
+            }
+          }
+        }
+      } catch (e) {
+        addLog(task, `Sanitize check failed: ${e.message}`);
+      }
+      // Build expected filename from YouTube title + ID to prevent truncation
+      const ytId = extractYoutubeId(task.url);
+      if (ytId && primary) {
+        const fullTitle = task.originalTitle || path.basename(primary, path.extname(primary));
+        const expectedBase = buildExpectedFilename(fullTitle, ytId, path.extname(primary));
+        const expectedPath = path.join(task.outputDir, expectedBase);
+        if (expectedPath !== primary && fs.existsSync(primary)) {
+          try {
+            if (!fs.existsSync(expectedPath)) {
+              fs.renameSync(primary, expectedPath);
+              primary = expectedPath;
+              addLog(task, `Expected filename: ${expectedBase}`);
+            } else {
+              addLog(task, `Expected filename already exists: ${expectedBase}`);
+            }
+          } catch (e) {
+            addLog(task, `Rename to expected filename failed: ${e.message}`);
+          }
+        }
+      }
       task.filePath = primary;
       task.filename = path.basename(task.filePath);
       try {
@@ -1878,10 +1934,46 @@ const SPEED_RE = /at\s+([\d.]+)\s*(\w+\/s)/i;
 const ETA_RE = /ETA\s+(\S+)/i;
 const SIZE_RE = /of\s+~?([\d.]+)\s*(\w+)/i;
 
+function sanitizeForFs(name) {
+  // Keep original title " / " in DB (with slash), only sanitize filesystem: "/" -> "／" fullwidth (looks like "/" but safe), forbidden -> "_"
+  return String(name || '').trim()
+    .replace(/\//g, '／')
+    .replace(/[\\:*?"<>|]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim() || 'untitled';
+}
+
+function extractYoutubeId(url) {
+  try {
+    const u = (url || '').trim();
+    const parsed = new URL(/^https?:\/\//i.test(u) ? u : `https://${u}`);
+    const host = parsed.hostname.toLowerCase();
+    if (host === 'youtu.be') {
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      return parts[0] || null;
+    }
+    if (host.endsWith('youtube.com') || host === 'youtube.com') {
+      const v = parsed.searchParams.get('v');
+      if (v) return v;
+      const m = parsed.pathname.match(/\/(?:shorts|embed|v|live)\/([^/?#]+)/);
+      if (m) return m[1];
+    }
+  } catch {}
+  return null;
+}
+
+function buildExpectedFilename(title, youtubeId, ext) {
+  const safeTitle = sanitizeForFs(title || '');
+  const extension = (ext || '').startsWith('.') ? ext : `.${ext || ''}`;
+  return `${safeTitle}${extension}`;
+}
+
 function spawnYtdlp(task) {
   const args = ['--newline', '--no-warnings', '--no-playlist', '--concurrent-fragments', '4'];
   args.push(...YTDLP_RESILIENT_ARGS);
   args.push('--replace-in-metadata', 'title', '[#]', '');
+  // Keep original title for DB (with " / "), filesystem sanitized via Node (customTitle) and via post-download move for %(title)s
+  if (!task.originalTitle) task.originalTitle = task.customTitle || '';
   const downloadDir = task.category === 'instagram' ? createDownloadWorkDir(task.outputDir, task) : task.outputDir;
 
   if (task.category === 'instagram') {
@@ -1901,6 +1993,7 @@ function spawnYtdlp(task) {
     if (staticCookies) {
       args.push('--cookies', staticCookies);
     }
+    args.push('--print', 'before_dl:__YT_TITLE__%(title)s');
   } else {
     const cookies = resolveCookiesForTask(task);
     if (cookies) {
@@ -1942,8 +2035,10 @@ if (task.embedCover) {
   }
 }
 
-const outputTemplate = task.customTitle
-    ? path.join(downloadDir, `${task.customTitle}.%(ext)s`)
+  // Sanitize customTitle for FS only, keep originalTitle for DB title
+  const fsSafeTitle = task.customTitle ? sanitizeForFs(task.customTitle) : null;
+  const outputTemplate = fsSafeTitle
+    ? path.join(downloadDir, `${fsSafeTitle}.%(ext)s`)
     : path.join(downloadDir, '%(title)s.%(ext)s');
   args.push('-o', outputTemplate);
   args.push(task.url);
@@ -1952,7 +2047,7 @@ const outputTemplate = task.customTitle
   task.filePath = '';
 
   let proc;
-  try { proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] }); }
+  try { proc = spawn('/usr/bin/yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] }); }
   catch (err) { finishTask(task, 'failed', `Gagal spawn yt-dlp: ${err.message}`); return; }
   task.process = proc;
   task.pid = proc.pid;
@@ -1972,6 +2067,12 @@ const outputTemplate = task.customTitle
       if (c.startsWith('__IG_USERNAME__')) {
         const username = sanitizeArchiveName(c.replace('__IG_USERNAME__', ''));
         if (username && username !== 'NA') task._igUsername = username;
+        continue;
+      }
+
+      if (c.startsWith('__YT_TITLE__')) {
+        const title = c.replace('__YT_TITLE__', '').trim();
+        if (title && title !== 'NA') task.originalTitle = title;
         continue;
       }
 
