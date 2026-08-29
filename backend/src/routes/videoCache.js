@@ -36,7 +36,7 @@ router.post('/auto-detect/:id', async (req, res) => {
     const file = stmts.getFileWithPath.get(req.params.id);
     if (!file) return res.status(404).json({ error: 'File not found' });
 
-    const searchQuery = file.title || file.name.replace(/\.[^.]+$/, '');
+    const searchQuery = file.name.replace(/\.[^.]+$/, '');
     const results = await searchVideo(searchQuery, 5);
     res.json({ query: searchQuery, results });
   } catch (err) {

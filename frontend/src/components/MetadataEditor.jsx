@@ -64,10 +64,11 @@ export default function MetadataEditor({ fileId, onClose, onSaved, onCoverChange
           youtube_id: data.youtube_id || '',
           video_offset: Number(data.video_offset) || 0,
         });
-        // Pre-fill the YouTube search box with the song title so the user
-        // doesn't have to type (or open YouTube) to find a matching video.
-        const title = data.title || data.display_name || '';
-        const q = title || parseFilenameToSearchTerms(data.name || '').track || '';
+        // Pre-fill the YouTube search box with the full filename (without
+        // extension) so the query includes both artist and track, not just
+        // whatever is currently stored in the title field.
+        const fallbackTitle = data.title || data.display_name || '';
+        const q = data.name ? data.name.replace(/\.[^.]+$/, '') : fallbackTitle;
         if (q && !videoSearchQuery) setVideoSearchQuery(q);
       })
       .catch(err => {
@@ -126,7 +127,7 @@ export default function MetadataEditor({ fileId, onClose, onSaved, onCoverChange
   }, [videoSearchQuery]);
 
   const handlePickVideo = useCallback((vid) => {
-    setForm(f => ({ ...f, youtube_id: vid.id }));
+    setForm(f => ({ ...f, youtube_id: vid.id, title: vid.title || f.title }));
     setPickedVideoId(vid.id);
   }, []);
 
