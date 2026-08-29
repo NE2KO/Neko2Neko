@@ -8,7 +8,7 @@ export async function readMetadata(filePath) {
     const metadata = await parseFile(filePath, { duration: true });
     const common = metadata.common || {};
     const format = metadata.format || {};
-    
+
     return {
       title: common.title || null,
       artist: common.artist || null,
@@ -45,24 +45,16 @@ export async function extractCover(filePath) {
 }
 
 export async function writeMetadata(filePath, updates) {
-  // For now, we use a read-modify-write approach with music-metadata
-  // This works for most formats but may not preserve all tags
-  // A production version would use a format-specific writer
-  
   const ext = extname(filePath).toLowerCase();
   const isFLAC = ext === '.flac';
   const isMP3 = ext === '.mp3';
   const isOGG = ext === '.ogg' || ext === '.opus';
-  
-  // Read current metadata
+
   const current = await readMetadata(filePath);
   if (!current) throw new Error('Failed to read current metadata');
-  
-  // Merge updates
+
   const merged = { ...current, ...updates };
-  
-  // We'll store the metadata in DB and use ffmpeg for embedding when needed
-  // For now, return the merged data for DB storage
+
   return {
     title: merged.title,
     artist: merged.artist,
@@ -71,7 +63,7 @@ export async function writeMetadata(filePath, updates) {
   };
 }
 
-export async function embedCover(filePath, imageBuffer, mimeType) {
+async function _runEmbedPy(filePath, imageBuffer, mimeType) {
   const { execSync } = await import('node:child_process');
   const { writeFileSync, unlinkSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
@@ -84,43 +76,54 @@ export async function embedCover(filePath, imageBuffer, mimeType) {
 
   try {
     writeFileSync(tmpFile, imageBuffer);
-
-    if (ext === '.flac') {
-      const pyScript = join(dirname(fileURLToPath(import.meta.url)), 'embed_cover.py');
-      execSync(`python3 "${pyScript}" "${filePath}" "${tmpFile}" "${mimeType}"`, { stdio: 'pipe', timeout: 120000 });
-    } else if (ext === '.mp3') {
-      const outTmp = `${filePath}.tmp.mp3`;
-      const ffmpegArgs = `-i "${filePath}" -i "${tmpFile}" -map 0:a -map 1:0 -c copy -id3v2_version 3 -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" "${outTmp}"`;
-      execSync(`ffmpeg -y ${ffmpegArgs}`, { stdio: 'pipe', timeout: 120000 });
-      const { renameSync } = await import('node:fs');
-      renameSync(outTmp, filePath);
-    } else if (ext === '.ogg' || ext === '.opus') {
-      const pyScript = join(dirname(fileURLToPath(import.meta.url)), 'embed_cover.py');
-      execSync(`python3 "${pyScript}" "${filePath}" "${tmpFile}" "${mimeType}"`, { stdio: 'pipe', timeout: 120000 });
-    } else if (ext === '.m4a') {
-      const outTmp = `${filePath}.tmp.m4a`;
-      const ffmpegArgs = `-i "${filePath}" -i "${tmpFile}" -map 0:a -map 1:0 -c:a copy -c:v mjpeg -q:v 2 -metadata:s:v title="Album cover" -metadata:s:v comment="Cover (front)" -disposition:v:0 attached_pic "${outTmp}"`;
-      execSync(`ffmpeg -y ${ffmpegArgs}`, { stdio: 'pipe', timeout: 120000 });
-      const { renameSync } = await import('node:fs');
-      renameSync(outTmp, filePath);
-    } else if (ext === '.webm') {
-      const outTmp = `${filePath}.tmp`;
-      const ffmpegArgs = `-i "${filePath}" -i "${tmpFile}" -map 0:a -map 1:0 -c:a copy -c:v libvpx-vp9 -deadline realtime -cpu-used 5 -f webm "${outTmp}"`;
-      execSync(`ffmpeg -y ${ffmpegArgs}`, { stdio: 'pipe', timeout: 120000 });
-      const { renameSync } = await import('node:fs');
-      renameSync(outTmp, filePath);
-    } else {
-      throw new Error(`Unsupported format for cover embedding: ${ext}`);
-    }
-
-    return true;
-  } catch (err) {
-    console.error('[metadataWriter] embedCover error:', err.message);
-    try { unlinkSync(tmpFile); } catch {}
-    try { unlinkSync(`${filePath}.tmp`); } catch {}
-    try { unlinkSync(`${filePath}.tmp.mp3`); } catch {}
-    throw err;
+    const pyScript = join(dirname(fileURLToPath(import.meta.url)), 'embed_cover.py');
+    execSync(`python3 "${pyScript}" "${filePath}" "${tmpFile}" "${mimeType}"`, { stdio: 'pipe', timeout: 120000 });
   } finally {
     try { unlinkSync(tmpFile); } catch {}
   }
+}
+
+async function _runEmbedWebm(filePath, imageBuffer, mimeType) {
+  const { execSync } = await import('node:child_process');
+  const { writeFileSync, unlinkSync, statSync, utimesSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join, dirname } = await import('node:path');
+
+  const ext = extname(filePath).toLowerCase();
+  const mimeExt = (mimeType || '').split('/').pop()?.split(';')[0]?.trim() || 'bin';
+  const safeExt = ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(mimeExt) ? mimeExt : 'bin';
+  const tmpFile = join(tmpdir(), `cover_${Date.now()}.${safeExt}`);
+  const outTmp = `${filePath}.tmp`;
+
+  const originalStat = statSync(filePath);
+  const originalAtime = originalStat.atime;
+  const originalMtime = originalStat.mtime;
+
+  try {
+    writeFileSync(tmpFile, imageBuffer);
+    const ffmpegArgs = `-i "${filePath}" -i "${tmpFile}" -map 0:a -map 1:0 -c:a copy -c:v libvpx-vp9 -deadline realtime -cpu-used 5 -f webm "${outTmp}"`;
+    execSync(`ffmpeg -y ${ffmpegArgs}`, { stdio: 'pipe', timeout: 120000 });
+    const { renameSync } = await import('node:fs');
+    renameSync(outTmp, filePath);
+    utimesSync(filePath, originalAtime, originalMtime);
+  } finally {
+    try { unlinkSync(tmpFile); } catch {}
+    try { unlinkSync(outTmp); } catch {}
+  }
+}
+
+export async function embedCover(filePath, imageBuffer, mimeType) {
+  const ext = extname(filePath).toLowerCase();
+
+  if (['.flac', '.mp3', '.m4a', '.mp4', '.opus', '.ogg'].includes(ext)) {
+    await _runEmbedPy(filePath, imageBuffer, mimeType);
+    return;
+  }
+
+  if (ext === '.webm') {
+    await _runEmbedWebm(filePath, imageBuffer, mimeType);
+    return;
+  }
+
+  throw new Error(`Unsupported format for cover embedding: ${ext}`);
 }
